@@ -1,0 +1,15 @@
+[package]
+name = "sooth"
+version = "0.0.0"
+edition = "2021"
+description = "The truth about your tests — a local, framework-agnostic test-suite observer (flaky, slow, order-dependent, assertionless, and secret network calls). Work in progress."
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/bramvzw/sooth"
+homepage = "https://github.com/bramvzw/sooth"
+keywords = ["testing", "flaky", "cli", "test", "ci"]
+categories = ["command-line-utilities", "development-tools::testing"]
+readme = "README.md"
+
+[[bin]]
+name = "sooth"
+path = "src/main.rs"
