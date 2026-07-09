@@ -19,7 +19,8 @@ fn main() -> ExitCode {
 /// Handle `sooth run`: execute the test command and report how each run went.
 fn run(args: &cli::RunArgs) -> ExitCode {
     match runner::run(&args.command, args.runs) {
-        Ok(outcomes) => report(&outcomes),
+        Ok(outcomes) if report(&outcomes) => ExitCode::SUCCESS,
+        Ok(_) => ExitCode::FAILURE,
         Err(err) => {
             let program = &args.command[0];
             eprintln!("sooth: failed to run `{program}`: {err}");
@@ -28,8 +29,8 @@ fn run(args: &cli::RunArgs) -> ExitCode {
     }
 }
 
-/// Print a per-run line and return success only if every run exited cleanly.
-fn report(outcomes: &[runner::RunOutcome]) -> ExitCode {
+/// Print a per-run line for each outcome; return `true` iff every run succeeded.
+fn report(outcomes: &[runner::RunOutcome]) -> bool {
     let total = outcomes.len();
     for (index, outcome) in outcomes.iter().enumerate() {
         let code = outcome
@@ -41,10 +42,30 @@ fn report(outcomes: &[runner::RunOutcome]) -> ExitCode {
             outcome.duration
         );
     }
+    outcomes.iter().all(|outcome| outcome.success)
+}
 
-    if outcomes.iter().all(|outcome| outcome.success) {
-        ExitCode::SUCCESS
-    } else {
-        ExitCode::FAILURE
+#[cfg(test)]
+mod tests {
+    use super::report;
+    use crate::runner::RunOutcome;
+    use std::time::Duration;
+
+    fn outcome(success: bool) -> RunOutcome {
+        RunOutcome {
+            exit_code: Some(i32::from(!success)),
+            success,
+            duration: Duration::from_millis(1),
+        }
+    }
+
+    #[test]
+    fn reports_true_only_when_every_run_succeeded() {
+        assert!(report(&[outcome(true), outcome(true)]));
+    }
+
+    #[test]
+    fn reports_false_when_any_run_failed() {
+        assert!(!report(&[outcome(true), outcome(false)]));
     }
 }

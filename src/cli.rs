@@ -25,7 +25,7 @@ pub struct RunArgs {
     pub preset: Option<Preset>,
 
     /// How many times to run the suite (fixed order; flaky detection lands in v0.2).
-    #[arg(long, default_value_t = 1)]
+    #[arg(long, default_value_t = 1, value_parser = clap::value_parser!(u32).range(1..))]
     pub runs: u32,
 
     /// Emit machine-readable JSON instead of a table.
@@ -92,5 +92,11 @@ mod tests {
     #[test]
     fn a_command_is_required() {
         assert!(Cli::try_parse_from(["sooth", "run"]).is_err());
+    }
+
+    #[test]
+    fn rejects_runs_below_one() {
+        // `--runs 0` would run nothing and report a vacuous success; reject it early.
+        assert!(Cli::try_parse_from(["sooth", "run", "--runs", "0", "--", "true"]).is_err());
     }
 }
