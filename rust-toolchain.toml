@@ -1,3 +1,8 @@
 [toolchain]
-channel = "stable"
+# Pinned to an exact version (not "stable") so CI lints are reproducible: a new
+# stable Rust can add clippy lints that break CI on an unrelated PR under
+# `-D warnings`. This file is authoritative for cargo/clippy locally AND in CI
+# (rustup honors it over the action-installed toolchain), so it is the single
+# place to change. To upgrade: bump the version deliberately, then `make check`.
+channel = "1.96.1"
 components = ["rustfmt", "clippy"]

@@ -94,3 +94,13 @@ code and wall-clock time per run. It deliberately does not buffer the child's
 output: the structured signal comes from the JUnit XML the runner produces
 (parsed in story #3), not from scraping stdout. Runs execute in a fixed order;
 shuffling for order-dependence is a separate pass (see above).
+
+## Pinned Rust toolchain instead of rolling `stable`
+
+`rust-toolchain.toml` pins an exact version (e.g. `1.96.1`) rather than
+`stable`. Under `clippy -D warnings`, every new stable Rust can introduce lints
+that fail CI on a change that didn't cause them (this bit us once already).
+Pinning makes CI reproducible and turns a toolchain upgrade into a deliberate,
+reviewable bump. The file is authoritative for both local `make check` and CI —
+rustup honors it over the action-installed toolchain — so it is the single
+place to change.
