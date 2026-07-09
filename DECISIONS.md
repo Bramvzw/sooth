@@ -85,3 +85,12 @@ clap's `last = true`. This keeps sooth's own flags (`--preset`, `--runs`, …)
 unambiguous from the flags of the command it wraps. Until the runner lands
 (story #2), `sooth run` only echoes the parsed plan so the CLI surface is
 testable now without spawning a process.
+
+## The runner inherits the child's stdio and captures only exit status + time
+
+`sooth`'s runner spawns the test command with inherited stdio, so you see your
+test output exactly as if you had run it yourself, and records only the exit
+code and wall-clock time per run. It deliberately does not buffer the child's
+output: the structured signal comes from the JUnit XML the runner produces
+(parsed in story #3), not from scraping stdout. Runs execute in a fixed order;
+shuffling for order-dependence is a separate pass (see above).
