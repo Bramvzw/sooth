@@ -26,3 +26,15 @@ report — nothing leaves your machine.
 (This is a statement about `sooth` itself. The network-egress *detection*
 feature on the roadmap observes whether *your tests* make real network calls
 — it does not change this promise about `sooth`.)
+
+## Security model
+
+`sooth` runs the test command you give it, in your environment, with your
+privileges. It adds no privilege of its own and does not sandbox, escalate, or
+alter the command. Trust a command passed to `sooth run` exactly as much as you
+would trust running it directly.
+
+The planned network-egress detection needs deeper access (traffic
+interception) and will be strictly opt-in, Linux-first, and documented with its
+own limitations and trust implications before it ships.
+

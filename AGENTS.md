@@ -33,7 +33,7 @@ One task per module. Do not add empty placeholder modules ahead of the code that
 
 `PREFIX: imperative English description`. Allowed prefixes: `FEAT FIX CHORE DOCS OPS CI SECURITY
 REFACTOR PERF TEST STYLE`. Enforced by the tracked `commit-msg` hook (`.githooks/`, install it with
-`make setup`) and by `bin/lint-commit-message.sh`. One concern per commit.
+`make setup`) and by `bin/lint-commit-message.sh`. One concern per commit. The full branch → PR → review → merge workflow lives in `CONTRIBUTING.md`.
 
 ## Definition of done
 
