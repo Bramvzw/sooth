@@ -11,6 +11,9 @@ keywords = ["testing", "flaky", "cli", "test", "ci"]
 categories = ["command-line-utilities", "development-tools::testing"]
 readme = "README.md"
 
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+
 [[bin]]
 name = "sooth"
 path = "src/main.rs"

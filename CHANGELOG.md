@@ -11,3 +11,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Project governance basis: licensing, CI, commit-message linting, `AGENTS.md`,
   `ROADMAP.md`, `DECISIONS.md`, `SECURITY.md`.
+- `sooth run` CLI skeleton (clap): `--preset`, `--runs`, `--json`, `--slowest`,
+  and the test command given after `--`.

@@ -76,3 +76,12 @@ GitHub-native:
   reference an issue with `(#n)`.
 - Overview lives in GitHub milestones (source of truth) + optionally a GitHub
   Project board; `ROADMAP.md` holds the human-readable narrative.
+
+## clap (derive) for the CLI, and the test command after `--`
+
+The CLI uses `clap`'s derive API. The wrapped test command is captured as a
+trailing argument list after `--` (`sooth run -- pytest -k foo`), modeled with
+clap's `last = true`. This keeps sooth's own flags (`--preset`, `--runs`, …)
+unambiguous from the flags of the command it wraps. Until the runner lands
+(story #2), `sooth run` only echoes the parsed plan so the CLI surface is
+testable now without spawning a process.
