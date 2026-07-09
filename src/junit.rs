@@ -71,6 +71,9 @@ pub enum JunitError {
     MissingRoot,
     /// The input ended with elements still open (truncated XML).
     UnexpectedEof,
+    /// The input file is larger than [`MAX_INPUT_BYTES`] and was refused before
+    /// reading, so a huge or hostile report cannot exhaust memory.
+    TooLarge { bytes: u64, max: u64 },
 }
 
 impl fmt::Display for JunitError {
@@ -82,6 +85,12 @@ impl fmt::Display for JunitError {
                 write!(f, "input has no <testsuite> or <testsuites> root element")
             }
             Self::UnexpectedEof => write!(f, "input ended with elements still open"),
+            Self::TooLarge { bytes, max } => {
+                write!(
+                    f,
+                    "JUnit-XML report is too large ({bytes} bytes; limit is {max})"
+                )
+            }
         }
     }
 }
@@ -90,7 +99,7 @@ impl std::error::Error for JunitError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Io(err) => Some(err),
-            Self::Xml(_) | Self::MissingRoot | Self::UnexpectedEof => None,
+            Self::Xml(_) | Self::MissingRoot | Self::UnexpectedEof | Self::TooLarge { .. } => None,
         }
     }
 }
@@ -108,8 +117,23 @@ impl From<std::io::Error> for JunitError {
 /// Returns [`JunitError::Io`] if the file cannot be read, or any other
 /// [`JunitError`] variant the content triggers (see [`parse_str`]).
 pub fn parse_file(path: &Path) -> Result<JunitReport, JunitError> {
+    ensure_within_limit(fs::metadata(path)?.len(), MAX_INPUT_BYTES)?;
     let xml = fs::read_to_string(path)?;
     parse_str(&xml)
+}
+
+/// Largest JUnit-XML report `sooth` will read. Real reports are kilobytes to a
+/// few megabytes; 256 MiB is far above any legitimate report and refuses a
+/// pathological or hostile file before it is read into memory.
+const MAX_INPUT_BYTES: u64 = 256 * 1024 * 1024;
+
+/// Refuse inputs larger than `max` bytes.
+fn ensure_within_limit(bytes: u64, max: u64) -> Result<(), JunitError> {
+    if bytes > max {
+        Err(JunitError::TooLarge { bytes, max })
+    } else {
+        Ok(())
+    }
 }
 
 /// Parse a JUnit-XML report from a string.
@@ -254,7 +278,10 @@ fn mark_status(case: Option<&mut OpenTestCase>, local_tag_name: &[u8]) {
 /// infinite or NaN input, so this guard is load-bearing, not defensive
 /// styling: a `time="-1"` or `time="nan"` in the wild must not crash `sooth`.
 fn parse_seconds(value: &str) -> Duration {
-    match value.trim().parse::<f64>() {
+    // Some non-English locales emit a decimal comma ("12,5"); normalize it so
+    // those durations are not silently dropped to zero and lost from rankings.
+    let normalized = value.trim().replace(',', ".");
+    match normalized.parse::<f64>() {
         Ok(seconds) if seconds.is_finite() && seconds >= 0.0 => Duration::from_secs_f64(seconds),
         _ => Duration::ZERO,
     }
@@ -262,7 +289,7 @@ fn parse_seconds(value: &str) -> Duration {
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_file, parse_str, JunitError, TestStatus};
+    use super::{ensure_within_limit, parse_file, parse_str, JunitError, TestStatus};
     use std::path::Path;
     use std::time::Duration;
 
@@ -406,6 +433,22 @@ mod tests {
             let report = parse_str(&xml).unwrap();
             assert_eq!(report.test_cases[0].duration, Duration::ZERO, "time={time}");
         }
+    }
+
+    #[test]
+    fn a_decimal_comma_time_is_parsed_not_dropped() {
+        let report =
+            parse_str(r#"<testsuite><testcase name="a" time="12,5"/></testsuite>"#).unwrap();
+        assert_eq!(report.test_cases[0].duration, Duration::from_secs_f64(12.5));
+    }
+
+    #[test]
+    fn oversized_input_is_refused_before_reading() {
+        assert!(ensure_within_limit(10, 10).is_ok());
+        assert!(matches!(
+            ensure_within_limit(11, 10),
+            Err(JunitError::TooLarge { bytes: 11, max: 10 })
+        ));
     }
 
     #[test]
