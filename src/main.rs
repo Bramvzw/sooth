@@ -107,7 +107,7 @@ impl JunitSummary {
         }
 
         let mut by_duration: Vec<&junit::TestCase> = report.test_cases.iter().collect();
-        by_duration.sort_by(|a, b| b.duration.cmp(&a.duration));
+        by_duration.sort_by_key(|case| std::cmp::Reverse(case.duration));
 
         Self {
             total: report.test_cases.len(),
