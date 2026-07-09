@@ -32,3 +32,13 @@ jobs:
 
       - name: Test
         run: cargo test
+
+  msrv:
+    name: Build on MSRV (1.80)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.80.0
+      - uses: Swatinem/rust-cache@v2
+      - name: Verify the crate builds on its declared minimum Rust version
+        run: cargo check --all-targets
