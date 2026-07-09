@@ -13,3 +13,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `ROADMAP.md`, `DECISIONS.md`, `SECURITY.md`.
 - `sooth run` CLI skeleton (clap): `--preset`, `--runs`, `--json`, `--slowest`,
   and the test command given after `--`.
+- `sooth run` executes the test command (`--runs` times, fixed order) with
+  inherited stdio and reports each run's exit code and wall-time.
