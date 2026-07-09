@@ -94,3 +94,55 @@ code and wall-clock time per run. It deliberately does not buffer the child's
 output: the structured signal comes from the JUnit XML the runner produces
 (parsed in story #3), not from scraping stdout. Runs execute in a fixed order;
 shuffling for order-dependence is a separate pass (see above).
+
+## `quick-xml` (event-based, not `serde`) for the JUnit parser
+
+There is no real JUnit-XML standard (see above): the union schema `sooth`
+needs is "accept a `<testsuites>` or bare `<testsuite>` root, ignore anything
+unrecognised, default missing/invalid values instead of failing." That shape
+does not map cleanly onto one `#[derive(Deserialize)]` struct — a serde
+mapping would need one shape per dialect plus glue to try each in turn, which
+is more moving parts than the tolerance rules justify. `quick-xml`'s
+event-based `Reader` is used directly instead: a single pass over
+`Event::Start`/`Event::Empty`/`Event::End` tracks a generic nesting depth (to
+detect truncated/unclosed input) and, whenever a `<testcase>` is open, the
+first-seen `<error>`/`<failure>`/`<skipped>` child that outranks whatever was
+already recorded. This is iterative, not recursive, so pathologically deep
+nesting cannot blow the stack — a real fuzz-test concern for a parser that
+promises never to panic. `quick-xml` was chosen over alternatives
+(`xml-rs`, `roxmltree`) for its combination of a pull/event API (fits the
+tolerant single-pass design), MSRV compatible with `sooth`'s 1.80, and no
+required dependencies beyond `memchr`.
+
+A related, non-obvious guard: `Duration::from_secs_f64` panics on negative,
+infinite, or NaN input. A JUnit `time="-1"` or `time="nan"` attribute is
+exactly the kind of malformed-but-plausible input the parser must survive, so
+`time` parsing explicitly checks `is_finite() && >= 0.0` before constructing
+the `Duration`, defaulting to zero otherwise — the same fallback already used
+for a missing `time` attribute.
+
+## Root-element and truncation detection via a depth counter, not tag-name tracking
+
+Accepting both `<testsuites>` and bare `<testsuite>` roots, plus arbitrary
+unknown wrapper elements, means the parser cannot assume a fixed shape for
+"did this input have a real root." Instead it tracks two independent,
+cheap signals over the single event stream: whether a `<testsuite>` or
+`<testsuites>` start/empty tag was ever seen (`MissingRoot` if not — this is
+what turns empty input and non-XML text into an error instead of a silently
+empty report), and a generic open/close depth counter incremented on every
+`Event::Start` and decremented on every `Event::End` regardless of tag name
+(`UnexpectedEof` if it is non-zero at `Event::Eof` — this is what turns
+truncated XML into an error instead of a partial, silently-accepted report).
+Neither check depends on `quick-xml`'s own leniency about unmatched tags at
+end-of-input, which is what makes truncation detection reliable.
+
+## Hand-rolled JSON for `sooth run --junit --json`, not `serde_json`
+
+Report output: colored terminal table + `--json` is its own later story
+(general reporting for every `sooth run`). This story only needs to honor
+`--json` for the JUnit summary it adds, and that shape is small and fixed
+(run outcomes, totals, a list of `{name, duration_seconds}`). Adding
+`serde_json` for one story's narrow, fixed-shape output is not worth a second
+serialization dependency; a small hand-rolled formatter (with a dedicated
+`json_escape` for names) covers it. This is revisited once the general
+`--json` report lands.
