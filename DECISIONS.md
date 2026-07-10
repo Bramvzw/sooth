@@ -82,9 +82,10 @@ GitHub-native:
 The CLI uses `clap`'s derive API. The wrapped test command is captured as a
 trailing argument list after `--` (`sooth run -- pytest -k foo`), modeled with
 clap's `last = true`. This keeps sooth's own flags (`--preset`, `--runs`, …)
-unambiguous from the flags of the command it wraps. Until the runner lands
-(story #2), `sooth run` only echoes the parsed plan so the CLI surface is
-testable now without spawning a process.
+unambiguous from the flags of the command it wraps. Flags that parse but are
+not implemented yet (`--preset`, `--json`, `--slowest`) fail with a clear "not
+implemented yet" error instead of being silently ignored — a tool whose brand
+is telling the truth must not pretend to honor a flag.
 
 ## The runner inherits the child's stdio and captures only exit status + time
 
@@ -109,3 +110,11 @@ friends) export `RUSTUP_TOOLCHAIN`, and that environment variable overrides
 stable despite the pin. The main CI jobs therefore avoid toolchain actions;
 the MSRV job keeps one (`@1.80.0`) precisely because that override is what an
 MSRV check needs.
+
+## Exit codes distinguish "the tests failed" from "sooth failed"
+
+`sooth run` exits `0` when every run passed, `1` when at least one run failed,
+and `2` when sooth itself could not do its job (the command could not be
+spawned, or a flag is not implemented yet). Grep-style: CI can tell a red
+suite apart from a broken invocation. Fixed before v0.1 so the codes never
+have to change under users' feet.
