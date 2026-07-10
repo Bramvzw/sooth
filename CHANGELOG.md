@@ -24,6 +24,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   run failed, `2` sooth itself failed (spawn error, unimplemented flag).
 - `--preset`, `--json` and `--slowest` fail with a "not implemented yet" error
   instead of being silently ignored until they land in v0.1.
+- The crate description no longer advertises cut or post-v1 features
+  (assertionless-test detection, network egress).
 
 ### Fixed
 
