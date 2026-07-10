@@ -82,9 +82,10 @@ GitHub-native:
 The CLI uses `clap`'s derive API. The wrapped test command is captured as a
 trailing argument list after `--` (`sooth run -- pytest -k foo`), modeled with
 clap's `last = true`. This keeps sooth's own flags (`--preset`, `--runs`, …)
-unambiguous from the flags of the command it wraps. Until the runner lands
-(story #2), `sooth run` only echoes the parsed plan so the CLI surface is
-testable now without spawning a process.
+unambiguous from the flags of the command it wraps. Flags that parse but are
+not implemented yet (`--preset`, `--json`, `--slowest`) fail with a clear "not
+implemented yet" error instead of being silently ignored — a tool whose brand
+is telling the truth must not pretend to honor a flag.
 
 ## The runner inherits the child's stdio and captures only exit status + time
 
@@ -94,6 +95,29 @@ code and wall-clock time per run. It deliberately does not buffer the child's
 output: the structured signal comes from the JUnit XML the runner produces
 (parsed in story #3), not from scraping stdout. Runs execute in a fixed order;
 shuffling for order-dependence is a separate pass (see above).
+
+## Pinned Rust toolchain instead of rolling `stable`
+
+`rust-toolchain.toml` pins an exact version (e.g. `1.96.1`) rather than
+`stable`. Under `clippy -D warnings`, every new stable Rust can introduce lints
+that fail CI on a change that didn't cause them (this bit us once already).
+Pinning makes CI reproducible and turns a toolchain upgrade into a deliberate,
+reviewable bump. The file is the single place to change: local builds pick it
+up automatically, and CI installs it explicitly with a bare `rustup toolchain
+install`. Caveat that bit us: toolchain actions (`dtolnay/rust-toolchain` and
+friends) export `RUSTUP_TOOLCHAIN`, and that environment variable overrides
+`rust-toolchain.toml` — with the action at `@stable`, CI silently ran rolling
+stable despite the pin. The main CI jobs therefore avoid toolchain actions;
+the MSRV job keeps one (`@1.80.0`) precisely because that override is what an
+MSRV check needs.
+
+## Exit codes distinguish "the tests failed" from "sooth failed"
+
+`sooth run` exits `0` when every run passed, `1` when at least one run failed,
+and `2` when sooth itself could not do its job (the command could not be
+spawned, the report could not be parsed, or a flag cannot be honored yet).
+Grep-style: CI can tell a red suite apart from a broken invocation. Fixed
+before v0.1 so the codes never have to change under users' feet.
 
 ## `quick-xml` (event-based, not `serde`) for the JUnit parser
 

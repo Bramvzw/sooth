@@ -1,6 +1,6 @@
 //! Runs the test command as a subprocess and records how each run went.
 
-use std::process::Command;
+use std::process::{Command, ExitStatus};
 use std::time::{Duration, Instant};
 
 /// The outcome of a single execution of the test command.
@@ -8,6 +8,8 @@ use std::time::{Duration, Instant};
 pub struct RunOutcome {
     /// Process exit code, or `None` if the process was terminated by a signal.
     pub exit_code: Option<i32>,
+    /// Signal that terminated the process, if any (always `None` off Unix).
+    pub signal: Option<i32>,
     /// Whether the process exited successfully (exit code `0`).
     pub success: bool,
     /// Wall-clock time the run took.
@@ -36,6 +38,7 @@ pub fn run(command: &[String], runs: u32) -> std::io::Result<Vec<RunOutcome>> {
         let status = Command::new(program).args(rest).status()?;
         outcomes.push(RunOutcome {
             exit_code: status.code(),
+            signal: signal_of(status),
             success: status.success(),
             duration: start.elapsed(),
         });
@@ -43,10 +46,27 @@ pub fn run(command: &[String], runs: u32) -> std::io::Result<Vec<RunOutcome>> {
     Ok(outcomes)
 }
 
+/// The signal that terminated the process, if any.
+fn signal_of(status: ExitStatus) -> Option<i32> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::ExitStatusExt;
+        status.signal()
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = status;
+        None
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::run;
 
+    // `true`, `false`, `sh` and signals only exist on Unix; the runner itself
+    // is portable. Revisit when the CI matrix grows beyond Linux (ROADMAP.md).
+    #[cfg(unix)]
     #[test]
     fn records_success_for_a_zero_exit_command() {
         let outcomes = run(&["true".to_owned()], 2).unwrap();
@@ -55,11 +75,22 @@ mod tests {
         assert_eq!(outcomes[0].exit_code, Some(0));
     }
 
+    #[cfg(unix)]
     #[test]
     fn records_failure_for_a_nonzero_exit_command() {
         let outcomes = run(&["false".to_owned()], 1).unwrap();
         assert!(!outcomes[0].success);
         assert_eq!(outcomes[0].exit_code, Some(1));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn records_the_signal_when_the_process_is_killed() {
+        let command = ["sh", "-c", "kill -TERM $$"].map(String::from);
+        let outcomes = run(&command, 1).unwrap();
+        assert!(!outcomes[0].success);
+        assert_eq!(outcomes[0].exit_code, None);
+        assert_eq!(outcomes[0].signal, Some(15)); // SIGTERM
     }
 
     #[test]

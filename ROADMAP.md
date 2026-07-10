@@ -43,5 +43,6 @@ brings it in scope:
   not milestone 1).
 - 3-OS CI matrix — once the network-egress spike starts (the day-1 product is
   portable and Linux-only CI is sufficient until then).
-- `CONTRIBUTING.md` / `CODE_OF_CONDUCT.md` / issue & PR templates / Dependabot
-  — once there is a first external contributor.
+- `CODE_OF_CONDUCT.md` / issue templates — once there is a first external
+  contributor (`CONTRIBUTING.md`, the PR template and Dependabot already
+  landed).

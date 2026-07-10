@@ -30,13 +30,13 @@ pub struct RunArgs {
     #[arg(long, default_value_t = 1, value_parser = clap::value_parser!(u32).range(1..))]
     pub runs: u32,
 
-    /// Emit machine-readable JSON instead of a table.
+    /// Emit machine-readable JSON instead of plain text (requires --junit).
     #[arg(long)]
     pub json: bool,
 
-    /// How many of the slowest tests to show.
-    #[arg(long, default_value_t = 10)]
-    pub slowest: usize,
+    /// How many of the slowest tests to show (default 10; requires --junit).
+    #[arg(long)]
+    pub slowest: Option<usize>,
 
     /// Path to a JUnit-XML report produced by the test command. When given,
     /// sooth parses it after the run and reports totals, status counts, and
@@ -69,7 +69,7 @@ mod tests {
         let Command::Run(args) = parsed.command;
         assert_eq!(args.command, ["pytest", "-k", "foo"].map(String::from));
         assert_eq!(args.runs, 1);
-        assert_eq!(args.slowest, 10);
+        assert_eq!(args.slowest, None);
         assert_eq!(args.preset, None);
         assert!(!args.json);
         assert_eq!(args.junit, None);
@@ -94,7 +94,7 @@ mod tests {
         let Command::Run(args) = parsed.command;
         assert_eq!(args.preset, Some(Preset::Pytest));
         assert_eq!(args.runs, 5);
-        assert_eq!(args.slowest, 3);
+        assert_eq!(args.slowest, Some(3));
         assert!(args.json);
     }
 

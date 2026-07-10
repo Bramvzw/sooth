@@ -1,4 +1,8 @@
 //! `sooth` — the truth about your tests.
+//!
+//! Exit codes distinguish whose fault a failure is (grep-style):
+//! `0` — every run passed; `1` — at least one run failed;
+//! `2` — sooth itself failed (spawn error, unparsable report, bad flags).
 
 mod cli;
 mod junit;
@@ -12,6 +16,13 @@ use clap::Parser;
 
 use crate::cli::{Cli, Command};
 
+/// Exit code for "sooth itself failed", as opposed to "the tests failed" (1).
+const EXIT_SOOTH_ERROR: u8 = 2;
+
+/// How many of the slowest tests the summary shows when `--slowest` is not
+/// given.
+const DEFAULT_SLOWEST: usize = 10;
+
 fn main() -> ExitCode {
     let parsed = Cli::parse();
     match parsed.command {
@@ -24,24 +35,32 @@ fn main() -> ExitCode {
 /// and the slowest tests. Without `--junit` the output is unchanged from the
 /// plain per-run report.
 fn run(args: &cli::RunArgs) -> ExitCode {
+    if let Some(reason) = rejected_flag(args) {
+        eprintln!("sooth: {reason}");
+        return ExitCode::from(EXIT_SOOTH_ERROR);
+    }
+
     let outcomes = match runner::run(&args.command, args.runs) {
         Ok(outcomes) => outcomes,
         Err(err) => {
             let program = &args.command[0];
             eprintln!("sooth: failed to run `{program}`: {err}");
-            return ExitCode::FAILURE;
+            return ExitCode::from(EXIT_SOOTH_ERROR);
         }
     };
 
     let junit_summary = match &args.junit {
         Some(path) => match junit::parse_file(path) {
-            Ok(parsed) => Some(JunitSummary::from_report(&parsed, args.slowest)),
+            Ok(parsed) => Some(JunitSummary::from_report(
+                &parsed,
+                args.slowest.unwrap_or(DEFAULT_SLOWEST),
+            )),
             Err(err) => {
                 eprintln!(
                     "sooth: failed to parse JUnit-XML report `{}`: {err}",
                     path.display()
                 );
-                return ExitCode::FAILURE;
+                return ExitCode::from(EXIT_SOOTH_ERROR);
             }
         },
         None => None,
@@ -53,9 +72,7 @@ fn run(args: &cli::RunArgs) -> ExitCode {
             report(&outcomes);
             print_junit_summary(summary);
         }
-        None => {
-            report(&outcomes);
-        }
+        None => report(&outcomes),
     }
 
     if outcomes.iter().all(|outcome| outcome.success) {
@@ -65,13 +82,37 @@ fn run(args: &cli::RunArgs) -> ExitCode {
     }
 }
 
+/// A flag `sooth` cannot honor, if any. Rejecting loudly beats silently
+/// ignoring — this tool's brand is the truth. `--preset` is not implemented
+/// yet; `--json` and `--slowest` only mean something once there is a report
+/// to summarize, so they require `--junit` until presets locate the report
+/// automatically.
+fn rejected_flag(args: &cli::RunArgs) -> Option<&'static str> {
+    if args.preset.is_some() {
+        return Some("`--preset` is not implemented yet (lands in v0.1)");
+    }
+    if args.junit.is_none() {
+        if args.json {
+            return Some("`--json` requires `--junit <PATH>` (presets locate the report in v0.1)");
+        }
+        if args.slowest.is_some() {
+            return Some(
+                "`--slowest` requires `--junit <PATH>` (presets locate the report in v0.1)",
+            );
+        }
+    }
+    None
+}
+
 /// Print a per-run line for each outcome.
 fn report(outcomes: &[runner::RunOutcome]) {
     let total = outcomes.len();
     for (index, outcome) in outcomes.iter().enumerate() {
-        let code = outcome
-            .exit_code
-            .map_or_else(|| "signal".to_owned(), |code| code.to_string());
+        let code = match (outcome.exit_code, outcome.signal) {
+            (Some(code), _) => code.to_string(),
+            (None, Some(signal)) => format!("signal {signal}"),
+            (None, None) => "signal".to_owned(),
+        };
         println!(
             "run {}/{total}: exit={code} ({:.2?})",
             index + 1,
@@ -204,17 +245,26 @@ fn json_escape(value: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{json_escape, report, to_json, JunitSummary};
+    use super::{json_escape, rejected_flag, report, to_json, JunitSummary};
+    use crate::cli::{Cli, Command};
     use crate::junit::{JunitReport, TestCase, TestStatus};
     use crate::runner::RunOutcome;
+    use clap::Parser;
     use std::time::Duration;
 
     fn outcome(success: bool) -> RunOutcome {
         RunOutcome {
             exit_code: Some(i32::from(!success)),
+            signal: None,
             success,
             duration: Duration::from_millis(1),
         }
+    }
+
+    fn parse_run_args(cmdline: &[&str]) -> crate::cli::RunArgs {
+        let parsed = Cli::try_parse_from(cmdline).unwrap();
+        let Command::Run(args) = parsed.command;
+        args
     }
 
     #[test]
@@ -282,5 +332,46 @@ mod tests {
         );
         assert_eq!(json_escape("tab\tnewline\n"), "tab\\tnewline\\n");
         assert_eq!(json_escape("bell\u{7}"), "bell\\u0007");
+    }
+
+    #[test]
+    fn a_plain_run_uses_no_rejected_flags() {
+        let args = parse_run_args(&["sooth", "run", "--runs", "3", "--", "true"]);
+        assert_eq!(rejected_flag(&args), None);
+    }
+
+    #[test]
+    fn json_and_slowest_are_accepted_together_with_junit() {
+        let args = parse_run_args(&[
+            "sooth",
+            "run",
+            "--junit",
+            "r.xml",
+            "--json",
+            "--slowest",
+            "3",
+            "--",
+            "true",
+        ]);
+        assert_eq!(rejected_flag(&args), None);
+    }
+
+    #[test]
+    fn preset_and_reportless_flags_are_rejected() {
+        for (cmdline, fragment) in [
+            (
+                vec!["sooth", "run", "--preset", "pytest", "--", "true"],
+                "--preset",
+            ),
+            (vec!["sooth", "run", "--json", "--", "true"], "--json"),
+            (
+                vec!["sooth", "run", "--slowest", "3", "--", "true"],
+                "--slowest",
+            ),
+        ] {
+            let args = parse_run_args(&cmdline);
+            let reason = rejected_flag(&args).expect("flag should be rejected");
+            assert!(reason.contains(fragment), "{reason} should name {fragment}");
+        }
     }
 }

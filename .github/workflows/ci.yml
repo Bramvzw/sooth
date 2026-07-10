@@ -7,7 +7,9 @@ on:
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  # Never cancel runs on main: a fast follow-up merge would otherwise leave
+  # the earlier merge commit without a CI result.
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
   test:
@@ -16,10 +18,11 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7
 
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt, clippy
+      # A bare `rustup toolchain install` reads rust-toolchain.toml (version
+      # AND components). Deliberately not a toolchain action: those export
+      # RUSTUP_TOOLCHAIN, which overrides the pin in rust-toolchain.toml.
+      - name: Install Rust toolchain (pinned by rust-toolchain.toml)
+        run: rustup toolchain install
 
       - name: Cache cargo registry and build artifacts
         uses: Swatinem/rust-cache@v2
@@ -38,6 +41,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+      # The action exports RUSTUP_TOOLCHAIN=1.80.0, which overrides the
+      # rust-toolchain.toml pin — exactly what this job needs.
       - uses: dtolnay/rust-toolchain@1.80.0
       - uses: Swatinem/rust-cache@v2
       - name: Verify the crate builds on its declared minimum Rust version

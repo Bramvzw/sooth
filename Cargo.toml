@@ -3,7 +3,7 @@ name = "sooth"
 version = "0.0.0"
 edition = "2021"
 rust-version = "1.80"
-description = "The truth about your tests — a local, framework-agnostic test-suite observer (flaky, slow, order-dependent, assertionless, and secret network calls). Work in progress."
+description = "The truth about your tests — a local test-suite observer that finds flaky, slow, and order-dependent tests. Work in progress."
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/bramvzw/sooth"
 homepage = "https://github.com/bramvzw/sooth"
@@ -24,4 +24,6 @@ unsafe_code = "deny"
 
 [lints.clippy]
 all = { level = "deny", priority = -1 }
-pedantic = { level = "warn", priority = -1 }
+# deny, not warn: CI runs `-D warnings`, so pedantic already fails the build
+# there — a plain local `cargo clippy` should agree with CI.
+pedantic = { level = "deny", priority = -1 }

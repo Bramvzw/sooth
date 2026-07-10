@@ -1,3 +1,10 @@
 [toolchain]
-channel = "stable"
+# Pinned to an exact version (not "stable") so CI lints are reproducible: a new
+# stable Rust can add clippy lints that break CI on an unrelated PR under
+# `-D warnings`. Local builds pick this file up automatically; CI installs it
+# explicitly with a bare `rustup toolchain install`. Note: toolchain actions
+# (dtolnay/rust-toolchain and friends) export RUSTUP_TOOLCHAIN, which OVERRIDES
+# this file — only the MSRV job uses one, precisely for that override. To
+# upgrade: bump the version deliberately, then `make check`.
+channel = "1.96.1"
 components = ["rustfmt", "clippy"]

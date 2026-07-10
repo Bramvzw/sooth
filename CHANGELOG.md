@@ -21,3 +21,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `sooth run --junit <PATH>` parses that report after the run and extends
   the output with total/passed/failed/error/skipped counts and the slowest
   `--slowest` tests; `--json` emits this as JSON alongside the run outcomes.
+- On Unix, a run terminated by a signal reports the signal number instead of a
+  bare "signal".
+
+### Changed
+
+- Exit codes now distinguish outcomes: `0` all runs passed, `1` at least one
+  run failed, `2` sooth itself failed (spawn error, unparsable report, bad
+  flags).
+- Flags sooth cannot honor fail loudly instead of being silently ignored:
+  `--preset` is not implemented yet, and `--json`/`--slowest` require
+  `--junit` until presets locate the report automatically.
+- The crate description no longer advertises cut or post-v1 features
+  (assertionless-test detection, network egress).
+
+### Fixed
+
+- CI now actually uses the toolchain pinned in `rust-toolchain.toml`: the
+  toolchain action exported `RUSTUP_TOOLCHAIN`, which silently overrode the
+  pin with rolling `stable`.
+- The release workflow verifies the tag matches the crate version and
+  publishes via crates.io Trusted Publishing (OIDC) instead of a long-lived
+  `CARGO_REGISTRY_TOKEN` secret.
