@@ -101,6 +101,11 @@ shuffling for order-dependence is a separate pass (see above).
 `stable`. Under `clippy -D warnings`, every new stable Rust can introduce lints
 that fail CI on a change that didn't cause them (this bit us once already).
 Pinning makes CI reproducible and turns a toolchain upgrade into a deliberate,
-reviewable bump. The file is authoritative for both local `make check` and CI —
-rustup honors it over the action-installed toolchain — so it is the single
-place to change.
+reviewable bump. The file is the single place to change: local builds pick it
+up automatically, and CI installs it explicitly with a bare `rustup toolchain
+install`. Caveat that bit us: toolchain actions (`dtolnay/rust-toolchain` and
+friends) export `RUSTUP_TOOLCHAIN`, and that environment variable overrides
+`rust-toolchain.toml` — with the action at `@stable`, CI silently ran rolling
+stable despite the pin. The main CI jobs therefore avoid toolchain actions;
+the MSRV job keeps one (`@1.80.0`) precisely because that override is what an
+MSRV check needs.
