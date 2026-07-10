@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites>
+  <testsuite name="Project Test Suite" tests="2" assertions="2" errors="1" failures="0" skipped="0" time="0.456123">
+    <testsuite name="Tests\Unit\CalculatorTest" tests="2" assertions="2" errors="1" failures="0" skipped="0" time="0.456123">
+      <testcase name="testAddsTwoNumbers" class="Tests\Unit\CalculatorTest" classname="Tests.Unit.CalculatorTest" file="/app/tests/Unit/CalculatorTest.php" line="12" assertions="1" time="0.123456"/>
+      <testcase name="testDivisionByZeroThrows" class="Tests\Unit\CalculatorTest" classname="Tests.Unit.CalculatorTest" file="/app/tests/Unit/CalculatorTest.php" line="20" assertions="1" time="0.332667">
+        <error type="DivisionByZeroError" message="Division by zero">Tests\Unit\CalculatorTest::testDivisionByZeroThrows
+Division by zero
+</error>
+      </testcase>
+    </testsuite>
+  </testsuite>
+</testsuites>

@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="github.com/example/project" tests="3" failures="1" errors="0" skipped="0" time="0.021">
+  <testcase classname="github.com/example/project" name="TestAdd" time="0.001"/>
+  <testcase classname="github.com/example/project" name="TestSubtract" time="0.002"/>
+  <testcase classname="github.com/example/project" name="TestDivideByZero" time="0.003">
+    <failure message="Failed">panic: division by zero
+</failure>
+  </testcase>
+</testsuite>
