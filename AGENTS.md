@@ -35,9 +35,9 @@ One task per module. Do not add empty placeholder modules ahead of the code that
 
 ## Commit convention
 
-`PREFIX: imperative English description`. Allowed prefixes: `FEAT FIX CHORE DOCS OPS CI SECURITY
-REFACTOR PERF TEST STYLE`. Enforced by the tracked `commit-msg` hook (`.githooks/`, install it with
-`make setup`) and by `bin/lint-commit-message.sh`. One concern per commit. The full branch → PR → review → merge workflow lives in `CONTRIBUTING.md`.
+`PREFIX: imperative English description`, one concern per commit. The allowed prefixes, the full
+branch → PR → review → merge workflow, and the definition of done live in `CONTRIBUTING.md` —
+enforced by the tracked `commit-msg` hook (`make setup`) and `bin/lint-commit-message.sh`.
 
 ## Where information lives
 
@@ -51,19 +51,10 @@ One durable home per fact — link to it instead of restating it:
 - No "starting work" comments, and never restate in a comment what the issue body, PR body, or
   `DECISIONS.md` already says — assign yourself to the issue instead.
 
-## Definition of done
+## Verification & definition of done
 
-- [ ] Behavior change has a test covering it.
-- [ ] A line was added under `## [Unreleased]` in `CHANGELOG.md`.
-- [ ] `cargo clippy --all-targets -- -D warnings` is clean — no `#[allow]` without a comment
-      explaining why.
-- [ ] Docs (`README.md`, `AGENTS.md`) are updated if the change alters documented behavior.
-
-## Verification
-
-```
-make check   # cargo fmt --check + cargo clippy --all-targets -- -D warnings + cargo test
-```
+Run `make check` (fmt + clippy `-D warnings` + tests) before claiming done. The full definition
+of done — test coverage, `CHANGELOG.md`, `DECISIONS.md`, docs — lives in `CONTRIBUTING.md`.
 
 ## Non-goals / forbidden
 

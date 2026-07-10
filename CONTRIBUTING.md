@@ -29,14 +29,14 @@ maintainer follows, so quality and security stay consistent.
 by the `commit-msg` hook and in CI by the PR-title check. Reference an issue
 with `(#n)` only when it adds clarity; `Closes #n` in the PR body is enough.
 
-## Quality gate
+## Definition of done (quality gate)
 
-```
-make check   # cargo fmt --check + cargo clippy --all-targets -- -D warnings + cargo test
-```
-
-`clippy` runs with `-D warnings`: no `#[allow]` without a comment saying why.
-`unsafe` code is denied crate-wide. Every behaviour change ships with a test.
+- [ ] Behaviour change has a test covering it.
+- [ ] A line was added under `## [Unreleased]` in `CHANGELOG.md`.
+- [ ] `make check` is green: `cargo fmt --check` + `cargo clippy --all-targets -- -D warnings`
+      + `cargo test`. No `#[allow]` without a comment saying why; `unsafe` is denied crate-wide.
+- [ ] `DECISIONS.md` updated for any non-obvious choice.
+- [ ] Docs (`README.md`, `AGENTS.md`) updated if documented behaviour changed.
 
 ## Security
 

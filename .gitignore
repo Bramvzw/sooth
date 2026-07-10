@@ -5,3 +5,6 @@
 .DS_Store
 .idea/
 .vscode/
+
+# AI-tooling session state
+.omc/
