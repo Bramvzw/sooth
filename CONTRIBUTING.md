@@ -6,7 +6,9 @@ maintainer follows, so quality and security stay consistent.
 ## Development workflow
 
 1. **Pick a story.** Work is tracked as GitHub issues under an epic and a
-   milestone (see `ROADMAP.md`). Comment on the issue if you're starting it.
+   milestone (see `ROADMAP.md`). Assign yourself so work isn't duplicated —
+   no "starting work" comment needed (see "Where information lives" in
+   `AGENTS.md`).
 2. **Branch:** `story/<n>-<short-slug>` (or `chore/…`, `fix/…`) off `main`.
 3. **Build:** code **plus** a test for the behaviour, a line under
    `## [Unreleased]` in `CHANGELOG.md`, and — for any non-obvious choice — an

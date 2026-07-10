@@ -39,6 +39,18 @@ One task per module. Do not add empty placeholder modules ahead of the code that
 REFACTOR PERF TEST STYLE`. Enforced by the tracked `commit-msg` hook (`.githooks/`, install it with
 `make setup`) and by `bin/lint-commit-message.sh`. One concern per commit. The full branch → PR → review → merge workflow lives in `CONTRIBUTING.md`.
 
+## Where information lives
+
+One durable home per fact — link to it instead of restating it:
+
+- **Why a non-obvious choice was made** → `DECISIONS.md`. The only place rationale must live.
+- **What a story is** → the issue body. When scope changes before work starts, edit the body; a
+  comment is only for a scope/design change worth an audit trail (e.g. "#49 reshapes this story").
+- **What a PR changes and why** → the PR body. It survives the squash-merge; branch commit
+  messages do not. Review outcomes and merge-resolution notes go in PR comments.
+- No "starting work" comments, and never restate in a comment what the issue body, PR body, or
+  `DECISIONS.md` already says — assign yourself to the issue instead.
+
 ## Definition of done
 
 - [ ] Behavior change has a test covering it.
