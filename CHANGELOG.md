@@ -21,3 +21,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - CI now actually uses the toolchain pinned in `rust-toolchain.toml`: the
   toolchain action exported `RUSTUP_TOOLCHAIN`, which silently overrode the
   pin with rolling `stable`.
+- The release workflow verifies the tag matches the crate version and
+  publishes via crates.io Trusted Publishing (OIDC) instead of a long-lived
+  `CARGO_REGISTRY_TOKEN` secret.
