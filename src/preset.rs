@@ -1,7 +1,9 @@
 //! Built-in presets: inject the right reporter flags into the wrapped test
 //! command so it writes a JUnit-XML report sooth can parse.
 
+use std::io;
 use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::cli::Preset;
 
@@ -12,10 +14,46 @@ struct Injection {
     envs: Vec<(String, String)>,
 }
 
-/// Where a preset-managed report goes: a per-process file in the system temp
-/// directory, overwritten on every run and removed after parsing.
-pub fn report_path() -> PathBuf {
-    std::env::temp_dir().join(format!("sooth-junit-{}.xml", std::process::id()))
+/// Create a fresh, private directory for a preset-managed report and return
+/// the report path inside it.
+///
+/// Fresh-per-invocation is a truthfulness guard: a stale report left behind
+/// by an earlier run (crashed before cleanup) must never be parsed as this
+/// run's result. Private (mode 0700 on Unix) with an unpredictable name
+/// closes the classic shared-`/tmp` pre-creation/symlink trick.
+///
+/// # Errors
+///
+/// Returns the underlying I/O error if no directory can be created.
+pub fn report_path() -> io::Result<PathBuf> {
+    let base = std::env::temp_dir();
+    let pid = std::process::id();
+    for attempt in 0..32 {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |since| since.subsec_nanos());
+        let dir = base.join(format!("sooth-{pid}-{nanos}-{attempt}"));
+        match create_private_dir(&dir) {
+            Ok(()) => return Ok(dir.join("report.xml")),
+            // Collision: someone (or a previous iteration) got there first.
+            Err(err) if err.kind() == io::ErrorKind::AlreadyExists => {}
+            Err(err) => return Err(err),
+        }
+    }
+    Err(io::Error::new(
+        io::ErrorKind::AlreadyExists,
+        "could not create a unique temp directory for the report",
+    ))
+}
+
+fn create_private_dir(dir: &Path) -> io::Result<()> {
+    let mut builder = std::fs::DirBuilder::new();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        builder.mode(0o700);
+    }
+    builder.create(dir)
 }
 
 /// The full command to spawn and the environment to add: the user's program,
@@ -67,9 +105,32 @@ fn injection(preset: Preset, report: &Path) -> Injection {
 
 #[cfg(test)]
 mod tests {
-    use super::inject;
+    use super::{inject, report_path};
     use crate::cli::Preset;
     use std::path::Path;
+
+    #[test]
+    fn report_paths_are_fresh_private_directories() {
+        let first = report_path().unwrap();
+        let second = report_path().unwrap();
+
+        // Fresh per invocation: a stale report from an earlier run can never
+        // be parsed as this run's result.
+        assert_ne!(first, second);
+        assert!(!first.exists());
+
+        let dir = first.parent().expect("report lives inside its own dir");
+        assert!(dir.is_dir());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(dir).unwrap().permissions().mode();
+            assert_eq!(mode & 0o777, 0o700);
+        }
+
+        let _ = std::fs::remove_dir(dir);
+        let _ = std::fs::remove_dir(second.parent().unwrap());
+    }
 
     fn command(parts: &[&str]) -> Vec<String> {
         parts.iter().map(|part| (*part).to_owned()).collect()

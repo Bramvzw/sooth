@@ -26,8 +26,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Presets are wired up: `--preset pytest|phpunit|jest|go` injects the right
   reporter flags (pytest `--junit-xml`, PHPUnit `--log-junit`, gotestsum
   `--junitfile`, Jest `--reporters` + `JEST_JUNIT_OUTPUT_FILE`), has the
-  runner write to a temp report, parses it after the run, and cleans it up.
-  `--preset` conflicts with `--junit`.
+  runner write into a fresh private temp directory, parses the report after
+  the run, and cleans it up. A preset run that produces no report fails with
+  an actionable hint (reporter missing, or the command is a wrapper instead
+  of the runner itself). `--preset` conflicts with `--junit`.
 
 ### Changed
 

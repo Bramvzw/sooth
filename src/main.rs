@@ -44,7 +44,13 @@ fn run(args: &cli::RunArgs) -> ExitCode {
 
     let (command, envs, report_source) = match args.preset {
         Some(chosen) => {
-            let path = preset::report_path();
+            let path = match preset::report_path() {
+                Ok(path) => path,
+                Err(err) => {
+                    eprintln!("sooth: failed to create a temp directory for the report: {err}");
+                    return ExitCode::from(EXIT_SOOTH_ERROR);
+                }
+            };
             let (command, envs) = preset::inject(&args.command, chosen, &path);
             (command, envs, Some(path))
         }
@@ -62,23 +68,22 @@ fn run(args: &cli::RunArgs) -> ExitCode {
 
     let junit_summary = match &report_source {
         Some(path) => {
-            let parsed = junit::parse_file(path);
+            let preset_program = args.preset.map(|_| command[0].as_str());
+            let loaded = load_summary(
+                path,
+                preset_program,
+                args.slowest.unwrap_or(DEFAULT_SLOWEST),
+            );
             if args.preset.is_some() {
-                // Best-effort cleanup of the preset's temp report — the parse
-                // result is already in memory. A user's own --junit file is
-                // never removed.
-                let _ = std::fs::remove_file(path);
+                // Best-effort cleanup of the preset's private report dir —
+                // the parse result is already in memory. A user's own --junit
+                // file is never removed.
+                cleanup_preset_report(path);
             }
-            match parsed {
-                Ok(parsed) => Some(JunitSummary::from_report(
-                    &parsed,
-                    args.slowest.unwrap_or(DEFAULT_SLOWEST),
-                )),
-                Err(err) => {
-                    eprintln!(
-                        "sooth: failed to parse JUnit-XML report `{}`: {err}",
-                        path.display()
-                    );
+            match loaded {
+                Ok(summary) => Some(summary),
+                Err(message) => {
+                    eprintln!("sooth: {message}");
                     return ExitCode::from(EXIT_SOOTH_ERROR);
                 }
             }
@@ -116,6 +121,41 @@ fn rejected_flag(args: &cli::RunArgs) -> Option<&'static str> {
         }
     }
     None
+}
+
+/// Load and summarize the JUnit-XML report at `path`. `preset_program` is the
+/// wrapped program name when the report is preset-managed — used to turn "no
+/// report was written" into an actionable message instead of a parse error
+/// about a temp path the user never chose.
+fn load_summary(
+    path: &std::path::Path,
+    preset_program: Option<&str>,
+    slowest: usize,
+) -> Result<JunitSummary, String> {
+    if let Some(program) = preset_program {
+        if !path.exists() {
+            return Err(format!(
+                "the test command wrote no JUnit-XML report — is the reporter available, \
+                 and is `{program}` the test runner itself rather than a wrapper like \
+                 `python -m`, `npm` or `php artisan`?"
+            ));
+        }
+    }
+    match junit::parse_file(path) {
+        Ok(parsed) => Ok(JunitSummary::from_report(&parsed, slowest)),
+        Err(err) => Err(format!(
+            "failed to parse JUnit-XML report `{}`: {err}",
+            path.display()
+        )),
+    }
+}
+
+/// Best-effort removal of a preset's private report directory (file + dir).
+fn cleanup_preset_report(path: &std::path::Path) {
+    let _ = std::fs::remove_file(path);
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::remove_dir(dir);
+    }
 }
 
 /// Print a per-run line for each outcome.
@@ -384,6 +424,26 @@ mod tests {
             "pytest",
         ]);
         assert_eq!(rejected_flag(&args), None);
+    }
+
+    #[test]
+    fn a_preset_run_that_writes_no_report_gets_an_actionable_error() {
+        let missing = std::env::temp_dir().join("sooth-test-no-such-report.xml");
+        let message = super::load_summary(&missing, Some("pytest"), 10)
+            .err()
+            .expect("a missing preset report should error");
+        assert!(message.contains("wrote no JUnit-XML report"));
+        assert!(message.contains("pytest"));
+    }
+
+    #[test]
+    fn a_missing_user_junit_file_reports_the_path() {
+        let missing = std::env::temp_dir().join("sooth-test-no-such-report.xml");
+        let message = super::load_summary(&missing, None, 10)
+            .err()
+            .expect("a missing --junit file should error");
+        assert!(message.contains("failed to parse"));
+        assert!(message.contains("sooth-test-no-such-report.xml"));
     }
 
     #[test]

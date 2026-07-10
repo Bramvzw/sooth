@@ -24,10 +24,13 @@ pub enum Command {
 pub struct RunArgs {
     /// Built-in preset for a known test runner: injects the right reporter
     /// flags and reads the report it writes (mutually exclusive with --junit).
+    /// The command after `--` must be the runner itself (pytest, phpunit,
+    /// jest, gotestsum) — not a wrapper like `python -m pytest` or `npm test`.
     #[arg(long, value_enum, conflicts_with = "junit")]
     pub preset: Option<Preset>,
 
-    /// How many times to run the suite (fixed order; flaky detection lands in v0.2).
+    /// How many times to run the suite (fixed order; flaky detection lands in
+    /// v0.2). With a report source, the report summary reflects the final run.
     #[arg(long, default_value_t = 1, value_parser = clap::value_parser!(u32).range(1..))]
     pub runs: u32,
 

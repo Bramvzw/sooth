@@ -216,9 +216,21 @@ configuration from the environment), and `--reporters=default` is injected
 alongside `--reporters=jest-junit` so the console output the user knows stays
 intact — the runner keeps inherited stdio (see above).
 
-The report itself goes to a per-process file in the system temp directory and
-is best-effort removed after parsing; a user's own `--junit` file is never
-touched. `--preset` and `--junit` are mutually exclusive (clap
-`conflicts_with`): a preset manages its own report, and pointing sooth at a
-second file at the same time is contradictory input. clap usage errors exit 2,
-matching the exit-code contract.
+The report goes into a fresh, private per-invocation directory under the
+system temp dir (mode 0700 on Unix, unpredictable name). Fresh, because a
+stale report left behind by a crashed earlier run must never be parsed as this
+run's truth; private, because the classic shared-`/tmp` pre-creation/symlink
+trick must find no predictable target. The directory is best-effort removed
+after parsing; a user's own `--junit` file is never touched. `--preset` and
+`--junit` are mutually exclusive (clap `conflicts_with`): a preset manages its
+own report, and pointing sooth at a second file at the same time is
+contradictory input. clap usage errors exit 2, matching the exit-code
+contract.
+
+Known limitation, stated loudly instead of failing confusingly: injection
+assumes the program *is* the runner. Wrappers (`python -m pytest`, `npm test`,
+`php artisan test`, `poetry run pytest`) would receive the flag themselves and
+break — so the `--preset` help text says the command must be the runner
+itself, and a preset run that produces no report fails with an actionable
+hint rather than a bare parse error about a temp path. Wrapper detection can
+come later if real-world issues show it is needed.
