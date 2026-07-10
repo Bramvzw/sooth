@@ -7,9 +7,9 @@ day-to-day breakdown per version.
 | Version | Scope |
 |---|---|
 | **v0.1** | Skeleton: `sooth run -- <cmd>` runs the command once, parses the JUnit XML it produced, prints a summary (total, pass/fail/skip, slowest N) + `--json`. Built-in presets for pytest, PHPUnit, Jest, Go. |
-| **v0.2** | **Flaky detection** — fixed run order, N repeats, failure-rate ranking. The core value. |
+| **v0.2** | **Flaky detection** — two feeds into one failure-rate ranking: fixed run order + N repeats (active, answer now) and a local run-history file accumulating observations from runs that happen anyway (passive, zero extra wall-time; see `DECISIONS.md`). Plus classifying a red run against known flakes. The core value. |
 | **v0.3** | **Slow-test analysis** refined + **order-dependence: detection only** (flag "result differs between orderings", no culprit bisection). |
-| **v1.0** | Polish + distribution + launch — on the core, not gated on network egress. |
+| **v1.0** | Polish + distribution + launch — on the core, not gated on network egress. Includes the PR-subset flake check (repeat only new/changed tests). |
 | **spike** (post-v1) | **Network egress** detection — a separate, timeboxed R&D effort (see `DECISIONS.md`). Ships as its own release if it succeeds; does not block v1.0. |
 
 ## Explicitly out of scope for now

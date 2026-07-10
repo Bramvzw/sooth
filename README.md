@@ -17,7 +17,8 @@ sooth run --preset pytest -- pytest
 
 - [ ] **v0.1** — `sooth run -- <cmd>` runs your suite once, parses the JUnit XML it produced, and
       prints a summary (total, pass/fail/skip, slowest N) + `--json`.
-- [ ] **v0.2** — flaky detection: fixed order, N repeats, failure-rate ranking.
+- [ ] **v0.2** — flaky detection: failure-rate ranking fed by fixed-order repeats *and* a local
+      run history that accumulates observations from runs you make anyway (zero extra wall-time).
 - [ ] **v0.3** — refined slow-test analysis + order-dependence *detection* (no culprit bisection).
 - [ ] **v1.0** — polish, distribution, launch.
 - [ ] **spike** (post-v1, timeboxed) — network-egress detection: flag tests that hit the real
@@ -36,7 +37,8 @@ producing that report isn't free for every runner. Instead:
 
 `sooth` makes zero network calls of its own: no telemetry, no update checks, no crash reporting,
 no API keys, no accounts. It reads a file your test command wrote to disk and prints a report —
-nothing leaves your machine. See `SECURITY.md`.
+nothing leaves your machine. Any run history `sooth` keeps (v0.2) is a plain local file in your
+repo that you own and move yourself. See `SECURITY.md`.
 
 ## Install
 
