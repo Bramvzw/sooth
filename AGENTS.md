@@ -9,19 +9,23 @@ that command produces, and reports on the run (flaky tests, slow tests, order-de
 server, no dashboard, no AI, no telemetry. See `README.md` for the pitch, `ROADMAP.md` for scope
 per version, and `DECISIONS.md` for the reasoning behind non-obvious choices.
 
-## Intended `src/` module structure
+## `src/` module structure
 
-Code does not exist yet beyond a placeholder `main.rs` — this is the shape to grow into, one
-module per concern:
+`cli.rs` and `runner.rs` exist; the remaining modules are the shape to grow into, one module per
+concern:
 
 ```
 src/
-├── cli.rs        # clap definitions: subcommands, --preset, --runs, --json, --slowest, --fail-on-flaky
-├── runner.rs      # spawns the test subprocess, captures exit code + wall time; fixed or shuffled order
+├── cli.rs        # EXISTS — clap definitions: subcommands, --preset, --runs, --json, --slowest
+├── runner.rs      # EXISTS — spawns the test subprocess, captures exit status + wall time
 ├── junit.rs       # tolerant JUnit-XML union schema; presets inject the right reporter flags
 ├── analyzers/     # flaky.rs, slow.rs, order.rs — kept strictly separate (see ROADMAP.md)
 └── report.rs      # colored terminal table + --json
 ```
+
+Flags that parse but are not wired up yet (`--preset`, `--json`, `--slowest`) are rejected with a
+"not implemented yet" error — never silently ignored. Exit codes are a contract: `0` every run
+passed, `1` at least one run failed, `2` sooth itself failed (see `DECISIONS.md`).
 
 `egress` (network-egress detection) is a later, separate module tied to the spike in
 `DECISIONS.md` — do not start it as part of the core.

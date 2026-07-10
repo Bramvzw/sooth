@@ -32,9 +32,10 @@ pub struct RunArgs {
     #[arg(long)]
     pub json: bool,
 
-    /// How many of the slowest tests to show.
-    #[arg(long, default_value_t = 10)]
-    pub slowest: usize,
+    /// How many of the slowest tests to show (defaults to 10 once the report
+    /// lands in v0.1).
+    #[arg(long)]
+    pub slowest: Option<usize>,
 
     /// The test command to run, given after `--` (e.g. `sooth run -- pytest`).
     #[arg(last = true, required = true, num_args = 1..)]
@@ -61,7 +62,7 @@ mod tests {
         let Command::Run(args) = parsed.command;
         assert_eq!(args.command, ["pytest", "-k", "foo"].map(String::from));
         assert_eq!(args.runs, 1);
-        assert_eq!(args.slowest, 10);
+        assert_eq!(args.slowest, None);
         assert_eq!(args.preset, None);
         assert!(!args.json);
     }
@@ -85,7 +86,7 @@ mod tests {
         let Command::Run(args) = parsed.command;
         assert_eq!(args.preset, Some(Preset::Pytest));
         assert_eq!(args.runs, 5);
-        assert_eq!(args.slowest, 3);
+        assert_eq!(args.slowest, Some(3));
         assert!(args.json);
     }
 
