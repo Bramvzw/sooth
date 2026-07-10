@@ -1,5 +1,7 @@
 //! Command-line interface definitions for `sooth`.
 
+use std::path::PathBuf;
+
 use clap::{Args, Parser, Subcommand, ValueEnum};
 
 /// Parsed top-level command line.
@@ -28,14 +30,19 @@ pub struct RunArgs {
     #[arg(long, default_value_t = 1, value_parser = clap::value_parser!(u32).range(1..))]
     pub runs: u32,
 
-    /// Emit machine-readable JSON instead of a table.
+    /// Emit machine-readable JSON instead of plain text (requires --junit).
     #[arg(long)]
     pub json: bool,
 
-    /// How many of the slowest tests to show (defaults to 10 once the report
-    /// lands in v0.1).
+    /// How many of the slowest tests to show (default 10; requires --junit).
     #[arg(long)]
     pub slowest: Option<usize>,
+
+    /// Path to a JUnit-XML report produced by the test command. When given,
+    /// sooth parses it after the run and reports totals, status counts, and
+    /// the slowest tests.
+    #[arg(long, value_name = "PATH")]
+    pub junit: Option<PathBuf>,
 
     /// The test command to run, given after `--` (e.g. `sooth run -- pytest`).
     #[arg(last = true, required = true, num_args = 1..)]
@@ -65,6 +72,7 @@ mod tests {
         assert_eq!(args.slowest, None);
         assert_eq!(args.preset, None);
         assert!(!args.json);
+        assert_eq!(args.junit, None);
     }
 
     #[test]
@@ -99,5 +107,17 @@ mod tests {
     fn rejects_runs_below_one() {
         // `--runs 0` would run nothing and report a vacuous success; reject it early.
         assert!(Cli::try_parse_from(["sooth", "run", "--runs", "0", "--", "true"]).is_err());
+    }
+
+    #[test]
+    fn parses_the_junit_path() {
+        let parsed =
+            Cli::try_parse_from(["sooth", "run", "--junit", "target/report.xml", "--", "true"])
+                .unwrap();
+        let Command::Run(args) = parsed.command;
+        assert_eq!(
+            args.junit,
+            Some(std::path::PathBuf::from("target/report.xml"))
+        );
     }
 }
