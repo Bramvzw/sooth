@@ -204,3 +204,21 @@ environment, so the dogfood story lands there naturally. "The flaky-test tool
 PHP never had" is a sharper message than "works with everything". Presets keep
 all four runners first-class; marketing (README order, launch channels) leads
 with PHP.
+
+## Preset injection goes right after the program name
+
+A preset adds reporter flags to the user's command. They are inserted directly
+after the program name, before the user's own arguments: safe for pytest,
+PHPUnit and Jest (options may precede arguments) and required for gotestsum,
+which stops parsing its own flags at `--`. Jest is the odd one out twice: the
+report path travels via `JEST_JUNIT_OUTPUT_FILE` (jest-junit reads its
+configuration from the environment), and `--reporters=default` is injected
+alongside `--reporters=jest-junit` so the console output the user knows stays
+intact — the runner keeps inherited stdio (see above).
+
+The report itself goes to a per-process file in the system temp directory and
+is best-effort removed after parsing; a user's own `--junit` file is never
+touched. `--preset` and `--junit` are mutually exclusive (clap
+`conflicts_with`): a preset manages its own report, and pointing sooth at a
+second file at the same time is contradictory input. clap usage errors exit 2,
+matching the exit-code contract.

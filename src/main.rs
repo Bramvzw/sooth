@@ -6,6 +6,7 @@
 
 mod cli;
 mod junit;
+mod preset;
 mod runner;
 
 use std::fmt::Write as _;
@@ -30,39 +31,58 @@ fn main() -> ExitCode {
     }
 }
 
-/// Handle `sooth run`: execute the test command, then — if `--junit` was
-/// given — parse the report it produced and extend the output with totals
-/// and the slowest tests. Without `--junit` the output is unchanged from the
-/// plain per-run report.
+/// Handle `sooth run`: execute the test command, then — when a report source
+/// is given — parse the JUnit-XML report and extend the output with totals and the
+/// slowest tests. `--junit` points at a report the command already writes;
+/// `--preset` injects the right reporter flags and manages a temp report
+/// itself. Without either, the output is the plain per-run report.
 fn run(args: &cli::RunArgs) -> ExitCode {
     if let Some(reason) = rejected_flag(args) {
         eprintln!("sooth: {reason}");
         return ExitCode::from(EXIT_SOOTH_ERROR);
     }
 
-    let outcomes = match runner::run(&args.command, args.runs) {
+    let (command, envs, report_source) = match args.preset {
+        Some(chosen) => {
+            let path = preset::report_path();
+            let (command, envs) = preset::inject(&args.command, chosen, &path);
+            (command, envs, Some(path))
+        }
+        None => (args.command.clone(), Vec::new(), args.junit.clone()),
+    };
+
+    let outcomes = match runner::run(&command, args.runs, &envs) {
         Ok(outcomes) => outcomes,
         Err(err) => {
-            let program = &args.command[0];
+            let program = &command[0];
             eprintln!("sooth: failed to run `{program}`: {err}");
             return ExitCode::from(EXIT_SOOTH_ERROR);
         }
     };
 
-    let junit_summary = match &args.junit {
-        Some(path) => match junit::parse_file(path) {
-            Ok(parsed) => Some(JunitSummary::from_report(
-                &parsed,
-                args.slowest.unwrap_or(DEFAULT_SLOWEST),
-            )),
-            Err(err) => {
-                eprintln!(
-                    "sooth: failed to parse JUnit-XML report `{}`: {err}",
-                    path.display()
-                );
-                return ExitCode::from(EXIT_SOOTH_ERROR);
+    let junit_summary = match &report_source {
+        Some(path) => {
+            let parsed = junit::parse_file(path);
+            if args.preset.is_some() {
+                // Best-effort cleanup of the preset's temp report — the parse
+                // result is already in memory. A user's own --junit file is
+                // never removed.
+                let _ = std::fs::remove_file(path);
             }
-        },
+            match parsed {
+                Ok(parsed) => Some(JunitSummary::from_report(
+                    &parsed,
+                    args.slowest.unwrap_or(DEFAULT_SLOWEST),
+                )),
+                Err(err) => {
+                    eprintln!(
+                        "sooth: failed to parse JUnit-XML report `{}`: {err}",
+                        path.display()
+                    );
+                    return ExitCode::from(EXIT_SOOTH_ERROR);
+                }
+            }
+        }
         None => None,
     };
 
@@ -83,22 +103,16 @@ fn run(args: &cli::RunArgs) -> ExitCode {
 }
 
 /// A flag `sooth` cannot honor, if any. Rejecting loudly beats silently
-/// ignoring — this tool's brand is the truth. `--preset` is not implemented
-/// yet; `--json` and `--slowest` only mean something once there is a report
-/// to summarize, so they require `--junit` until presets locate the report
-/// automatically.
+/// ignoring — this tool's brand is the truth. `--json` and `--slowest` only
+/// mean something once there is a report to summarize: `--junit` brings your
+/// own, `--preset` has the runner write one.
 fn rejected_flag(args: &cli::RunArgs) -> Option<&'static str> {
-    if args.preset.is_some() {
-        return Some("`--preset` is not implemented yet (lands in v0.1)");
-    }
-    if args.junit.is_none() {
+    if args.junit.is_none() && args.preset.is_none() {
         if args.json {
-            return Some("`--json` requires `--junit <PATH>` (presets locate the report in v0.1)");
+            return Some("`--json` requires a report: `--junit <PATH>` or `--preset <RUNNER>`");
         }
         if args.slowest.is_some() {
-            return Some(
-                "`--slowest` requires `--junit <PATH>` (presets locate the report in v0.1)",
-            );
+            return Some("`--slowest` requires a report: `--junit <PATH>` or `--preset <RUNNER>`");
         }
     }
     None
@@ -357,12 +371,24 @@ mod tests {
     }
 
     #[test]
-    fn preset_and_reportless_flags_are_rejected() {
+    fn json_and_slowest_are_accepted_with_a_preset() {
+        let args = parse_run_args(&[
+            "sooth",
+            "run",
+            "--preset",
+            "pytest",
+            "--json",
+            "--slowest",
+            "3",
+            "--",
+            "pytest",
+        ]);
+        assert_eq!(rejected_flag(&args), None);
+    }
+
+    #[test]
+    fn reportless_json_and_slowest_are_rejected() {
         for (cmdline, fragment) in [
-            (
-                vec!["sooth", "run", "--preset", "pytest", "--", "true"],
-                "--preset",
-            ),
             (vec!["sooth", "run", "--json", "--", "true"], "--json"),
             (
                 vec!["sooth", "run", "--slowest", "3", "--", "true"],

@@ -23,6 +23,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `--slowest` tests; `--json` emits this as JSON alongside the run outcomes.
 - On Unix, a run terminated by a signal reports the signal number instead of a
   bare "signal".
+- Presets are wired up: `--preset pytest|phpunit|jest|go` injects the right
+  reporter flags (pytest `--junit-xml`, PHPUnit `--log-junit`, gotestsum
+  `--junitfile`, Jest `--reporters` + `JEST_JUNIT_OUTPUT_FILE`), has the
+  runner write to a temp report, parses it after the run, and cleans it up.
+  `--preset` conflicts with `--junit`.
 
 ### Changed
 
@@ -30,8 +35,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   run failed, `2` sooth itself failed (spawn error, unparsable report, bad
   flags).
 - Flags sooth cannot honor fail loudly instead of being silently ignored:
-  `--preset` is not implemented yet, and `--json`/`--slowest` require
-  `--junit` until presets locate the report automatically.
+  `--json` and `--slowest` require a report source (`--junit` or `--preset`).
 - The crate description no longer advertises cut or post-v1 features
   (assertionless-test detection, network egress).
 

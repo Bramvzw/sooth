@@ -22,19 +22,22 @@ pub enum Command {
 /// Arguments for `sooth run`.
 #[derive(Debug, Args)]
 pub struct RunArgs {
-    /// Built-in preset for a known test runner (injects the right reporter flags).
-    #[arg(long, value_enum)]
+    /// Built-in preset for a known test runner: injects the right reporter
+    /// flags and reads the report it writes (mutually exclusive with --junit).
+    #[arg(long, value_enum, conflicts_with = "junit")]
     pub preset: Option<Preset>,
 
     /// How many times to run the suite (fixed order; flaky detection lands in v0.2).
     #[arg(long, default_value_t = 1, value_parser = clap::value_parser!(u32).range(1..))]
     pub runs: u32,
 
-    /// Emit machine-readable JSON instead of plain text (requires --junit).
+    /// Emit machine-readable JSON instead of plain text (requires --junit or
+    /// --preset).
     #[arg(long)]
     pub json: bool,
 
-    /// How many of the slowest tests to show (default 10; requires --junit).
+    /// How many of the slowest tests to show (default 10; requires --junit or
+    /// --preset).
     #[arg(long)]
     pub slowest: Option<usize>,
 
@@ -107,6 +110,17 @@ mod tests {
     fn rejects_runs_below_one() {
         // `--runs 0` would run nothing and report a vacuous success; reject it early.
         assert!(Cli::try_parse_from(["sooth", "run", "--runs", "0", "--", "true"]).is_err());
+    }
+
+    #[test]
+    fn preset_and_junit_are_mutually_exclusive() {
+        // A preset manages its own report; pointing sooth at another file at
+        // the same time is contradictory input. clap exits 2 on usage errors,
+        // matching the "sooth itself failed" exit code.
+        assert!(Cli::try_parse_from([
+            "sooth", "run", "--preset", "pytest", "--junit", "r.xml", "--", "pytest",
+        ])
+        .is_err());
     }
 
     #[test]
