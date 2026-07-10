@@ -118,3 +118,37 @@ and `2` when sooth itself could not do its job (the command could not be
 spawned, or a flag is not implemented yet). Grep-style: CI can tell a red
 suite apart from a broken invocation. Fixed before v0.1 so the codes never
 have to change under users' feet.
+
+## Local run history amends "observes one run and reports on it"
+
+The local-first entry above says sooth "observes one run and reports on it".
+That framing conflated two different promises: no *hosted* history (server,
+account, dashboard — still a hard non-goal) and no history at all. The second
+half is dropped. Flaky detection needs many observations, and demanding them
+via `--runs N` prices the core feature at N× the suite's wall-time — a 5-minute
+suite costs 50 minutes to interrogate. Meanwhile teams already run their tests
+dozens of times a day; the observations exist, sooth just has to keep them.
+
+So sooth may append per-test observations (identity = JUnit `classname` +
+`name`) to a local, user-managed history file (e.g. `.sooth/history.jsonl`)
+that never leaves the machine or repo unless the user moves it themselves
+(CI cache or artifact). Flaky detection gets two feeds into the same
+failure-rate ranking: fixed-order repeats (active, answer now) and accumulated
+history (passive, zero marginal wall-time). This turns sooth from an episodic
+lab instrument into a flight recorder — the difference between a tool used
+once and a tool used daily.
+
+Guardrail: sooth reports what the history shows; it never silently hides or
+auto-retries a failure the way retry plugins do. That dishonesty is exactly
+what sooth positions against.
+
+## PHP/Laravel is the launch beachhead
+
+Framework-agnostic stays the architecture, not the spearhead of the story. In
+the Rust world `cargo-nextest` already ships retries with flaky reporting, and
+pytest has a rich plugin landscape — there sooth is "the same but uniform", a
+weak pitch. PHP/PHPUnit has neither, and it is the maintainer's daily
+environment, so the dogfood story lands there naturally. "The flaky-test tool
+PHP never had" is a sharper message than "works with everything". Presets keep
+all four runners first-class; marketing (README order, launch channels) leads
+with PHP.
