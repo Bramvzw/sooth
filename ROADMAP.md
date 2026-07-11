@@ -23,14 +23,8 @@ day-to-day breakdown per version.
 
 ## Correctness note: flaky vs. order-dependence
 
-These two failure modes pollute each other's signal if run together. A test
-that only fails under certain orderings looks "flaky" under shuffled repeat
-runs. They are therefore strictly separated:
-
-- **Flaky = fixed order, repeat N times.**
-- **Order-dependence = shuffled order, compare results.**
-
-Never shuffle and repeat in the same analysis pass.
+Strictly separate passes — flaky = fixed order, repeat N times; order-dependence = shuffled
+order, compare results. Never both in one pass; the reasoning lives in `DECISIONS.md`.
 
 ## Later — deferred until triggered
 

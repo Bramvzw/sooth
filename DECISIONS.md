@@ -82,10 +82,12 @@ GitHub-native:
 The CLI uses `clap`'s derive API. The wrapped test command is captured as a
 trailing argument list after `--` (`sooth run -- pytest -k foo`), modeled with
 clap's `last = true`. This keeps sooth's own flags (`--preset`, `--runs`, …)
-unambiguous from the flags of the command it wraps. Flags that parse but are
-not implemented yet (`--preset`, `--json`, `--slowest`) fail with a clear "not
-implemented yet" error instead of being silently ignored — a tool whose brand
-is telling the truth must not pretend to honor a flag.
+unambiguous from the flags of the command it wraps. Flags sooth cannot honor
+fail loudly instead of being silently ignored — a tool whose brand is telling
+the truth must not pretend to honor a flag. (Originally `--preset`, `--json`
+and `--slowest` were rejected as "not implemented yet"; superseded once
+presets landed in story #4 — the rule lives on as "a report-dependent flag
+without a report source is an error".)
 
 ## The runner inherits the child's stdio and captures only exit status + time
 
