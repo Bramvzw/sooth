@@ -204,3 +204,33 @@ environment, so the dogfood story lands there naturally. "The flaky-test tool
 PHP never had" is a sharper message than "works with everything". Presets keep
 all four runners first-class; marketing (README order, launch channels) leads
 with PHP.
+
+## Preset injection goes right after the program name
+
+A preset adds reporter flags to the user's command. They are inserted directly
+after the program name, before the user's own arguments: safe for pytest,
+PHPUnit and Jest (options may precede arguments) and required for gotestsum,
+which stops parsing its own flags at `--`. Jest is the odd one out twice: the
+report path travels via `JEST_JUNIT_OUTPUT_FILE` (jest-junit reads its
+configuration from the environment), and `--reporters=default` is injected
+alongside `--reporters=jest-junit` so the console output the user knows stays
+intact — the runner keeps inherited stdio (see above).
+
+The report goes into a fresh, private per-invocation directory under the
+system temp dir (mode 0700 on Unix, unpredictable name). Fresh, because a
+stale report left behind by a crashed earlier run must never be parsed as this
+run's truth; private, because the classic shared-`/tmp` pre-creation/symlink
+trick must find no predictable target. The directory is best-effort removed
+after parsing; a user's own `--junit` file is never touched. `--preset` and
+`--junit` are mutually exclusive (clap `conflicts_with`): a preset manages its
+own report, and pointing sooth at a second file at the same time is
+contradictory input. clap usage errors exit 2, matching the exit-code
+contract.
+
+Known limitation, stated loudly instead of failing confusingly: injection
+assumes the program *is* the runner. Wrappers (`python -m pytest`, `npm test`,
+`php artisan test`, `poetry run pytest`) would receive the flag themselves and
+break — so the `--preset` help text says the command must be the runner
+itself, and a preset run that produces no report fails with an actionable
+hint rather than a bare parse error about a temp path. Wrapper detection can
+come later if real-world issues show it is needed.
