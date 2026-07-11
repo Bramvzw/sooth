@@ -8,15 +8,15 @@
 mod cli;
 mod junit;
 mod preset;
+mod report;
 mod runner;
 
-use std::fmt::Write as _;
 use std::process::ExitCode;
-use std::time::Duration;
 
 use clap::Parser;
 
 use crate::cli::{Cli, Command};
+use crate::report::JunitSummary;
 
 /// Exit code for "sooth itself failed", as opposed to "the tests failed" (1).
 const EXIT_SOOTH_ERROR: u8 = 2;
@@ -33,8 +33,8 @@ fn main() -> ExitCode {
 }
 
 /// Handle `sooth run`: execute the test command, then — when a report source
-/// is given — parse the JUnit-XML report and extend the output with totals and the
-/// slowest tests. `--junit` points at a report the command already writes;
+/// is given — parse the JUnit-XML report and extend the output with totals and
+/// the slowest tests. `--junit` points at a report the command already writes;
 /// `--preset` injects the right reporter flags and manages a temp report
 /// itself. Without either, the output is the plain per-run report.
 fn run(args: &cli::RunArgs) -> ExitCode {
@@ -42,6 +42,7 @@ fn run(args: &cli::RunArgs) -> ExitCode {
         eprintln!("sooth: {reason}");
         return ExitCode::from(EXIT_SOOTH_ERROR);
     }
+    let style = report::Style::resolved(args.color);
 
     let (command, envs, report_source) = match args.preset {
         Some(chosen) => {
@@ -92,30 +93,76 @@ fn run(args: &cli::RunArgs) -> ExitCode {
         None => None,
     };
 
-    match &junit_summary {
-        Some(summary) if args.json => println!("{}", to_json(&outcomes, summary)),
-        Some(summary) => {
-            report(&outcomes);
-            print_junit_summary(summary);
-        }
-        None => report(&outcomes),
-    }
-
-    let runs_failed = outcomes.iter().any(|outcome| !outcome.success);
+    let failed = suite_failed(&outcomes, junit_summary.as_ref());
     let report_failures = junit_summary
         .as_ref()
         .map_or(0, |summary| summary.failed + summary.error);
+    let runs_failed = outcomes.iter().any(|outcome| !outcome.success);
     if report_failures > 0 && !runs_failed {
         eprintln!(
             "sooth: the runner exited 0 but the report shows {report_failures} failing \
              test(s) — exiting 1 (the runner and its report must agree for a 0)"
         );
     }
-    if suite_failed(&outcomes, junit_summary.as_ref()) {
+
+    match (&junit_summary, &args.json) {
+        // Bare --json: sooth's own stdout output is exactly one line of
+        // JSON, printed after the wrapped command finished (last-line
+        // contract — the child's output still shares the stream).
+        (Some(summary), Some(None)) => println!("{}", report::to_json(&outcomes, summary)),
+        // --json=PATH: the machine output goes to a file, the human report
+        // stays on stdout.
+        (Some(summary), Some(Some(path))) => {
+            report::print_runs(&outcomes, style);
+            report::print_summary(summary, style);
+            let json = report::to_json(&outcomes, summary);
+            if let Err(err) = std::fs::write(path, json + "\n") {
+                eprintln!(
+                    "sooth: failed to write JSON report `{}`: {err}",
+                    path.display()
+                );
+                return ExitCode::from(EXIT_SOOTH_ERROR);
+            }
+            println!(
+                "{}",
+                report::verdict_line(&outcomes, junit_summary.as_ref(), failed, style)
+            );
+        }
+        (Some(summary), None) => {
+            report::print_runs(&outcomes, style);
+            report::print_summary(summary, style);
+            println!(
+                "{}",
+                report::verdict_line(&outcomes, junit_summary.as_ref(), failed, style)
+            );
+        }
+        (None, _) => {
+            report::print_runs(&outcomes, style);
+            println!("{}", report::verdict_line(&outcomes, None, failed, style));
+        }
+    }
+
+    if failed {
         ExitCode::FAILURE
     } else {
         ExitCode::SUCCESS
     }
+}
+
+/// A flag `sooth` cannot honor, if any. Rejecting loudly beats silently
+/// ignoring — this tool's brand is the truth. `--json` and `--slowest` only
+/// mean something once there is a report to summarize: `--junit` brings your
+/// own, `--preset` has the runner write one.
+fn rejected_flag(args: &cli::RunArgs) -> Option<&'static str> {
+    if args.junit.is_none() && args.preset.is_none() {
+        if args.json.is_some() {
+            return Some("`--json` requires a report: `--junit <PATH>` or `--preset <RUNNER>`");
+        }
+        if args.slowest.is_some() {
+            return Some("`--slowest` requires a report: `--junit <PATH>` or `--preset <RUNNER>`");
+        }
+    }
+    None
 }
 
 /// Whether the suite failed, combining both signals: a nonzero runner exit
@@ -125,22 +172,6 @@ fn run(args: &cli::RunArgs) -> ExitCode {
 fn suite_failed(outcomes: &[runner::RunOutcome], summary: Option<&JunitSummary>) -> bool {
     outcomes.iter().any(|outcome| !outcome.success)
         || summary.is_some_and(|summary| summary.failed + summary.error > 0)
-}
-
-/// A flag `sooth` cannot honor, if any. Rejecting loudly beats silently
-/// ignoring — this tool's brand is the truth. `--json` and `--slowest` only
-/// mean something once there is a report to summarize: `--junit` brings your
-/// own, `--preset` has the runner write one.
-fn rejected_flag(args: &cli::RunArgs) -> Option<&'static str> {
-    if args.junit.is_none() && args.preset.is_none() {
-        if args.json {
-            return Some("`--json` requires a report: `--junit <PATH>` or `--preset <RUNNER>`");
-        }
-        if args.slowest.is_some() {
-            return Some("`--slowest` requires a report: `--junit <PATH>` or `--preset <RUNNER>`");
-        }
-    }
-    None
 }
 
 /// Load and summarize the JUnit-XML report at `path`. `preset_program` is the
@@ -178,150 +209,12 @@ fn cleanup_preset_report(path: &std::path::Path) {
     }
 }
 
-/// Print a per-run line for each outcome.
-fn report(outcomes: &[runner::RunOutcome]) {
-    let total = outcomes.len();
-    for (index, outcome) in outcomes.iter().enumerate() {
-        let code = match (outcome.exit_code, outcome.signal) {
-            (Some(code), _) => code.to_string(),
-            (None, Some(signal)) => format!("signal {signal}"),
-            (None, None) => "signal".to_owned(),
-        };
-        println!(
-            "run {}/{total}: exit={code} ({:.2?})",
-            index + 1,
-            outcome.duration
-        );
-    }
-}
-
-/// Totals, status counts, and the slowest tests from a parsed JUnit-XML
-/// report — the presentation-layer summary `sooth run --junit` prints.
-struct JunitSummary {
-    total: usize,
-    passed: usize,
-    failed: usize,
-    error: usize,
-    skipped: usize,
-    slowest: Vec<(String, Duration)>,
-}
-
-impl JunitSummary {
-    fn from_report(report: &junit::JunitReport, slowest: usize) -> Self {
-        let mut passed = 0;
-        let mut failed = 0;
-        let mut error = 0;
-        let mut skipped = 0;
-        for case in &report.test_cases {
-            match case.status {
-                junit::TestStatus::Passed => passed += 1,
-                junit::TestStatus::Failed => failed += 1,
-                junit::TestStatus::Error => error += 1,
-                junit::TestStatus::Skipped => skipped += 1,
-            }
-        }
-
-        let mut by_duration: Vec<&junit::TestCase> = report.test_cases.iter().collect();
-        by_duration.sort_by_key(|case| std::cmp::Reverse(case.duration));
-
-        Self {
-            total: report.test_cases.len(),
-            passed,
-            failed,
-            error,
-            skipped,
-            slowest: by_duration
-                .into_iter()
-                .take(slowest)
-                .map(|case| (case.name.clone(), case.duration))
-                .collect(),
-        }
-    }
-}
-
-/// Print the junit summary as plain text: totals, then the slowest tests.
-fn print_junit_summary(summary: &JunitSummary) {
-    println!(
-        "junit: {} total, {} passed, {} failed, {} error, {} skipped",
-        summary.total, summary.passed, summary.failed, summary.error, summary.skipped
-    );
-    if summary.slowest.is_empty() {
-        return;
-    }
-    println!("slowest tests:");
-    for (index, (name, duration)) in summary.slowest.iter().enumerate() {
-        println!("  {}. {name} ({duration:.2?})", index + 1);
-    }
-}
-
-/// Hand-rolled JSON: the run outcomes plus the junit summary. There is no
-/// other JSON surface yet (the general `--json` report lands in a later
-/// story), and the shape here is small and fixed, so `serde_json` is not
-/// worth a second dependency for this one story — see `DECISIONS.md`.
-fn to_json(outcomes: &[runner::RunOutcome], summary: &JunitSummary) -> String {
-    let runs: Vec<String> = outcomes
-        .iter()
-        .map(|outcome| {
-            let exit_code = outcome
-                .exit_code
-                .map_or_else(|| "null".to_owned(), |code| code.to_string());
-            format!(
-                r#"{{"exit_code":{exit_code},"success":{},"duration_seconds":{}}}"#,
-                outcome.success,
-                outcome.duration.as_secs_f64()
-            )
-        })
-        .collect();
-
-    let slowest: Vec<String> = summary
-        .slowest
-        .iter()
-        .map(|(name, duration)| {
-            let name = json_escape(name);
-            format!(
-                r#"{{"name":"{name}","duration_seconds":{}}}"#,
-                duration.as_secs_f64()
-            )
-        })
-        .collect();
-
-    format!(
-        r#"{{"runs":[{}],"junit":{{"total":{},"passed":{},"failed":{},"error":{},"skipped":{},"slowest":[{}]}}}}"#,
-        runs.join(","),
-        summary.total,
-        summary.passed,
-        summary.failed,
-        summary.error,
-        summary.skipped,
-        slowest.join(","),
-    )
-}
-
-/// Escape a string for inclusion in a hand-rolled JSON string literal.
-fn json_escape(value: &str) -> String {
-    let mut escaped = String::with_capacity(value.len());
-    for character in value.chars() {
-        match character {
-            '"' => escaped.push_str("\\\""),
-            '\\' => escaped.push_str("\\\\"),
-            '\n' => escaped.push_str("\\n"),
-            '\r' => escaped.push_str("\\r"),
-            '\t' => escaped.push_str("\\t"),
-            control if control.is_control() => {
-                // `escaped` is a plain `String`; `write!` never fails for it.
-                let _ = write!(escaped, "\\u{:04x}", control as u32);
-            }
-            other => escaped.push(other),
-        }
-    }
-    escaped
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{json_escape, rejected_flag, report, to_json, JunitSummary};
+    use super::{rejected_flag, suite_failed};
     use crate::cli::{Cli, Command};
     use crate::junit::{JunitReport, TestCase, TestStatus};
+    use crate::report::JunitSummary;
     use crate::runner::RunOutcome;
     use clap::Parser;
     use std::time::Duration;
@@ -341,11 +234,6 @@ mod tests {
         args
     }
 
-    #[test]
-    fn report_prints_without_panicking_regardless_of_outcome() {
-        report(&[outcome(true), outcome(false)]);
-    }
-
     fn test_case(name: &str, status: TestStatus, duration_seconds: f64) -> TestCase {
         TestCase {
             name: name.to_owned(),
@@ -355,57 +243,56 @@ mod tests {
         }
     }
 
-    #[test]
-    fn summarizes_counts_and_ranks_the_slowest_tests() {
+    fn summary_of(status: TestStatus) -> JunitSummary {
         let report = JunitReport {
-            test_cases: vec![
-                test_case("fast", TestStatus::Passed, 0.1),
-                test_case("slow", TestStatus::Failed, 2.0),
-                test_case("medium", TestStatus::Skipped, 1.0),
-                test_case("erroring", TestStatus::Error, 0.5),
-            ],
+            test_cases: vec![test_case("case", status, 0.1)],
         };
-
-        let summary = JunitSummary::from_report(&report, 2);
-
-        assert_eq!(summary.total, 4);
-        assert_eq!(summary.passed, 1);
-        assert_eq!(summary.failed, 1);
-        assert_eq!(summary.error, 1);
-        assert_eq!(summary.skipped, 1);
-        assert_eq!(
-            summary.slowest,
-            vec![
-                ("slow".to_owned(), Duration::from_secs_f64(2.0)),
-                ("medium".to_owned(), Duration::from_secs_f64(1.0)),
-            ]
-        );
+        JunitSummary::from_report(&report, 10)
     }
 
     #[test]
-    fn json_output_includes_runs_and_the_junit_summary() {
-        let summary = JunitSummary::from_report(
-            &JunitReport {
-                test_cases: vec![test_case("a", TestStatus::Passed, 0.25)],
-            },
-            10,
-        );
-        let json = to_json(&[outcome(true)], &summary);
-
-        assert!(json.contains(r#""success":true"#));
-        assert!(json.contains(r#""total":1"#));
-        assert!(json.contains(r#""passed":1"#));
-        assert!(json.contains(r#""name":"a""#));
+    fn the_suite_fails_when_the_report_shows_failures_even_if_the_runner_exited_zero() {
+        let summary = summary_of(TestStatus::Failed);
+        assert!(suite_failed(&[outcome(true)], Some(&summary)));
     }
 
     #[test]
-    fn json_escape_handles_quotes_backslashes_and_control_characters() {
-        assert_eq!(
-            json_escape(r#"quote " backslash \ "#),
-            r#"quote \" backslash \\ "#
-        );
-        assert_eq!(json_escape("tab\tnewline\n"), "tab\\tnewline\\n");
-        assert_eq!(json_escape("bell\u{7}"), "bell\\u0007");
+    fn an_erroring_test_in_the_report_also_fails_the_suite() {
+        let summary = summary_of(TestStatus::Error);
+        assert!(suite_failed(&[outcome(true)], Some(&summary)));
+    }
+
+    #[test]
+    fn the_suite_fails_on_a_nonzero_runner_even_with_a_clean_report() {
+        let summary = summary_of(TestStatus::Passed);
+        assert!(suite_failed(&[outcome(false)], Some(&summary)));
+    }
+
+    #[test]
+    fn the_suite_passes_when_runner_and_report_agree() {
+        let summary = summary_of(TestStatus::Skipped);
+        assert!(!suite_failed(&[outcome(true)], Some(&summary)));
+        assert!(!suite_failed(&[outcome(true)], None));
+    }
+
+    #[test]
+    fn a_preset_run_that_writes_no_report_gets_an_actionable_error() {
+        let missing = std::env::temp_dir().join("sooth-test-no-such-report.xml");
+        let message = super::load_summary(&missing, Some("pytest"), 10)
+            .err()
+            .expect("a missing preset report should error");
+        assert!(message.contains("wrote no JUnit-XML report"));
+        assert!(message.contains("pytest"));
+    }
+
+    #[test]
+    fn a_missing_user_junit_file_reports_the_path() {
+        let missing = std::env::temp_dir().join("sooth-test-no-such-report.xml");
+        let message = super::load_summary(&missing, None, 10)
+            .err()
+            .expect("a missing --junit file should error");
+        assert!(message.contains("failed to parse"));
+        assert!(message.contains("sooth-test-no-such-report.xml"));
     }
 
     #[test]
@@ -447,73 +334,13 @@ mod tests {
     }
 
     #[test]
-    fn the_suite_fails_when_the_report_shows_failures_even_if_the_runner_exited_zero() {
-        let clean_run = [outcome(true)];
-        let failing_report = JunitReport {
-            test_cases: vec![test_case("bad", TestStatus::Failed, 0.1)],
-        };
-        let summary = JunitSummary::from_report(&failing_report, 10);
-        assert!(super::suite_failed(&clean_run, Some(&summary)));
-    }
-
-    #[test]
-    fn an_erroring_test_in_the_report_also_fails_the_suite() {
-        let clean_run = [outcome(true)];
-        let erroring_report = JunitReport {
-            test_cases: vec![test_case("boom", TestStatus::Error, 0.1)],
-        };
-        let summary = JunitSummary::from_report(&erroring_report, 10);
-        assert!(super::suite_failed(&clean_run, Some(&summary)));
-    }
-
-    #[test]
-    fn the_suite_fails_on_a_nonzero_runner_even_with_a_clean_report() {
-        let failed_run = [outcome(false)];
-        let clean_report = JunitReport {
-            test_cases: vec![test_case("ok", TestStatus::Passed, 0.1)],
-        };
-        let summary = JunitSummary::from_report(&clean_report, 10);
-        assert!(super::suite_failed(&failed_run, Some(&summary)));
-    }
-
-    #[test]
-    fn the_suite_passes_when_runner_and_report_agree() {
-        let clean_run = [outcome(true)];
-        let report_with_skips = JunitReport {
-            test_cases: vec![
-                test_case("ok", TestStatus::Passed, 0.1),
-                test_case("later", TestStatus::Skipped, 0.0),
-            ],
-        };
-        let summary = JunitSummary::from_report(&report_with_skips, 10);
-        assert!(!super::suite_failed(&clean_run, Some(&summary)));
-        assert!(!super::suite_failed(&clean_run, None));
-    }
-
-    #[test]
-    fn a_preset_run_that_writes_no_report_gets_an_actionable_error() {
-        let missing = std::env::temp_dir().join("sooth-test-no-such-report.xml");
-        let message = super::load_summary(&missing, Some("pytest"), 10)
-            .err()
-            .expect("a missing preset report should error");
-        assert!(message.contains("wrote no JUnit-XML report"));
-        assert!(message.contains("pytest"));
-    }
-
-    #[test]
-    fn a_missing_user_junit_file_reports_the_path() {
-        let missing = std::env::temp_dir().join("sooth-test-no-such-report.xml");
-        let message = super::load_summary(&missing, None, 10)
-            .err()
-            .expect("a missing --junit file should error");
-        assert!(message.contains("failed to parse"));
-        assert!(message.contains("sooth-test-no-such-report.xml"));
-    }
-
-    #[test]
     fn reportless_json_and_slowest_are_rejected() {
         for (cmdline, fragment) in [
             (vec!["sooth", "run", "--json", "--", "true"], "--json"),
+            (
+                vec!["sooth", "run", "--json=out.json", "--", "true"],
+                "--json",
+            ),
             (
                 vec!["sooth", "run", "--slowest", "3", "--", "true"],
                 "--slowest",

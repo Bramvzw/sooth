@@ -11,17 +11,16 @@ per version, and `DECISIONS.md` for the reasoning behind non-obvious choices.
 
 ## `src/` module structure
 
-`cli.rs`, `runner.rs`, `junit.rs` and `preset.rs` exist; the remaining modules are the shape to
-grow into, one module per concern:
+Only `analyzers/` is still the shape to grow into; the rest exists, one module per concern:
 
 ```
 src/
-├── cli.rs        # EXISTS — clap definitions: subcommands, --preset, --runs, --json, --slowest, --junit
+├── cli.rs        # EXISTS — clap definitions: subcommands, --preset, --runs, --json[=PATH], --slowest, --junit, --color
 ├── runner.rs      # EXISTS — spawns the test subprocess (with env injection), captures exit status + wall time
 ├── junit.rs       # EXISTS — tolerant JUnit-XML union schema (parse_str/parse_file)
 ├── preset.rs      # EXISTS — presets inject reporter flags/env and manage the temp report
-├── analyzers/     # flaky.rs, slow.rs, order.rs — kept strictly separate (see ROADMAP.md)
-└── report.rs      # colored terminal table + full --json report
+├── report.rs      # EXISTS — colored human report + versioned machine JSON
+└── analyzers/     # flaky.rs, slow.rs, order.rs — kept strictly separate (see ROADMAP.md)
 ```
 
 Flags sooth cannot honor are rejected loudly, never silently ignored: `--json`/`--slowest`
