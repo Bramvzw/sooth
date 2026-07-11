@@ -148,7 +148,7 @@ pub fn print_summary(summary: &JunitSummary, style: Style) {
     } else {
         failed
     };
-    let errors = format!("{} errors", summary.error);
+    let errors = count(summary.error, "error");
     let errors = if summary.error > 0 {
         style.red(&errors)
     } else {
@@ -195,15 +195,25 @@ pub fn verdict_line(
             // The runner claimed success but the report disagrees; the
             // mismatch note on stderr carries the full story.
             let failures = summary.map_or(0, |summary| summary.failed + summary.error);
-            format!("the report shows {failures} failing tests")
+            format!("the report shows {}", count(failures, "failing test"))
         };
         style.bold_red(&format!("result: FAILED — {detail} ({total:.2?} total)"))
     } else {
-        let tests =
-            summary.map_or_else(String::new, |summary| format!(", {} tests", summary.total));
+        let tests = summary.map_or_else(String::new, |summary| {
+            format!(", {}", count(summary.total, "test"))
+        });
         style.bold_green(&format!(
             "result: PASSED — {runs} of {runs} runs{tests} ({total:.2?} total)"
         ))
+    }
+}
+
+/// `1 error`, `2 errors` — a count with a correctly pluralized noun.
+fn count(amount: usize, noun: &str) -> String {
+    if amount == 1 {
+        format!("{amount} {noun}")
+    } else {
+        format!("{amount} {noun}s")
     }
 }
 
@@ -361,7 +371,8 @@ mod tests {
         let summary = JunitSummary::from_report(&report, 0);
         let line = verdict_line(&[outcome(true)], Some(&summary), true, plain());
         assert!(line.contains("FAILED"));
-        assert!(line.contains("the report shows 1 failing tests"));
+        assert!(line.contains("the report shows 1 failing test"));
+        assert!(!line.contains("1 failing tests"));
     }
 
     #[test]
@@ -372,7 +383,7 @@ mod tests {
         let summary = JunitSummary::from_report(&report, 0);
         let line = verdict_line(&[outcome(true)], Some(&summary), false, plain());
         assert!(line.contains("PASSED"));
-        assert!(line.contains("1 of 1 runs, 1 tests"));
+        assert!(line.contains("1 of 1 runs, 1 test ("));
     }
 
     #[test]

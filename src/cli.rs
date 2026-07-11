@@ -36,7 +36,8 @@ pub struct RunArgs {
 
     /// Emit machine-readable JSON (requires --junit or --preset). Bare
     /// `--json` prints it as sooth's final stdout line; `--json=PATH` writes
-    /// it to a file and keeps the human report on stdout.
+    /// it to a file and keeps the human report on stdout (note the `=`;
+    /// `--json PATH` with a space is rejected).
     // Option<Option<_>> is clap's canonical shape for a flag with an
     // optional value: None = absent, Some(None) = bare, Some(Some(p)) = path.
     #[allow(clippy::option_option)]

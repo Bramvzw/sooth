@@ -137,6 +137,10 @@ fn run(args: &cli::RunArgs) -> ExitCode {
             );
         }
         (None, _) => {
+            // Unreachable with json set: rejected_flag exits earlier when
+            // --json has no report source. Assert that invariant locally so
+            // a weakened guard fails loudly instead of dropping output.
+            debug_assert!(args.json.is_none());
             report::print_runs(&outcomes, style);
             println!("{}", report::verdict_line(&outcomes, None, failed, style));
         }
