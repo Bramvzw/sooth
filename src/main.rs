@@ -1,7 +1,8 @@
 //! `sooth` — the truth about your tests.
 //!
 //! Exit codes distinguish whose fault a failure is (grep-style):
-//! `0` — every run passed; `1` — at least one run failed;
+//! `0` — every run passed; `1` — at least one run failed (nonzero runner
+//! exit *or* failures in the parsed report — both must agree for a `0`);
 //! `2` — sooth itself failed (spawn error, unparsable report, bad flags).
 
 mod cli;
@@ -100,11 +101,30 @@ fn run(args: &cli::RunArgs) -> ExitCode {
         None => report(&outcomes),
     }
 
-    if outcomes.iter().all(|outcome| outcome.success) {
-        ExitCode::SUCCESS
-    } else {
-        ExitCode::FAILURE
+    let runs_failed = outcomes.iter().any(|outcome| !outcome.success);
+    let report_failures = junit_summary
+        .as_ref()
+        .map_or(0, |summary| summary.failed + summary.error);
+    if report_failures > 0 && !runs_failed {
+        eprintln!(
+            "sooth: the runner exited 0 but the report shows {report_failures} failing \
+             test(s) — exiting 1 (the runner and its report must agree for a 0)"
+        );
     }
+    if suite_failed(&outcomes, junit_summary.as_ref()) {
+        ExitCode::FAILURE
+    } else {
+        ExitCode::SUCCESS
+    }
+}
+
+/// Whether the suite failed, combining both signals: a nonzero runner exit
+/// *or* failures/errors in the parsed report. A failure is never upgraded to
+/// success — sooth exits 0 only when the runner and its report agree that
+/// everything passed (see `DECISIONS.md`).
+fn suite_failed(outcomes: &[runner::RunOutcome], summary: Option<&JunitSummary>) -> bool {
+    outcomes.iter().any(|outcome| !outcome.success)
+        || summary.is_some_and(|summary| summary.failed + summary.error > 0)
 }
 
 /// A flag `sooth` cannot honor, if any. Rejecting loudly beats silently
@@ -424,6 +444,50 @@ mod tests {
             "pytest",
         ]);
         assert_eq!(rejected_flag(&args), None);
+    }
+
+    #[test]
+    fn the_suite_fails_when_the_report_shows_failures_even_if_the_runner_exited_zero() {
+        let clean_run = [outcome(true)];
+        let failing_report = JunitReport {
+            test_cases: vec![test_case("bad", TestStatus::Failed, 0.1)],
+        };
+        let summary = JunitSummary::from_report(&failing_report, 10);
+        assert!(super::suite_failed(&clean_run, Some(&summary)));
+    }
+
+    #[test]
+    fn an_erroring_test_in_the_report_also_fails_the_suite() {
+        let clean_run = [outcome(true)];
+        let erroring_report = JunitReport {
+            test_cases: vec![test_case("boom", TestStatus::Error, 0.1)],
+        };
+        let summary = JunitSummary::from_report(&erroring_report, 10);
+        assert!(super::suite_failed(&clean_run, Some(&summary)));
+    }
+
+    #[test]
+    fn the_suite_fails_on_a_nonzero_runner_even_with_a_clean_report() {
+        let failed_run = [outcome(false)];
+        let clean_report = JunitReport {
+            test_cases: vec![test_case("ok", TestStatus::Passed, 0.1)],
+        };
+        let summary = JunitSummary::from_report(&clean_report, 10);
+        assert!(super::suite_failed(&failed_run, Some(&summary)));
+    }
+
+    #[test]
+    fn the_suite_passes_when_runner_and_report_agree() {
+        let clean_run = [outcome(true)];
+        let report_with_skips = JunitReport {
+            test_cases: vec![
+                test_case("ok", TestStatus::Passed, 0.1),
+                test_case("later", TestStatus::Skipped, 0.0),
+            ],
+        };
+        let summary = JunitSummary::from_report(&report_with_skips, 10);
+        assert!(!super::suite_failed(&clean_run, Some(&summary)));
+        assert!(!super::suite_failed(&clean_run, None));
     }
 
     #[test]
