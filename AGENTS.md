@@ -11,21 +11,23 @@ per version, and `DECISIONS.md` for the reasoning behind non-obvious choices.
 
 ## `src/` module structure
 
-`cli.rs` and `runner.rs` exist; the remaining modules are the shape to grow into, one module per
-concern:
+`cli.rs`, `runner.rs`, `junit.rs` and `preset.rs` exist; the remaining modules are the shape to
+grow into, one module per concern:
 
 ```
 src/
-├── cli.rs        # EXISTS — clap definitions: subcommands, --preset, --runs, --json, --slowest
-├── runner.rs      # EXISTS — spawns the test subprocess, captures exit status + wall time
-├── junit.rs       # tolerant JUnit-XML union schema; presets inject the right reporter flags
+├── cli.rs        # EXISTS — clap definitions: subcommands, --preset, --runs, --json, --slowest, --junit
+├── runner.rs      # EXISTS — spawns the test subprocess (with env injection), captures exit status + wall time
+├── junit.rs       # EXISTS — tolerant JUnit-XML union schema (parse_str/parse_file)
+├── preset.rs      # EXISTS — presets inject reporter flags/env and manage the temp report
 ├── analyzers/     # flaky.rs, slow.rs, order.rs — kept strictly separate (see ROADMAP.md)
-└── report.rs      # colored terminal table + --json
+└── report.rs      # colored terminal table + full --json report
 ```
 
-Flags that parse but are not wired up yet (`--preset`, `--json`, `--slowest`) are rejected with a
-"not implemented yet" error — never silently ignored. Exit codes are a contract: `0` every run
-passed, `1` at least one run failed, `2` sooth itself failed (see `DECISIONS.md`).
+Flags sooth cannot honor are rejected loudly, never silently ignored: `--json`/`--slowest`
+require a report source (`--junit` or `--preset`), and `--preset` conflicts with `--junit`. Exit
+codes are a contract: `0` every run passed, `1` at least one run failed, `2` sooth itself failed
+(see `DECISIONS.md`).
 
 `egress` (network-egress detection) is a later, separate module tied to the spike in
 `DECISIONS.md` — do not start it as part of the core.

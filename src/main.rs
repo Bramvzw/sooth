@@ -6,6 +6,7 @@
 
 mod cli;
 mod junit;
+mod preset;
 mod runner;
 
 use std::fmt::Write as _;
@@ -30,39 +31,63 @@ fn main() -> ExitCode {
     }
 }
 
-/// Handle `sooth run`: execute the test command, then — if `--junit` was
-/// given — parse the report it produced and extend the output with totals
-/// and the slowest tests. Without `--junit` the output is unchanged from the
-/// plain per-run report.
+/// Handle `sooth run`: execute the test command, then — when a report source
+/// is given — parse the JUnit-XML report and extend the output with totals and the
+/// slowest tests. `--junit` points at a report the command already writes;
+/// `--preset` injects the right reporter flags and manages a temp report
+/// itself. Without either, the output is the plain per-run report.
 fn run(args: &cli::RunArgs) -> ExitCode {
     if let Some(reason) = rejected_flag(args) {
         eprintln!("sooth: {reason}");
         return ExitCode::from(EXIT_SOOTH_ERROR);
     }
 
-    let outcomes = match runner::run(&args.command, args.runs) {
+    let (command, envs, report_source) = match args.preset {
+        Some(chosen) => {
+            let path = match preset::report_path() {
+                Ok(path) => path,
+                Err(err) => {
+                    eprintln!("sooth: failed to create a temp directory for the report: {err}");
+                    return ExitCode::from(EXIT_SOOTH_ERROR);
+                }
+            };
+            let (command, envs) = preset::inject(&args.command, chosen, &path);
+            (command, envs, Some(path))
+        }
+        None => (args.command.clone(), Vec::new(), args.junit.clone()),
+    };
+
+    let outcomes = match runner::run(&command, args.runs, &envs) {
         Ok(outcomes) => outcomes,
         Err(err) => {
-            let program = &args.command[0];
+            let program = &command[0];
             eprintln!("sooth: failed to run `{program}`: {err}");
             return ExitCode::from(EXIT_SOOTH_ERROR);
         }
     };
 
-    let junit_summary = match &args.junit {
-        Some(path) => match junit::parse_file(path) {
-            Ok(parsed) => Some(JunitSummary::from_report(
-                &parsed,
+    let junit_summary = match &report_source {
+        Some(path) => {
+            let preset_program = args.preset.map(|_| command[0].as_str());
+            let loaded = load_summary(
+                path,
+                preset_program,
                 args.slowest.unwrap_or(DEFAULT_SLOWEST),
-            )),
-            Err(err) => {
-                eprintln!(
-                    "sooth: failed to parse JUnit-XML report `{}`: {err}",
-                    path.display()
-                );
-                return ExitCode::from(EXIT_SOOTH_ERROR);
+            );
+            if args.preset.is_some() {
+                // Best-effort cleanup of the preset's private report dir —
+                // the parse result is already in memory. A user's own --junit
+                // file is never removed.
+                cleanup_preset_report(path);
             }
-        },
+            match loaded {
+                Ok(summary) => Some(summary),
+                Err(message) => {
+                    eprintln!("sooth: {message}");
+                    return ExitCode::from(EXIT_SOOTH_ERROR);
+                }
+            }
+        }
         None => None,
     };
 
@@ -83,25 +108,54 @@ fn run(args: &cli::RunArgs) -> ExitCode {
 }
 
 /// A flag `sooth` cannot honor, if any. Rejecting loudly beats silently
-/// ignoring — this tool's brand is the truth. `--preset` is not implemented
-/// yet; `--json` and `--slowest` only mean something once there is a report
-/// to summarize, so they require `--junit` until presets locate the report
-/// automatically.
+/// ignoring — this tool's brand is the truth. `--json` and `--slowest` only
+/// mean something once there is a report to summarize: `--junit` brings your
+/// own, `--preset` has the runner write one.
 fn rejected_flag(args: &cli::RunArgs) -> Option<&'static str> {
-    if args.preset.is_some() {
-        return Some("`--preset` is not implemented yet (lands in v0.1)");
-    }
-    if args.junit.is_none() {
+    if args.junit.is_none() && args.preset.is_none() {
         if args.json {
-            return Some("`--json` requires `--junit <PATH>` (presets locate the report in v0.1)");
+            return Some("`--json` requires a report: `--junit <PATH>` or `--preset <RUNNER>`");
         }
         if args.slowest.is_some() {
-            return Some(
-                "`--slowest` requires `--junit <PATH>` (presets locate the report in v0.1)",
-            );
+            return Some("`--slowest` requires a report: `--junit <PATH>` or `--preset <RUNNER>`");
         }
     }
     None
+}
+
+/// Load and summarize the JUnit-XML report at `path`. `preset_program` is the
+/// wrapped program name when the report is preset-managed — used to turn "no
+/// report was written" into an actionable message instead of a parse error
+/// about a temp path the user never chose.
+fn load_summary(
+    path: &std::path::Path,
+    preset_program: Option<&str>,
+    slowest: usize,
+) -> Result<JunitSummary, String> {
+    if let Some(program) = preset_program {
+        if !path.exists() {
+            return Err(format!(
+                "the test command wrote no JUnit-XML report — is the reporter available, \
+                 and is `{program}` the test runner itself rather than a wrapper like \
+                 `python -m`, `npm` or `php artisan`?"
+            ));
+        }
+    }
+    match junit::parse_file(path) {
+        Ok(parsed) => Ok(JunitSummary::from_report(&parsed, slowest)),
+        Err(err) => Err(format!(
+            "failed to parse JUnit-XML report `{}`: {err}",
+            path.display()
+        )),
+    }
+}
+
+/// Best-effort removal of a preset's private report directory (file + dir).
+fn cleanup_preset_report(path: &std::path::Path) {
+    let _ = std::fs::remove_file(path);
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::remove_dir(dir);
+    }
 }
 
 /// Print a per-run line for each outcome.
@@ -357,12 +411,44 @@ mod tests {
     }
 
     #[test]
-    fn preset_and_reportless_flags_are_rejected() {
+    fn json_and_slowest_are_accepted_with_a_preset() {
+        let args = parse_run_args(&[
+            "sooth",
+            "run",
+            "--preset",
+            "pytest",
+            "--json",
+            "--slowest",
+            "3",
+            "--",
+            "pytest",
+        ]);
+        assert_eq!(rejected_flag(&args), None);
+    }
+
+    #[test]
+    fn a_preset_run_that_writes_no_report_gets_an_actionable_error() {
+        let missing = std::env::temp_dir().join("sooth-test-no-such-report.xml");
+        let message = super::load_summary(&missing, Some("pytest"), 10)
+            .err()
+            .expect("a missing preset report should error");
+        assert!(message.contains("wrote no JUnit-XML report"));
+        assert!(message.contains("pytest"));
+    }
+
+    #[test]
+    fn a_missing_user_junit_file_reports_the_path() {
+        let missing = std::env::temp_dir().join("sooth-test-no-such-report.xml");
+        let message = super::load_summary(&missing, None, 10)
+            .err()
+            .expect("a missing --junit file should error");
+        assert!(message.contains("failed to parse"));
+        assert!(message.contains("sooth-test-no-such-report.xml"));
+    }
+
+    #[test]
+    fn reportless_json_and_slowest_are_rejected() {
         for (cmdline, fragment) in [
-            (
-                vec!["sooth", "run", "--preset", "pytest", "--", "true"],
-                "--preset",
-            ),
             (vec!["sooth", "run", "--json", "--", "true"], "--json"),
             (
                 vec!["sooth", "run", "--slowest", "3", "--", "true"],
