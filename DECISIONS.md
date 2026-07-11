@@ -121,6 +121,20 @@ spawned, the report could not be parsed, or a flag cannot be honored yet).
 Grep-style: CI can tell a red suite apart from a broken invocation. Fixed
 before v0.1 so the codes never have to change under users' feet.
 
+Refinement (story #57): with a report source, "the suite passed" requires the
+runner *and* its report to agree. A runner that exits 0 while its report
+contains failures/errors (misconfiguration, suppress-exit-code plugins, a
+wrapper swallowing the status) makes sooth exit 1 and say so loudly on
+stderr — printing "1 failed" while exiting 0 would be two truths at once, and
+CI reads exit codes, not warnings. Not exit 2: sooth *could* do its job here
+(it knows a test failed), and CI treats 2 as an infra error with different
+retry/alert behavior. The rule is monotone — a failure is never upgraded to
+success, a clean pair stays 0 — and doubles as v0.2's per-run outcome
+definition: a run failed iff the runner exited nonzero or its report shows
+failures. Users who deliberately configure exit-0-on-failure runners see
+their pipeline turn red behind sooth; that is the product, not a bug. An
+explicit escape hatch (e.g. `--exit-code=runner`) waits for real demand.
+
 ## `quick-xml` (event-based, not `serde`) for the JUnit parser
 
 There is no real JUnit-XML standard (see above): the union schema `sooth`

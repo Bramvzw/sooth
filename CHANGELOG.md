@@ -38,6 +38,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   flags).
 - Flags sooth cannot honor fail loudly instead of being silently ignored:
   `--json` and `--slowest` require a report source (`--junit` or `--preset`).
+- With a report source, exit 0 now requires the runner *and* its report to
+  agree: a runner that exits 0 while the report contains failures or errors
+  makes sooth exit 1, with a loud stderr note about the mismatch.
 - The crate description no longer advertises cut or post-v1 features
   (assertionless-test detection, network egress).
 
