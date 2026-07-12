@@ -302,6 +302,23 @@ mod tests {
     }
 
     #[test]
+    fn parses_the_empty_testsuite_fixture_as_a_valid_empty_report() {
+        let report = super::parse_str(include_str!("../tests/fixtures/empty_testsuite.xml"))
+            .expect("an empty suite is a valid report, not an error");
+        assert!(report.test_cases.is_empty());
+    }
+
+    #[test]
+    fn parses_the_missing_durations_fixture_defaulting_times_to_zero() {
+        let report = super::parse_str(include_str!("../tests/fixtures/missing_durations.xml"))
+            .expect("missing time attributes are tolerated");
+        assert_eq!(report.test_cases.len(), 3);
+        assert_eq!(report.test_cases[0].duration, std::time::Duration::ZERO);
+        assert_eq!(report.test_cases[1].status, super::TestStatus::Skipped);
+        assert_eq!(report.test_cases[2].status, super::TestStatus::Error);
+    }
+
+    #[test]
     fn parses_the_pytest_testsuites_fixture() {
         let report = parse_file(&fixture("pytest_testsuites.xml")).unwrap();
         assert_eq!(report.test_cases.len(), 2);
