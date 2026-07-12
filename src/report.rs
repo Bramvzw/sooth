@@ -109,9 +109,19 @@ impl JunitSummary {
             slowest: by_duration
                 .into_iter()
                 .take(slowest)
-                .map(|case| (case.name.clone(), case.duration))
+                .map(|case| (qualified_name(case), case.duration))
                 .collect(),
         }
+    }
+}
+
+/// `classname::name` when a classname is present, bare `name` otherwise.
+/// Runner test names (`testItWorks`, `test_create`) are anything but unique
+/// across classes; the classname is what disambiguates two slow tests.
+fn qualified_name(case: &junit::TestCase) -> String {
+    match &case.classname {
+        Some(classname) => format!("{classname}::{}", case.name),
+        None => case.name.clone(),
     }
 }
 
@@ -354,6 +364,20 @@ mod tests {
                 ("medium".to_owned(), Duration::from_secs_f64(1.0)),
             ]
         );
+    }
+
+    #[test]
+    fn the_slowest_ranking_qualifies_names_with_their_classname() {
+        let mut with_class = test_case("test_create", TestStatus::Passed, 1.0);
+        with_class.classname = Some("Modules.Order.OrderTest".to_owned());
+        let report = JunitReport {
+            test_cases: vec![with_class, test_case("bare", TestStatus::Passed, 0.5)],
+        };
+
+        let summary = JunitSummary::from_report(&report, 10);
+
+        assert_eq!(summary.slowest[0].0, "Modules.Order.OrderTest::test_create");
+        assert_eq!(summary.slowest[1].0, "bare");
     }
 
     #[test]
