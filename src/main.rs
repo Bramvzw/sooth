@@ -234,8 +234,15 @@ fn load_summary(
     }
 }
 
-/// Whether the report predates this run. Two seconds of tolerance absorbs
-/// coarse filesystem mtime granularity; a missing file or a filesystem
+/// Tolerance before a report counts as stale: wide enough to absorb coarse
+/// filesystem timestamps *and* modest clock skew between sooth and a network
+/// filesystem's server. The real failure mode this guards against — the
+/// runner wrote nothing and the file is from an earlier run — is minutes to
+/// days old, so generosity here costs almost nothing while a false "stale"
+/// on a fresh report would be its own lie.
+const STALE_TOLERANCE: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// Whether the report predates this run. A missing file or a filesystem
 /// without mtimes skips the check (the parse step reports missing files with
 /// its own, better message).
 fn report_is_stale(path: &std::path::Path, run_started: std::time::SystemTime) -> bool {
@@ -246,7 +253,7 @@ fn report_is_stale(path: &std::path::Path, run_started: std::time::SystemTime) -
         return false;
     };
     match run_started.duration_since(modified) {
-        Ok(age_before_start) => age_before_start > std::time::Duration::from_secs(2),
+        Ok(age_before_start) => age_before_start > STALE_TOLERANCE,
         // Modified after the run started: fresh.
         Err(_) => false,
     }
@@ -351,9 +358,15 @@ mod tests {
         let path =
             std::env::temp_dir().join(format!("sooth-stale-test-{}.xml", std::process::id()));
         std::fs::write(&path, "x").unwrap();
-        let long_after_write = std::time::SystemTime::now() + std::time::Duration::from_secs(60);
-        assert!(super::report_is_stale(&path, long_after_write));
-        let before_write = std::time::SystemTime::now() - std::time::Duration::from_secs(60);
+        let modified = std::fs::metadata(&path).unwrap().modified().unwrap();
+        // Pin the tolerance boundary itself, not just far-away cases: just
+        // inside stays fresh, just past it turns stale.
+        let just_inside =
+            modified + super::STALE_TOLERANCE.saturating_sub(std::time::Duration::from_secs(5));
+        assert!(!super::report_is_stale(&path, just_inside));
+        let just_past = modified + super::STALE_TOLERANCE + std::time::Duration::from_secs(5);
+        assert!(super::report_is_stale(&path, just_past));
+        let before_write = modified - std::time::Duration::from_secs(60);
         assert!(!super::report_is_stale(&path, before_write));
         let _ = std::fs::remove_file(&path);
     }

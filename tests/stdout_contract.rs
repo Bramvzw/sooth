@@ -22,7 +22,7 @@ fn fixture() -> &'static str {
 fn fresh_report(tag: &str) -> (PathBuf, String) {
     let path =
         std::env::temp_dir().join(format!("sooth-contract-{tag}-{}.xml", std::process::id()));
-    let write_during_run = format!("cp {} {}", fixture(), path.display());
+    let write_during_run = format!("cp '{}' '{}'", fixture(), path.display());
     (path, write_during_run)
 }
 
@@ -152,12 +152,15 @@ fn a_junit_report_that_predates_the_run_is_rejected_as_stale() {
 
 /// Set the file's mtime `secs` into the past using `touch -t` — std has no
 /// stable set-mtime API and a dev-dependency for one test is not worth it.
+/// Covers BSD (`date -v`) and GNU (`date -d`); busybox `date` is not
+/// supported and fails this test's `is_ok` assert loudly rather than
+/// passing silently.
 fn filetime_from_secs_ago(path: &std::path::Path, secs: u64) -> std::io::Result<()> {
     let status = Command::new("sh")
         .args([
             "-c",
             &format!(
-                "touch -m -t \"$(date -v-{secs}S '+%Y%m%d%H%M.%S' 2>/dev/null || date -d '-{secs} seconds' '+%Y%m%d%H%M.%S')\" {}",
+                "touch -m -t \"$(date -v-{secs}S '+%Y%m%d%H%M.%S' 2>/dev/null || date -d '-{secs} seconds' '+%Y%m%d%H%M.%S' 2>/dev/null)\" '{}'",
                 path.display()
             ),
         ])

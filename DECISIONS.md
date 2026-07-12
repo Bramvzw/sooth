@@ -270,8 +270,9 @@ revisit again if it grows nested or dynamic.
 ## A stale `--junit` report is an error, not input
 
 `--junit` means "the report this run produces". A file whose mtime predates
-the run start — with two seconds of tolerance for coarse filesystem
-timestamps — is rejected with exit 2: the runner most likely wrote nothing
+the run start — with a generous 60-second tolerance that absorbs coarse
+filesystem timestamps *and* modest clock skew against a network filesystem's
+server (the genuine failure is minutes to days old) — is rejected with exit 2: the runner most likely wrote nothing
 (wrong reporter flag, crash), and presenting yesterday's suite as today's
 truth is the worst failure mode for this tool. Filesystems without mtimes
 skip the check; a false "stale" on a fresh report would be its own lie.

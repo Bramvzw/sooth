@@ -40,8 +40,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Bare `--json` prints the JSON as sooth's final stdout line; the new
   `--json=PATH` writes it to a file and keeps the human report on stdout.
 - A `--junit` report that predates the run is rejected as stale (exit 2)
-  instead of being parsed as this run's result, with a 2-second tolerance
-  for coarse filesystem timestamps.
+  instead of being parsed as this run's result, with a 60-second tolerance
+  for coarse filesystem timestamps and modest clock skew.
 
 ### Changed
 
