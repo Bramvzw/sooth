@@ -13,6 +13,28 @@ sooth run --preset pytest -- pytest
 > 🚧 Work in progress. Reserving the name and building the first version. See `ROADMAP.md` for the
 > full plan and `DECISIONS.md` for why it's built this way.
 
+## Usage
+
+```
+# a known runner: the preset injects the reporter flags and reads the report
+sooth run --preset pytest -- pytest
+sooth run --preset phpunit -- vendor/bin/phpunit
+
+# any other runner: point sooth at the JUnit-XML report your command writes
+sooth run --junit report.xml -- ./run-tests.sh
+
+# machine-readable JSON, straight to a file
+sooth run --preset pytest --json=sooth.json -- pytest
+```
+
+The command after `--` must be the test runner itself — not a wrapper like
+`python -m pytest` or `npm test`. Laravel parallel testing works by invoking
+paratest directly; see the `--preset` help for details.
+
+Exit codes: `0` — the runner and its report agree everything passed; `1` —
+the suite failed; `2` — sooth itself failed (your CI can tell a red suite
+from a broken invocation).
+
 ## Status
 
 - [ ] **v0.1** — `sooth run -- <cmd>` runs your suite once, parses the JUnit XML it produced, and

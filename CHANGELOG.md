@@ -9,65 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- Project governance basis: licensing, CI, commit-message linting, `AGENTS.md`,
-  `ROADMAP.md`, `DECISIONS.md`, `SECURITY.md`.
-- `sooth run` CLI skeleton (clap): `--preset`, `--runs`, `--json`, `--slowest`,
-  and the test command given after `--`.
-- `sooth run` executes the test command (`--runs` times, fixed order) with
-  inherited stdio and reports each run's exit code and wall-time.
-- `junit` module: tolerant JUnit-XML parser (`parse_str`/`parse_file`) that
-  accepts either a `<testsuites>` or a bare `<testsuite>` root, ignores
-  unknown attributes/elements, and never panics on malformed input.
-- `sooth run --junit <PATH>` parses that report after the run and extends
-  the output with total/passed/failed/error/skipped counts and the slowest
-  `--slowest` tests; `--json` emits this as JSON alongside the run outcomes.
-- On Unix, a run terminated by a signal reports the signal number instead of a
-  bare "signal".
-- Presets are wired up: `--preset pytest|phpunit|jest|go` injects the right
-  reporter flags (pytest `--junit-xml`, PHPUnit `--log-junit`, gotestsum
-  `--junitfile`, Jest `--reporters` + `JEST_JUNIT_OUTPUT_FILE`), has the
-  runner write into a fresh private temp directory, parses the report after
-  the run, and cleans it up. A preset run that produces no report fails with
-  an actionable hint (reporter missing, or the command is a wrapper instead
-  of the runner itself). `--preset` conflicts with `--junit`.
-
-- Colored human report: per-run lines label the runner's own exit status as
-  `runner exit=`/`runner signal` (distinct from sooth's exit-code contract),
-  totals and the slowest list are colored, and a closing
-  `result: PASSED/FAILED` verdict line summarizes the suite. `--color
-  auto|always|never` with `NO_COLOR` support.
-- The `--json` output is versioned (`schema_version`, `sooth_version`).
-  Bare `--json` prints the JSON as sooth's final stdout line; the new
-  `--json=PATH` writes it to a file and keeps the human report on stdout.
-- The slowest-tests ranking (text and `--json`) qualifies test names with
-  their classname (`Modules.Order.OrderTest::test_create`) when the report
-  provides one — bare names are anything but unique across classes.
-- A `--junit` report that predates the run is rejected as stale (exit 2)
-  instead of being parsed as this run's result, with a 60-second tolerance
-  for coarse filesystem timestamps and modest clock skew.
-
-### Changed
-
-- Exit codes now distinguish outcomes: `0` all runs passed, `1` at least one
-  run failed, `2` sooth itself failed (spawn error, unparsable report, bad
-  flags).
-- Flags sooth cannot honor fail loudly instead of being silently ignored:
-  `--json` and `--slowest` require a report source (`--junit` or `--preset`).
-- With a report source, exit 0 now requires the runner *and* its report to
-  agree: a runner that exits 0 while the report contains failures or errors
-  makes sooth exit 1, with a loud stderr note about the mismatch.
-- The crate description no longer advertises cut or post-v1 features
-  (assertionless-test detection, network egress).
-
-- `unsafe_code` is now `forbid` (was `deny`): no `#[allow]` can override it,
-  so "no unsafe in this binary" is a guarantee. CI also fails on rustdoc
-  warnings.
-
-### Fixed
-
-- CI now actually uses the toolchain pinned in `rust-toolchain.toml`: the
-  toolchain action exported `RUSTUP_TOOLCHAIN`, which silently overrode the
-  pin with rolling `stable`.
-- The release workflow verifies the tag matches the crate version and
-  publishes via crates.io Trusted Publishing (OIDC) instead of a long-lived
-  `CARGO_REGISTRY_TOKEN` secret.
+- `sooth run -- <command>`: run any test command (`--runs N` times, fixed
+  order) with inherited stdio, per-run `runner exit=`/`runner signal` lines,
+  and a closing `result: PASSED/FAILED` verdict.
+- Report sources: `--preset pytest|phpunit|jest|go` injects the right
+  reporter flags and manages a private temp report; `--junit <PATH>` reads
+  the report your command writes during the run (a file that predates the
+  run is rejected as stale).
+- Tolerant JUnit-XML parser: accepts a `<testsuites>` or bare `<testsuite>`
+  root, ignores unknown attributes and elements, and never panics on
+  malformed input.
+- Totals and a slowest-N ranking with classname-qualified test names,
+  colored terminal output (`--color auto|always|never`, `NO_COLOR`
+  respected), and machine JSON via bare `--json` (sooth's final stdout
+  line) or `--json=PATH` (a clean file), versioned with `schema_version`.
+- An exit-code contract: `0` — the runner and its report agree everything
+  passed; `1` — the suite failed (either signal); `2` — sooth itself failed.
+  Runner/report mismatches and unusable flag combinations fail loudly.
