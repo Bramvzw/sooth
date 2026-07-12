@@ -54,9 +54,9 @@ pub struct RunArgs {
     #[arg(long)]
     pub slowest: Option<usize>,
 
-    /// Path to a JUnit-XML report produced by the test command. When given,
-    /// sooth parses it after the run and reports totals, status counts, and
-    /// the slowest tests.
+    /// Path to the JUnit-XML report the test command writes during the run.
+    /// sooth parses it afterwards and reports totals, status counts, and the
+    /// slowest tests; a file that predates the run is rejected as stale.
     #[arg(long, value_name = "PATH")]
     pub junit: Option<PathBuf>,
 

@@ -42,6 +42,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The slowest-tests ranking (text and `--json`) qualifies test names with
   their classname (`Modules.Order.OrderTest::test_create`) when the report
   provides one — bare names are anything but unique across classes.
+- A `--junit` report that predates the run is rejected as stale (exit 2)
+  instead of being parsed as this run's result, with a 60-second tolerance
+  for coarse filesystem timestamps and modest clock skew.
 
 ### Changed
 
