@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<testsuite name="no-times">
+  <testcase classname="a" name="no_time_attr" />
+  <testcase classname="a" name="skipped_no_time"><skipped/></testcase>
+  <testcase classname="a" name="errored" time="0.5"><error message="boom"/></testcase>
+</testsuite>
