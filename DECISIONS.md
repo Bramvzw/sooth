@@ -267,6 +267,17 @@ an incompatible change) and `sooth_version`. The hand-rolled-JSON decision was
 revisited here as promised and kept: the shape is still small and fixed;
 revisit again if it grows nested or dynamic.
 
+## A stale `--junit` report is an error, not input
+
+`--junit` means "the report this run produces". A file whose mtime predates
+the run start — with two seconds of tolerance for coarse filesystem
+timestamps — is rejected with exit 2: the runner most likely wrote nothing
+(wrong reporter flag, crash), and presenting yesterday's suite as today's
+truth is the worst failure mode for this tool. Filesystems without mtimes
+skip the check; a false "stale" on a fresh report would be its own lie.
+Presets are immune by construction: their report lives in a directory created
+fresh for the invocation.
+
 ## Color: `--color` beats `NO_COLOR` beats terminal detection
 
 An explicit `--color always|never` is the user speaking now and wins over

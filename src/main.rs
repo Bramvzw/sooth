@@ -59,6 +59,7 @@ fn run(args: &cli::RunArgs) -> ExitCode {
         None => (args.command.clone(), Vec::new(), args.junit.clone()),
     };
 
+    let run_started = std::time::SystemTime::now();
     let outcomes = match runner::run(&command, args.runs, &envs) {
         Ok(outcomes) => outcomes,
         Err(err) => {
@@ -70,6 +71,18 @@ fn run(args: &cli::RunArgs) -> ExitCode {
 
     let junit_summary = match &report_source {
         Some(path) => {
+            // A --junit report that predates the run is the classic silent
+            // failure: the runner wrote nothing (wrong flag, crash) and sooth
+            // would report yesterday's truth. Presets skip this: their report
+            // lives in a directory created fresh for this invocation.
+            if args.preset.is_none() && report_is_stale(path, run_started) {
+                eprintln!(
+                    "sooth: the JUnit-XML report at `{}` was not touched by this run — it \
+                     predates the test command. Is the runner writing its report to this path?",
+                    path.display()
+                );
+                return ExitCode::from(EXIT_SOOTH_ERROR);
+            }
             let preset_program = args.preset.map(|_| command[0].as_str());
             let loaded = load_summary(
                 path,
@@ -105,45 +118,8 @@ fn run(args: &cli::RunArgs) -> ExitCode {
         );
     }
 
-    match (&junit_summary, &args.json) {
-        // Bare --json: sooth's own stdout output is exactly one line of
-        // JSON, printed after the wrapped command finished (last-line
-        // contract — the child's output still shares the stream).
-        (Some(summary), Some(None)) => println!("{}", report::to_json(&outcomes, summary)),
-        // --json=PATH: the machine output goes to a file, the human report
-        // stays on stdout.
-        (Some(summary), Some(Some(path))) => {
-            report::print_runs(&outcomes, style);
-            report::print_summary(summary, style);
-            let json = report::to_json(&outcomes, summary);
-            if let Err(err) = std::fs::write(path, json + "\n") {
-                eprintln!(
-                    "sooth: failed to write JSON report `{}`: {err}",
-                    path.display()
-                );
-                return ExitCode::from(EXIT_SOOTH_ERROR);
-            }
-            println!(
-                "{}",
-                report::verdict_line(&outcomes, junit_summary.as_ref(), failed, style)
-            );
-        }
-        (Some(summary), None) => {
-            report::print_runs(&outcomes, style);
-            report::print_summary(summary, style);
-            println!(
-                "{}",
-                report::verdict_line(&outcomes, junit_summary.as_ref(), failed, style)
-            );
-        }
-        (None, _) => {
-            // Unreachable with json set: rejected_flag exits earlier when
-            // --json has no report source. Assert that invariant locally so
-            // a weakened guard fails loudly instead of dropping output.
-            debug_assert!(args.json.is_none());
-            report::print_runs(&outcomes, style);
-            println!("{}", report::verdict_line(&outcomes, None, failed, style));
-        }
+    if let Some(exit) = emit_output(args, &outcomes, junit_summary.as_ref(), failed, style) {
+        return exit;
     }
 
     if failed {
@@ -151,6 +127,59 @@ fn run(args: &cli::RunArgs) -> ExitCode {
     } else {
         ExitCode::SUCCESS
     }
+}
+
+/// Print the run's output in the shape the flags ask for. Returns an exit
+/// code only when emitting itself failed (the JSON file could not be
+/// written).
+fn emit_output(
+    args: &cli::RunArgs,
+    outcomes: &[runner::RunOutcome],
+    junit_summary: Option<&JunitSummary>,
+    failed: bool,
+    style: report::Style,
+) -> Option<ExitCode> {
+    match (junit_summary, &args.json) {
+        // Bare --json: sooth's own stdout output is exactly one line of
+        // JSON, printed after the wrapped command finished (last-line
+        // contract — the child's output still shares the stream).
+        (Some(summary), Some(None)) => println!("{}", report::to_json(outcomes, summary)),
+        // --json=PATH: the machine output goes to a file, the human report
+        // stays on stdout.
+        (Some(summary), Some(Some(path))) => {
+            report::print_runs(outcomes, style);
+            report::print_summary(summary, style);
+            let json = report::to_json(outcomes, summary);
+            if let Err(err) = std::fs::write(path, json + "\n") {
+                eprintln!(
+                    "sooth: failed to write JSON report `{}`: {err}",
+                    path.display()
+                );
+                return Some(ExitCode::from(EXIT_SOOTH_ERROR));
+            }
+            println!(
+                "{}",
+                report::verdict_line(outcomes, junit_summary, failed, style)
+            );
+        }
+        (Some(summary), None) => {
+            report::print_runs(outcomes, style);
+            report::print_summary(summary, style);
+            println!(
+                "{}",
+                report::verdict_line(outcomes, junit_summary, failed, style)
+            );
+        }
+        (None, _) => {
+            // Unreachable with json set: rejected_flag exits earlier when
+            // --json has no report source. Assert that invariant locally so
+            // a weakened guard fails loudly instead of dropping output.
+            debug_assert!(args.json.is_none());
+            report::print_runs(outcomes, style);
+            println!("{}", report::verdict_line(outcomes, None, failed, style));
+        }
+    }
+    None
 }
 
 /// A flag `sooth` cannot honor, if any. Rejecting loudly beats silently
@@ -202,6 +231,24 @@ fn load_summary(
             "failed to parse JUnit-XML report `{}`: {err}",
             path.display()
         )),
+    }
+}
+
+/// Whether the report predates this run. Two seconds of tolerance absorbs
+/// coarse filesystem mtime granularity; a missing file or a filesystem
+/// without mtimes skips the check (the parse step reports missing files with
+/// its own, better message).
+fn report_is_stale(path: &std::path::Path, run_started: std::time::SystemTime) -> bool {
+    let Ok(metadata) = std::fs::metadata(path) else {
+        return false;
+    };
+    let Ok(modified) = metadata.modified() else {
+        return false;
+    };
+    match run_started.duration_since(modified) {
+        Ok(age_before_start) => age_before_start > std::time::Duration::from_secs(2),
+        // Modified after the run started: fresh.
+        Err(_) => false,
     }
 }
 
@@ -297,6 +344,28 @@ mod tests {
             .expect("a missing --junit file should error");
         assert!(message.contains("failed to parse"));
         assert!(message.contains("sooth-test-no-such-report.xml"));
+    }
+
+    #[test]
+    fn a_report_older_than_the_run_start_is_stale() {
+        let path =
+            std::env::temp_dir().join(format!("sooth-stale-test-{}.xml", std::process::id()));
+        std::fs::write(&path, "x").unwrap();
+        let long_after_write = std::time::SystemTime::now() + std::time::Duration::from_secs(60);
+        assert!(super::report_is_stale(&path, long_after_write));
+        let before_write = std::time::SystemTime::now() - std::time::Duration::from_secs(60);
+        assert!(!super::report_is_stale(&path, before_write));
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn a_missing_report_is_not_stale() {
+        // Missing files take the parse-error path, which has a better message.
+        let missing = std::env::temp_dir().join("sooth-stale-test-missing.xml");
+        assert!(!super::report_is_stale(
+            &missing,
+            std::time::SystemTime::now()
+        ));
     }
 
     #[test]

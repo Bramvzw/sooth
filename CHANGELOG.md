@@ -39,6 +39,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The `--json` output is versioned (`schema_version`, `sooth_version`).
   Bare `--json` prints the JSON as sooth's final stdout line; the new
   `--json=PATH` writes it to a file and keeps the human report on stdout.
+- A `--junit` report that predates the run is rejected as stale (exit 2)
+  instead of being parsed as this run's result, with a 2-second tolerance
+  for coarse filesystem timestamps.
 
 ### Changed
 

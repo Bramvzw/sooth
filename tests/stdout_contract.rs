@@ -1,7 +1,8 @@
 //! What `sooth run` puts on stdout is a public contract (see the `--json`
 //! entry in `DECISIONS.md`), so it is pinned against the real binary.
-#![cfg(unix)] // the wrapped command is `true`, which only exists on Unix
+#![cfg(unix)] // the wrapped commands are `true` and `sh`, which are Unix-only
 
+use std::path::PathBuf;
 use std::process::Command;
 
 fn sooth() -> Command {
@@ -15,21 +16,35 @@ fn fixture() -> &'static str {
     )
 }
 
+/// A per-test temp path for the report. The wrapped command copies the
+/// fixture into place *during the run*, because a `--junit` file that
+/// predates the run is rejected as stale.
+fn fresh_report(tag: &str) -> (PathBuf, String) {
+    let path =
+        std::env::temp_dir().join(format!("sooth-contract-{tag}-{}.xml", std::process::id()));
+    let write_during_run = format!("cp {} {}", fixture(), path.display());
+    (path, write_during_run)
+}
+
 #[test]
 fn bare_json_prints_exactly_one_stdout_line_of_json() {
+    let (report, write_report) = fresh_report("bare-json");
     let output = sooth()
         .args([
             "run",
             "--junit",
-            fixture(),
+            &report.display().to_string(),
             "--json",
             "--color",
             "never",
             "--",
-            "true",
+            "sh",
+            "-c",
+            &write_report,
         ])
         .output()
         .expect("sooth should run");
+    let _ = std::fs::remove_file(&report);
 
     let stdout = String::from_utf8(output.stdout).expect("stdout should be UTF-8");
     let lines: Vec<&str> = stdout.lines().collect();
@@ -40,7 +55,7 @@ fn bare_json_prints_exactly_one_stdout_line_of_json() {
     );
     assert!(lines[0].starts_with(r#"{"schema_version":1,"#));
     assert!(lines[0].ends_with('}'));
-    // The fixture contains a failure while `true` exits 0: the report wins.
+    // The fixture contains a failure while the runner exits 0: the report wins.
     assert_eq!(output.status.code(), Some(1));
 }
 
@@ -70,13 +85,50 @@ fn a_plain_run_ends_with_a_verdict_line() {
 
 #[test]
 fn json_to_a_file_keeps_the_human_report_on_stdout() {
-    let path = std::env::temp_dir().join(format!("sooth-test-json-{}.json", std::process::id()));
+    let (report, write_report) = fresh_report("json-file");
+    let json_path =
+        std::env::temp_dir().join(format!("sooth-contract-{}.json", std::process::id()));
     let output = sooth()
         .args([
             "run",
             "--junit",
-            fixture(),
-            &format!("--json={}", path.display()),
+            &report.display().to_string(),
+            &format!("--json={}", json_path.display()),
+            "--color",
+            "never",
+            "--",
+            "sh",
+            "-c",
+            &write_report,
+        ])
+        .output()
+        .expect("sooth should run");
+
+    let stdout = String::from_utf8(output.stdout).expect("stdout should be UTF-8");
+    let written = std::fs::read_to_string(&json_path).expect("the JSON file should exist");
+    let _ = std::fs::remove_file(&report);
+    let _ = std::fs::remove_file(&json_path);
+
+    assert!(stdout.contains("tests: 2 total"), "got: {stdout:?}");
+    assert!(stdout.contains("result: FAILED"), "got: {stdout:?}");
+    assert!(written.starts_with(r#"{"schema_version":1,"#));
+}
+
+#[test]
+fn a_junit_report_that_predates_the_run_is_rejected_as_stale() {
+    // Write the report BEFORE the run; the wrapped command touches nothing.
+    let report =
+        std::env::temp_dir().join(format!("sooth-contract-stale-{}.xml", std::process::id()));
+    std::fs::copy(fixture(), &report).expect("fixture should copy");
+    // Age it well past the freshness tolerance.
+    let old = filetime_from_secs_ago(&report, 3600);
+    assert!(old.is_ok(), "could not age the file: {old:?}");
+
+    let output = sooth()
+        .args([
+            "run",
+            "--junit",
+            &report.display().to_string(),
             "--color",
             "never",
             "--",
@@ -84,12 +136,35 @@ fn json_to_a_file_keeps_the_human_report_on_stdout() {
         ])
         .output()
         .expect("sooth should run");
+    let _ = std::fs::remove_file(&report);
 
-    let stdout = String::from_utf8(output.stdout).expect("stdout should be UTF-8");
-    let written = std::fs::read_to_string(&path).expect("the JSON file should have been written");
-    let _ = std::fs::remove_file(&path);
+    assert_eq!(
+        output.status.code(),
+        Some(2),
+        "stale report is sooth's error"
+    );
+    let stderr = String::from_utf8(output.stderr).expect("stderr should be UTF-8");
+    assert!(
+        stderr.contains("predates the test command"),
+        "got: {stderr:?}"
+    );
+}
 
-    assert!(stdout.contains("tests: 2 total"), "got: {stdout:?}");
-    assert!(stdout.contains("result: FAILED"), "got: {stdout:?}");
-    assert!(written.starts_with(r#"{"schema_version":1,"#));
+/// Set the file's mtime `secs` into the past using `touch -t` — std has no
+/// stable set-mtime API and a dev-dependency for one test is not worth it.
+fn filetime_from_secs_ago(path: &std::path::Path, secs: u64) -> std::io::Result<()> {
+    let status = Command::new("sh")
+        .args([
+            "-c",
+            &format!(
+                "touch -m -t \"$(date -v-{secs}S '+%Y%m%d%H%M.%S' 2>/dev/null || date -d '-{secs} seconds' '+%Y%m%d%H%M.%S')\" {}",
+                path.display()
+            ),
+        ])
+        .status()?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(std::io::Error::other("touch failed"))
+    }
 }
