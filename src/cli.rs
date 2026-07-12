@@ -34,10 +34,20 @@ pub struct RunArgs {
     #[arg(long, default_value_t = 1, value_parser = clap::value_parser!(u32).range(1..))]
     pub runs: u32,
 
-    /// Emit machine-readable JSON instead of plain text (requires --junit or
-    /// --preset).
-    #[arg(long)]
-    pub json: bool,
+    /// Emit machine-readable JSON (requires --junit or --preset). Bare
+    /// `--json` prints it as sooth's final stdout line; `--json=PATH` writes
+    /// it to a file and keeps the human report on stdout (note the `=`;
+    /// `--json PATH` with a space is rejected).
+    // Option<Option<_>> is clap's canonical shape for a flag with an
+    // optional value: None = absent, Some(None) = bare, Some(Some(p)) = path.
+    #[allow(clippy::option_option)]
+    #[arg(long, value_name = "PATH", num_args = 0..=1, require_equals = true)]
+    pub json: Option<Option<PathBuf>>,
+
+    /// When to color the report: auto respects `NO_COLOR` and whether stdout
+    /// is a terminal.
+    #[arg(long, value_enum, default_value = "auto")]
+    pub color: ColorChoice,
 
     /// How many of the slowest tests to show (default 10; requires --junit or
     /// --preset).
@@ -64,26 +74,40 @@ pub enum Preset {
     Go,
 }
 
+/// When to color the human report.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum ColorChoice {
+    Auto,
+    Always,
+    Never,
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{Cli, Command, Preset};
+    use super::{Cli, ColorChoice, Command, Preset};
     use clap::Parser;
+
+    fn parse_run_args(cmdline: &[&str]) -> super::RunArgs {
+        let parsed = Cli::try_parse_from(cmdline).unwrap();
+        let Command::Run(args) = parsed.command;
+        args
+    }
 
     #[test]
     fn captures_the_command_after_double_dash() {
-        let parsed = Cli::try_parse_from(["sooth", "run", "--", "pytest", "-k", "foo"]).unwrap();
-        let Command::Run(args) = parsed.command;
+        let args = parse_run_args(&["sooth", "run", "--", "pytest", "-k", "foo"]);
         assert_eq!(args.command, ["pytest", "-k", "foo"].map(String::from));
         assert_eq!(args.runs, 1);
         assert_eq!(args.slowest, None);
         assert_eq!(args.preset, None);
-        assert!(!args.json);
+        assert_eq!(args.json, None);
         assert_eq!(args.junit, None);
+        assert_eq!(args.color, ColorChoice::Auto);
     }
 
     #[test]
     fn parses_flags_and_preset() {
-        let parsed = Cli::try_parse_from([
+        let args = parse_run_args(&[
             "sooth",
             "run",
             "--preset",
@@ -93,15 +117,22 @@ mod tests {
             "--json",
             "--slowest",
             "3",
+            "--color",
+            "never",
             "--",
             "pytest",
-        ])
-        .unwrap();
-        let Command::Run(args) = parsed.command;
+        ]);
         assert_eq!(args.preset, Some(Preset::Pytest));
         assert_eq!(args.runs, 5);
         assert_eq!(args.slowest, Some(3));
-        assert!(args.json);
+        assert_eq!(args.json, Some(None));
+        assert_eq!(args.color, ColorChoice::Never);
+    }
+
+    #[test]
+    fn json_takes_an_optional_file_path_with_equals() {
+        let args = parse_run_args(&["sooth", "run", "--json=out.json", "--", "true"]);
+        assert_eq!(args.json, Some(Some(std::path::PathBuf::from("out.json"))));
     }
 
     #[test]

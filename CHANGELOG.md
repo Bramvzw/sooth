@@ -31,6 +31,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   an actionable hint (reporter missing, or the command is a wrapper instead
   of the runner itself). `--preset` conflicts with `--junit`.
 
+- Colored human report: per-run lines label the runner's own exit status as
+  `runner exit=`/`runner signal` (distinct from sooth's exit-code contract),
+  totals and the slowest list are colored, and a closing
+  `result: PASSED/FAILED` verdict line summarizes the suite. `--color
+  auto|always|never` with `NO_COLOR` support.
+- The `--json` output is versioned (`schema_version`, `sooth_version`).
+  Bare `--json` prints the JSON as sooth's final stdout line; the new
+  `--json=PATH` writes it to a file and keeps the human report on stdout.
+
 ### Changed
 
 - Exit codes now distinguish outcomes: `0` all runs passed, `1` at least one

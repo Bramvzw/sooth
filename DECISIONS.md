@@ -250,3 +250,29 @@ break — so the `--preset` help text says the command must be the runner
 itself, and a preset run that produces no report fails with an actionable
 hint rather than a bare parse error about a temp path. Wrapper detection can
 come later if real-world issues show it is needed.
+
+## `--json` shares stdout with the runner: last-line contract or a file
+
+Inherited stdio is a core decision (see above): the wrapped command writes its
+own output to sooth's stdout, so machine JSON on the same stream necessarily
+mixes with it — `sooth run --json ... | jq` broke on the first real pytest
+run. Redirecting the child away from stdout would undo "you see your test
+output as if you ran it yourself"; JSON on stderr abuses the diagnostics
+stream. So the contract is explicit: bare `--json` prints the JSON as the last
+line sooth writes to stdout, after the wrapped command has finished (works for
+`tail -n 1` consumers), and `--json=PATH` writes it to a file — the robust CI
+path — while keeping the human report on stdout. The shape carries
+`schema_version` (fields are only added within a version; the number bumps on
+an incompatible change) and `sooth_version`. The hand-rolled-JSON decision was
+revisited here as promised and kept: the shape is still small and fixed;
+revisit again if it grows nested or dynamic.
+
+## Color: `--color` beats `NO_COLOR` beats terminal detection
+
+An explicit `--color always|never` is the user speaking now and wins over
+everything. Otherwise `NO_COLOR` (set and non-empty, per no-color.org)
+disables color; otherwise color only when stdout is a terminal. The per-run
+line says `runner exit=N` — never a bare `exit=N` — because `2` means
+something else in sooth's own exit-code contract and the two vocabularies
+were confused in practice on the first real run. ANSI codes are hand-rolled:
+six escape sequences do not justify a color dependency.
