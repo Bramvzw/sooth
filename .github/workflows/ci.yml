@@ -5,6 +5,9 @@ on:
     branches: [main]
   pull_request:
 
+permissions:
+  contents: read
+
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
   # Never cancel runs on main: a fast follow-up merge would otherwise leave
@@ -16,7 +19,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
 
       # A bare `rustup toolchain install` reads rust-toolchain.toml (version
       # AND components). Deliberately not a toolchain action: those export
@@ -25,7 +28,7 @@ jobs:
         run: rustup toolchain install
 
       - name: Cache cargo registry and build artifacts
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
 
       - name: Check formatting
         run: cargo fmt --check
@@ -43,10 +46,10 @@ jobs:
     name: Build on MSRV (1.80)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
       # The action exports RUSTUP_TOOLCHAIN=1.80.0, which overrides the
       # rust-toolchain.toml pin — exactly what this job needs.
-      - uses: dtolnay/rust-toolchain@1.80.0
-      - uses: Swatinem/rust-cache@v2
+      - uses: dtolnay/rust-toolchain@02615d347998f2a395863137815cac5be587e500 # 1.80.0
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
       - name: Verify the crate builds on its declared minimum Rust version
         run: cargo check --all-targets
