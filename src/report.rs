@@ -378,6 +378,11 @@ mod tests {
 
         assert_eq!(summary.slowest[0].0, "Modules.Order.OrderTest::test_create");
         assert_eq!(summary.slowest[1].0, "bare");
+
+        // The qualified name rides into the machine output too — an
+        // intentional content change to the existing `name` field, per #54.
+        let json = to_json(&[outcome(true)], &summary);
+        assert!(json.contains(r#""name":"Modules.Order.OrderTest::test_create""#));
     }
 
     #[test]
