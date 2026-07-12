@@ -36,6 +36,9 @@ jobs:
       - name: Test
         run: cargo test
 
+      - name: Docs are as honest as the code
+        run: RUSTDOCFLAGS="-D warnings" cargo doc --no-deps
+
   msrv:
     name: Build on MSRV (1.80)
     runs-on: ubuntu-latest

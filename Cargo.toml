@@ -20,7 +20,9 @@ name = "sooth"
 path = "src/main.rs"
 
 [lints.rust]
-unsafe_code = "deny"
+# forbid, not deny: cannot be overridden with an #[allow] anywhere,
+# so "this binary contains no unsafe" is a guarantee, not a default.
+unsafe_code = "forbid"
 
 [lints.clippy]
 all = { level = "deny", priority = -1 }

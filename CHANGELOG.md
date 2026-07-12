@@ -59,6 +59,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The crate description no longer advertises cut or post-v1 features
   (assertionless-test detection, network egress).
 
+- `unsafe_code` is now `forbid` (was `deny`): no `#[allow]` can override it,
+  so "no unsafe in this binary" is a guarantee. CI also fails on rustdoc
+  warnings.
+
 ### Fixed
 
 - CI now actually uses the toolchain pinned in `rust-toolchain.toml`: the
