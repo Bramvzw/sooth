@@ -259,7 +259,7 @@ pub fn to_json(outcomes: &[RunOutcome], summary: &JunitSummary) -> String {
         .collect();
 
     format!(
-        r#"{{"schema_version":{JSON_SCHEMA_VERSION},"sooth_version":"{}","runs":[{}],"junit":{{"total":{},"passed":{},"failed":{},"error":{},"skipped":{},"slowest":[{}]}}}}"#,
+        r#"{{"schema_version":{JSON_SCHEMA_VERSION},"sooth_version":"{}","runs":[{}],"junit":{{"total":{},"passed":{},"failed":{},"errors":{},"skipped":{},"slowest":[{}]}}}}"#,
         env!("CARGO_PKG_VERSION"),
         runs.join(","),
         summary.total,
@@ -432,6 +432,9 @@ mod tests {
         )));
         assert!(json.contains(r#""success":true"#));
         assert!(json.contains(r#""total":1"#));
+        // Renamed from "error" before v0.1.0 froze the schema: every other
+        // count is plural and the human output says "errors".
+        assert!(json.contains(r#""errors":0"#));
         assert!(json.contains(r#""name":"a""#));
     }
 
