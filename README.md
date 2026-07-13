@@ -28,8 +28,14 @@ sooth run --preset pytest --json=sooth.json -- pytest
 ```
 
 The command after `--` must be the test runner itself — not a wrapper like
-`python -m pytest` or `npm test`. Laravel parallel testing works by invoking
-paratest directly; see the `--preset` help for details.
+`python -m pytest` or `npm test`. Laravel's `php artisan test --parallel` is
+such a wrapper; invoke paratest directly instead (it merges the per-worker
+reports itself):
+
+```
+LARAVEL_PARALLEL_TESTING=1 sooth run --preset phpunit -- \
+  vendor/bin/paratest '--runner=\Illuminate\Testing\ParallelRunner' [phpunit args...]
+```
 
 Exit codes: `0` — the runner and its report agree everything passed; `1` —
 the suite failed; `2` — sooth itself failed (your CI can tell a red suite
