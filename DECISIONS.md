@@ -159,7 +159,18 @@ infinite, or NaN input. A JUnit `time="-1"` or `time="nan"` attribute is
 exactly the kind of malformed-but-plausible input the parser must survive, so
 `time` parsing explicitly checks `is_finite() && >= 0.0` before constructing
 the `Duration`, defaulting to zero otherwise — the same fallback already used
-for a missing `time` attribute.
+for a missing `time` attribute. The same function normalizes a decimal comma
+(`time="12,5"` from non-English locales) before parsing: without it those
+durations silently become zero and the affected tests vanish from the slowest
+ranking — a quiet lie in a ranking that claims to be the truth.
+
+Two more guards that are easy to miss in the code: `parse_file` refuses any
+report larger than 256 MiB (`TooLarge`) *before* reading it, so a pathological
+or hostile file cannot exhaust memory — real reports are kilobytes to a few
+megabytes. And when a `<testcase>` carries more than one status child
+(tolerated, rare), the highest severity wins: error > failure > skipped —
+never the first or last one seen, so attribute order in the wild cannot flip
+a verdict.
 
 ## Root-element and truncation detection via a depth counter, not tag-name tracking
 
