@@ -26,3 +26,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - An exit-code contract: `0` — the runner and its report agree everything
   passed; `1` — the suite failed (either signal); `2` — sooth itself failed.
   Runner/report mismatches and unusable flag combinations fail loudly.
+- When the report is unusable and the runner itself failed (a crashed
+  worker, an OOM), sooth keeps the run facts it measured: a second stderr
+  line names the failed run, its exit status and duration, and points at
+  the runner's own output as the likely story.

@@ -245,3 +245,34 @@ fn the_runner_report_mismatch_is_called_out_on_stderr() {
         "got: {stderr:?}"
     );
 }
+
+#[test]
+fn an_unusable_report_after_a_crashed_runner_keeps_the_run_facts() {
+    // The runner writes garbage instead of XML and exits nonzero — the OOM
+    // scenario from real dogfooding. sooth must point at the crash instead
+    // of only naming an unparsable file.
+    let report =
+        std::env::temp_dir().join(format!("sooth-contract-crash-{}.xml", std::process::id()));
+    let write_garbage = format!("echo 'PHP Fatal error' > '{}'; exit 255", report.display());
+    let output = sooth()
+        .args([
+            "run",
+            "--junit",
+            &report.display().to_string(),
+            "--color",
+            "never",
+            "--",
+            "sh",
+            "-c",
+            &write_garbage,
+        ])
+        .output()
+        .expect("sooth should run");
+    let _ = std::fs::remove_file(&report);
+
+    assert_eq!(output.status.code(), Some(2));
+    let stderr = String::from_utf8(output.stderr).expect("stderr should be UTF-8");
+    assert!(stderr.contains("failed to parse"), "got: {stderr:?}");
+    assert!(stderr.contains("runner exit=255"), "got: {stderr:?}");
+    assert!(stderr.contains("output above"), "got: {stderr:?}");
+}
