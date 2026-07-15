@@ -96,7 +96,11 @@ test output exactly as if you had run it yourself, and records only the exit
 code and wall-clock time per run. It deliberately does not buffer the child's
 output: the structured signal comes from the JUnit XML the runner produces
 (parsed in story #3), not from scraping stdout. Runs execute in a fixed order;
-shuffling for order-dependence is a separate pass (see above).
+shuffling for order-dependence is a separate pass (see above). Since the v0.1
+architecture audit the runner runs exactly *once* per call: repetition is an
+orchestration strategy (the v0.2 flaky loop parses the report between runs;
+the v0.3 order pass runs different shuffled invocations), so the loop lives
+with the orchestrator, not the spawner.
 
 ## Pinned Rust toolchain instead of rolling `stable`
 
