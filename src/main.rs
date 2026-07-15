@@ -99,6 +99,9 @@ fn run(args: &cli::RunArgs) -> ExitCode {
                 Ok(summary) => Some(summary),
                 Err(message) => {
                     eprintln!("sooth: {message}");
+                    if let Some(context) = crash_context(&outcomes) {
+                        eprintln!("sooth: {context}");
+                    }
                     return ExitCode::from(EXIT_SOOTH_ERROR);
                 }
             }
@@ -259,6 +262,30 @@ fn report_is_stale(path: &std::path::Path, run_started: std::time::SystemTime) -
     }
 }
 
+/// When the report is unusable and the runner itself failed, keep the run
+/// facts sooth already measured instead of discarding them with the report:
+/// after a long run, "the crash output above is the real story" beats a bare
+/// parse error about a temp path. `None` when every run succeeded.
+fn crash_context(outcomes: &[runner::RunOutcome]) -> Option<String> {
+    let (index, outcome) = outcomes
+        .iter()
+        .enumerate()
+        .rev()
+        .find(|(_, outcome)| !outcome.success)?;
+    let status = match (outcome.exit_code, outcome.signal) {
+        (Some(code), _) => format!("runner exit={code}"),
+        (None, Some(signal)) => format!("runner signal {signal}"),
+        (None, None) => "killed by a signal".to_owned(),
+    };
+    Some(format!(
+        "run {} of {} failed ({status}, {:.2?}) — the runner's own output above likely \
+         explains the unusable report",
+        index + 1,
+        outcomes.len(),
+        outcome.duration
+    ))
+}
+
 /// Best-effort removal of a preset's private report directory (file + dir).
 fn cleanup_preset_report(path: &std::path::Path) {
     let _ = std::fs::remove_file(path);
@@ -351,6 +378,20 @@ mod tests {
             .expect("a missing --junit file should error");
         assert!(message.contains("failed to parse"));
         assert!(message.contains("sooth-test-no-such-report.xml"));
+    }
+
+    #[test]
+    fn crash_context_names_the_failed_run_and_its_status() {
+        let outcomes = [outcome(true), outcome(false)];
+        let context = super::crash_context(&outcomes).expect("a failed run should give context");
+        assert!(context.contains("run 2 of 2"));
+        assert!(context.contains("runner exit=1"));
+        assert!(context.contains("output above"));
+    }
+
+    #[test]
+    fn crash_context_is_silent_when_every_run_succeeded() {
+        assert_eq!(super::crash_context(&[outcome(true)]), None);
     }
 
     #[test]
