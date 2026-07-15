@@ -32,6 +32,19 @@ pub struct TestCase {
     pub status: TestStatus,
 }
 
+impl TestCase {
+    /// The test's identity: `classname::name` when a classname is present,
+    /// bare `name` otherwise. This is a domain concept, not presentation —
+    /// it is the frozen `--json` `name` contract, and the v0.2 history file
+    /// and quarantine matching key on the same string. One definition only.
+    pub fn qualified_name(&self) -> String {
+        match &self.classname {
+            Some(classname) => format!("{classname}::{}", self.name),
+            None => self.name.clone(),
+        }
+    }
+}
+
 /// The outcome of a test case, derived from its child elements: an `<error>`
 /// child wins over `<failure>`, which wins over `<skipped>`; no matching
 /// child means the case passed.
@@ -299,6 +312,16 @@ mod tests {
         Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("tests/fixtures")
             .join(name)
+    }
+
+    #[test]
+    fn qualified_name_is_classname_qualified_or_bare() {
+        let report = parse_str(
+            r#"<testsuite><testcase classname="A.B" name="t"/><testcase name="loose"/></testsuite>"#,
+        )
+        .unwrap();
+        assert_eq!(report.test_cases[0].qualified_name(), "A.B::t");
+        assert_eq!(report.test_cases[1].qualified_name(), "loose");
     }
 
     #[test]
