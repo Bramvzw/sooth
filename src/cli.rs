@@ -51,7 +51,7 @@ pub struct RunArgs {
 
     /// How many of the slowest tests to show (default 10; requires --junit or
     /// --preset).
-    #[arg(long)]
+    #[arg(long, value_parser = positive_usize)]
     pub slowest: Option<usize>,
 
     /// Path to the JUnit-XML report the test command writes during the run.
@@ -63,6 +63,16 @@ pub struct RunArgs {
     /// The test command to run, given after `--` (e.g. `sooth run -- pytest`).
     #[arg(last = true, required = true, num_args = 1..)]
     pub command: Vec<String>,
+}
+
+/// Parse a strictly positive count: `--slowest 0` would silently hide the
+/// ranking, and silent is not this tool's style (mirrors the `--runs` guard).
+fn positive_usize(value: &str) -> Result<usize, String> {
+    match value.parse::<usize>() {
+        Ok(0) => Err("must be at least 1".to_owned()),
+        Ok(parsed) => Ok(parsed),
+        Err(err) => Err(err.to_string()),
+    }
 }
 
 /// A built-in preset for a known test runner.
@@ -138,6 +148,23 @@ mod tests {
     #[test]
     fn a_command_is_required() {
         assert!(Cli::try_parse_from(["sooth", "run"]).is_err());
+    }
+
+    #[test]
+    fn rejects_slowest_zero() {
+        // Mirrors the --runs guard: a silent empty ranking is a surprise,
+        // not a feature.
+        assert!(Cli::try_parse_from([
+            "sooth",
+            "run",
+            "--junit",
+            "r.xml",
+            "--slowest",
+            "0",
+            "--",
+            "true",
+        ])
+        .is_err());
     }
 
     #[test]

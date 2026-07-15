@@ -83,6 +83,12 @@ pub struct JunitSummary {
 }
 
 impl JunitSummary {
+    /// How many tests the report counts as failing: failures plus errors.
+    /// The one definition behind the suite verdict and the mismatch note.
+    pub fn failing(&self) -> usize {
+        self.failed + self.error
+    }
+
     pub fn from_report(report: &junit::JunitReport, slowest: usize) -> Self {
         let mut passed = 0;
         let mut failed = 0;
@@ -121,11 +127,7 @@ impl JunitSummary {
 pub fn print_runs(outcomes: &[RunOutcome], style: Style) {
     let total = outcomes.len();
     for (index, outcome) in outcomes.iter().enumerate() {
-        let status = match (outcome.exit_code, outcome.signal) {
-            (Some(code), _) => format!("runner exit={code}"),
-            (None, Some(signal)) => format!("runner signal {signal}"),
-            (None, None) => "runner killed by signal".to_owned(),
-        };
+        let status = outcome.status_label();
         let status = if outcome.success {
             style.green(&status)
         } else {
@@ -194,7 +196,7 @@ pub fn verdict_line(
         } else {
             // The runner claimed success but the report disagrees; the
             // mismatch note on stderr carries the full story.
-            let failures = summary.map_or(0, |summary| summary.failed + summary.error);
+            let failures = summary.map_or(0, JunitSummary::failing);
             format!("the report shows {}", count(failures, "failing test"))
         };
         style.bold_red(&format!("result: FAILED — {detail} ({total:.2?} total)"))

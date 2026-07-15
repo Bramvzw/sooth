@@ -16,6 +16,20 @@ pub struct RunOutcome {
     pub duration: Duration,
 }
 
+impl RunOutcome {
+    /// The runner's own status, always labeled `runner …`: a bare `exit=2`
+    /// reads as sooth's exit-code contract (where 2 means "sooth itself
+    /// failed") — two vocabularies that must stay distinct. Both the per-run
+    /// lines and the crash context print through this one definition.
+    pub fn status_label(&self) -> String {
+        match (self.exit_code, self.signal) {
+            (Some(code), _) => format!("runner exit={code}"),
+            (None, Some(signal)) => format!("runner signal {signal}"),
+            (None, None) => "runner killed by signal".to_owned(),
+        }
+    }
+}
+
 /// Run `command` `runs` times in a fixed order, inheriting stdio so the test
 /// output stays visible, and record each run's exit status and wall-time.
 /// `envs` is added to the child's environment (presets use it to point
@@ -109,6 +123,29 @@ mod tests {
         let envs = [("SOOTH_TEST_ENV".to_owned(), "value".to_owned())];
         let outcomes = run(&command, 1, &envs).unwrap();
         assert!(outcomes[0].success);
+    }
+
+    #[test]
+    fn status_labels_keep_the_runner_prefix() {
+        let base = super::RunOutcome {
+            exit_code: Some(2),
+            signal: None,
+            success: false,
+            duration: std::time::Duration::ZERO,
+        };
+        assert_eq!(base.status_label(), "runner exit=2");
+        let signaled = super::RunOutcome {
+            exit_code: None,
+            signal: Some(15),
+            ..base.clone()
+        };
+        assert_eq!(signaled.status_label(), "runner signal 15");
+        let unknown = super::RunOutcome {
+            exit_code: None,
+            signal: None,
+            ..base
+        };
+        assert_eq!(unknown.status_label(), "runner killed by signal");
     }
 
     #[test]
