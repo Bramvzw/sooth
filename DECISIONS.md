@@ -284,15 +284,20 @@ revisit again if it grows nested or dynamic.
 
 ## A stale `--junit` report is an error, not input
 
-`--junit` means "the report this run produces". A file whose mtime predates
-the run start — with a generous 60-second tolerance that absorbs coarse
-filesystem timestamps *and* modest clock skew against a network filesystem's
-server (the genuine failure is minutes to days old) — is rejected with exit 2: the runner most likely wrote nothing
-(wrong reporter flag, crash), and presenting yesterday's suite as today's
-truth is the worst failure mode for this tool. Filesystems without mtimes
-skip the check; a false "stale" on a fresh report would be its own lie.
-Presets are immune by construction: their report lives in a directory created
-fresh for the invocation.
+`--junit` means "the report this run produces". Freshness is checked as an
+observed fact, not a clock comparison: sooth records the file's state (mtime
+plus size) before each run and rejects the report with exit 2 when the run
+did not change it — the runner most likely wrote nothing (wrong reporter
+flag, crash), and presenting yesterday's suite as today's truth is the worst
+failure mode for this tool. State comparison replaced an earlier wall-clock
+check with a 60s tolerance: it needs no tolerance window at all, is immune
+to clock skew against a network filesystem's server, and works per run under
+`--runs N`, where a wall clock cannot (run 1's write is always "recent" by
+run 2). Filesystems without mtimes skip the check; a false "stale" on a
+fresh report would be its own lie. Presets get the stronger guarantee: their
+report file is deleted before every run, so a runner that stops writing
+fails loudly with the no-report message instead of re-serving the previous
+run's file.
 
 ## Color: `--color` beats `NO_COLOR` beats terminal detection
 
@@ -303,3 +308,17 @@ line says `runner exit=N` — never a bare `exit=N` — because `2` means
 something else in sooth's own exit-code contract and the two vocabularies
 were confused in practice on the first real run. ANSI codes are hand-rolled:
 six escape sequences do not justify a color dependency.
+
+## Flaky is mixed outcomes; always-failing is broken, never flaky
+
+A test is flaky iff the observed fixed-order runs show at least one pass
+*and* at least one failure or error. A test that fails every observed run is
+broken — reported in its own section, never in the flaky ranking: calling a
+dead test "flaky" would misstate its nature exactly where this tool promises
+truth, and it would send someone hunting for nondeterminism that is not
+there. Skipped observations carry no signal and are excluded from the
+failure rate. The ranking sorts by failure rate, then id, for stable output;
+the healthy majority — tests that passed every run — is not listed at all.
+The suite verdict considers every run's report: a failure in run 1 is not
+forgiven by a green run 2. This same mixed-outcome definition is what the
+v0.2 history file will apply across sessions instead of within one.

@@ -23,6 +23,22 @@ pub struct JunitReport {
     pub test_cases: Vec<TestCase>,
 }
 
+impl JunitReport {
+    /// How many test cases failed or errored.
+    pub fn failing_count(&self) -> usize {
+        self.test_cases
+            .iter()
+            .filter(|case| matches!(case.status, TestStatus::Failed | TestStatus::Error))
+            .count()
+    }
+
+    /// Whether any test case failed or errored — the report-side half of the
+    /// suite verdict.
+    pub fn has_failures(&self) -> bool {
+        self.failing_count() > 0
+    }
+}
+
 /// A single `<testcase>` element.
 #[derive(Debug, Clone, PartialEq)]
 pub struct TestCase {
@@ -59,7 +75,7 @@ pub enum TestStatus {
 impl TestStatus {
     /// Higher-severity statuses win when a testcase has more than one child
     /// element that would otherwise set the status (rare, but tolerated).
-    const fn severity(self) -> u8 {
+    pub(crate) const fn severity(self) -> u8 {
         match self {
             Self::Passed => 0,
             Self::Skipped => 1,

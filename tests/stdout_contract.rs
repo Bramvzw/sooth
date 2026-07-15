@@ -276,3 +276,91 @@ fn an_unusable_report_after_a_crashed_runner_keeps_the_run_facts() {
     assert!(stderr.contains("runner exit=255"), "got: {stderr:?}");
     assert!(stderr.contains("output above"), "got: {stderr:?}");
 }
+
+#[test]
+fn repeated_runs_report_mixed_outcomes_as_flaky() {
+    let dir = std::env::temp_dir();
+    let report = dir.join(format!("sooth-contract-flaky-{}.xml", std::process::id()));
+    let marker = dir.join(format!(
+        "sooth-contract-flaky-marker-{}",
+        std::process::id()
+    ));
+    // Run 1: the test fails (runner exits 1). Run 2: it passes. Mixed = flaky.
+    let script = format!(
+        "if [ -f '{marker}' ]; then printf '<testsuite><testcase classname=\"c\" name=\"wobbly\"/></testsuite>' > '{report}'; else printf '<testsuite><testcase classname=\"c\" name=\"wobbly\"><failure/></testcase></testsuite>' > '{report}'; touch '{marker}'; exit 1; fi",
+        marker = marker.display(),
+        report = report.display()
+    );
+    let output = sooth()
+        .args([
+            "run",
+            "--runs",
+            "2",
+            "--junit",
+            &report.display().to_string(),
+            "--color",
+            "never",
+            "--",
+            "sh",
+            "-c",
+            &script,
+        ])
+        .output()
+        .expect("sooth should run");
+    let _ = std::fs::remove_file(&report);
+    let _ = std::fs::remove_file(&marker);
+
+    assert_eq!(output.status.code(), Some(1), "a flaky run failed run 1");
+    let stdout = String::from_utf8(output.stdout).expect("stdout should be UTF-8");
+    assert!(
+        stdout.contains("flaky tests (mixed outcomes):"),
+        "got: {stdout:?}"
+    );
+    assert!(
+        stdout.contains("c::wobbly failed 1 of 2 observed runs (50%)"),
+        "got: {stdout:?}"
+    );
+}
+
+#[test]
+fn a_preset_runner_that_stops_writing_reports_fails_loudly() {
+    use std::os::unix::fs::PermissionsExt;
+    // Run 1 writes a report; run 2 writes nothing. Because sooth deletes the
+    // preset report before every run, run 2 must fail loudly instead of
+    // silently re-serving run 1's truth.
+    let dir = std::env::temp_dir().join(format!("sooth-fakebin-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("fake bin dir");
+    let marker = dir.join("ran-once");
+    let fake = dir.join("pytest");
+    let script = format!(
+        "#!/bin/sh\nout=\"\"\nfor a in \"$@\"; do case \"$a\" in --junit-xml=*) out=\"${{a#--junit-xml=}}\";; esac; done\nif [ ! -f '{marker}' ]; then printf '<testsuite><testcase name=\"ok\"/></testsuite>' > \"$out\"; touch '{marker}'; fi\nexit 0\n",
+        marker = marker.display()
+    );
+    std::fs::write(&fake, script).expect("fake pytest");
+    std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+
+    let path_env = format!(
+        "{}:{}",
+        dir.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let output = sooth()
+        .env("PATH", path_env)
+        .args([
+            "run", "--runs", "2", "--preset", "pytest", "--color", "never", "--", "pytest",
+        ])
+        .output()
+        .expect("sooth should run");
+    let _ = std::fs::remove_dir_all(&dir);
+
+    assert_eq!(
+        output.status.code(),
+        Some(2),
+        "silent run 2 is sooth's error"
+    );
+    let stderr = String::from_utf8(output.stderr).expect("stderr should be UTF-8");
+    assert!(
+        stderr.contains("wrote no JUnit-XML report"),
+        "got: {stderr:?}"
+    );
+}

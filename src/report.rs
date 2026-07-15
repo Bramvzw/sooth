@@ -3,6 +3,7 @@
 use std::fmt::Write as _;
 use std::time::Duration;
 
+use crate::analyzers::flaky;
 use crate::cli::ColorChoice;
 use crate::junit;
 use crate::runner::RunOutcome;
@@ -83,12 +84,6 @@ pub struct JunitSummary {
 }
 
 impl JunitSummary {
-    /// How many tests the report counts as failing: failures plus errors.
-    /// The one definition behind the suite verdict and the mismatch note.
-    pub fn failing(&self) -> usize {
-        self.failed + self.error
-    }
-
     pub fn from_report(report: &junit::JunitReport, slowest: usize) -> Self {
         let mut passed = 0;
         let mut failed = 0;
@@ -180,10 +175,48 @@ pub fn print_summary(summary: &JunitSummary, style: Style) {
     }
 }
 
+/// The flaky pass, when one ran: mixed outcomes ranked by failure rate,
+/// then the always-failing tests — labeled broken, never flaky (see
+/// `DECISIONS.md`). Prints nothing when there is nothing to say: the healthy
+/// majority is not news.
+pub fn print_flaky(analysis: Option<&flaky::Analysis>, style: Style) {
+    let Some(analysis) = analysis else { return };
+    if analysis.is_empty() {
+        return;
+    }
+    if !analysis.flaky.is_empty() {
+        println!("{}", style.bold_red("flaky tests (mixed outcomes):"));
+        for (index, test) in analysis.flaky.iter().enumerate() {
+            println!(
+                "  {}. {} {}",
+                index + 1,
+                test.id,
+                style.red(&format!(
+                    "failed {} of {} observed runs ({}%)",
+                    test.failed,
+                    test.observed(),
+                    test.failure_rate_percent()
+                ))
+            );
+        }
+    }
+    if !analysis.broken.is_empty() {
+        println!("{}", style.red("consistently failing (broken, not flaky):"));
+        for test in &analysis.broken {
+            println!(
+                "  - {} {}",
+                test.id,
+                style.dim(&format!("(failed all {} observed runs)", test.observed()))
+            );
+        }
+    }
+}
+
 /// The closing verdict line: sooth's suite-level judgement at a glance.
 pub fn verdict_line(
     outcomes: &[RunOutcome],
     summary: Option<&JunitSummary>,
+    report_failures: usize,
     suite_failed: bool,
     style: Style,
 ) -> String {
@@ -194,10 +227,13 @@ pub fn verdict_line(
         let detail = if failed_runs > 0 {
             format!("{failed_runs} of {runs} runs failed")
         } else {
-            // The runner claimed success but the report disagrees; the
-            // mismatch note on stderr carries the full story.
-            let failures = summary.map_or(0, JunitSummary::failing);
-            format!("the report shows {}", count(failures, "failing test"))
+            // The runner claimed success but a report disagrees (counted
+            // over every run, not just the last — a green final run must not
+            // read as "0 failing"); the stderr note carries the full story.
+            format!(
+                "the report shows {}",
+                count(report_failures, "failing test")
+            )
         };
         style.bold_red(&format!("result: FAILED — {detail} ({total:.2?} total)"))
     } else {
@@ -223,7 +259,11 @@ fn count(amount: usize, noun: &str) -> String {
 /// `schema_version`. Revisited when this story landed and deliberately kept
 /// hand-rolled: the shape is still small and fixed, so `serde_json` is still
 /// not worth a second dependency — see `DECISIONS.md`.
-pub fn to_json(outcomes: &[RunOutcome], summary: &JunitSummary) -> String {
+pub fn to_json(
+    outcomes: &[RunOutcome],
+    summary: &JunitSummary,
+    flaky: Option<&flaky::Analysis>,
+) -> String {
     let runs: Vec<String> = outcomes
         .iter()
         .map(|outcome| {
@@ -250,8 +290,28 @@ pub fn to_json(outcomes: &[RunOutcome], summary: &JunitSummary) -> String {
         })
         .collect();
 
+    // Additive within schema_version 1: the flaky/broken fields appear only
+    // when a multi-run analysis ran.
+    let analysis = flaky.map_or(String::new(), |analysis| {
+        let entry = |test: &flaky::TestOutcomes| {
+            format!(
+                r#"{{"name":"{}","failed_runs":{},"observed_runs":{}}}"#,
+                json_escape(&test.id),
+                test.failed,
+                test.observed()
+            )
+        };
+        let flaky_entries: Vec<String> = analysis.flaky.iter().map(entry).collect();
+        let broken_entries: Vec<String> = analysis.broken.iter().map(entry).collect();
+        format!(
+            r#","flaky":[{}],"broken":[{}]"#,
+            flaky_entries.join(","),
+            broken_entries.join(",")
+        )
+    });
+
     format!(
-        r#"{{"schema_version":{JSON_SCHEMA_VERSION},"sooth_version":"{}","runs":[{}],"junit":{{"total":{},"passed":{},"failed":{},"errors":{},"skipped":{},"slowest":[{}]}}}}"#,
+        r#"{{"schema_version":{JSON_SCHEMA_VERSION},"sooth_version":"{}","runs":[{}],"junit":{{"total":{},"passed":{},"failed":{},"errors":{},"skipped":{},"slowest":[{}]}}{analysis}}}"#,
         env!("CARGO_PKG_VERSION"),
         runs.join(","),
         summary.total,
@@ -373,13 +433,13 @@ mod tests {
 
         // The qualified name rides into the machine output too — an
         // intentional content change to the existing `name` field, per #54.
-        let json = to_json(&[outcome(true)], &summary);
+        let json = to_json(&[outcome(true)], &summary, None);
         assert!(json.contains(r#""name":"Modules.Order.OrderTest::test_create""#));
     }
 
     #[test]
     fn the_verdict_names_failed_runs() {
-        let line = verdict_line(&[outcome(true), outcome(false)], None, true, plain());
+        let line = verdict_line(&[outcome(true), outcome(false)], None, 0, true, plain());
         assert!(line.contains("FAILED"));
         assert!(line.contains("1 of 2 runs failed"));
     }
@@ -390,7 +450,7 @@ mod tests {
             test_cases: vec![test_case("bad", TestStatus::Failed, 0.1)],
         };
         let summary = JunitSummary::from_report(&report, 0);
-        let line = verdict_line(&[outcome(true)], Some(&summary), true, plain());
+        let line = verdict_line(&[outcome(true)], Some(&summary), 1, true, plain());
         assert!(line.contains("FAILED"));
         assert!(line.contains("the report shows 1 failing test"));
         assert!(!line.contains("1 failing tests"));
@@ -402,7 +462,7 @@ mod tests {
             test_cases: vec![test_case("ok", TestStatus::Passed, 0.1)],
         };
         let summary = JunitSummary::from_report(&report, 0);
-        let line = verdict_line(&[outcome(true)], Some(&summary), false, plain());
+        let line = verdict_line(&[outcome(true)], Some(&summary), 0, false, plain());
         assert!(line.contains("PASSED"));
         assert!(line.contains("1 of 1 runs, 1 test ("));
     }
@@ -415,7 +475,7 @@ mod tests {
             },
             10,
         );
-        let json = to_json(&[outcome(true)], &summary);
+        let json = to_json(&[outcome(true)], &summary, None);
 
         assert!(json.starts_with(r#"{"schema_version":1,"#));
         assert!(json.contains(&format!(
