@@ -10,8 +10,8 @@ instant, single binary. No server, no dashboard, no AI, no accounts.
 sooth run --preset pytest -- pytest
 ```
 
-> 🚧 Work in progress. Reserving the name and building the first version. See `ROADMAP.md` for the
-> full plan and `DECISIONS.md` for why it's built this way.
+> **v0.1.0 is out** — `cargo install sooth`. Flaky detection (v0.2) is in active development.
+> See `ROADMAP.md` for the full plan and `DECISIONS.md` for why it's built this way.
 
 ## Usage
 
@@ -43,8 +43,8 @@ from a broken invocation).
 
 ## Status
 
-- [ ] **v0.1** — `sooth run -- <cmd>` runs your suite once, parses the JUnit XML it produced, and
-      prints a summary (total, pass/fail/skip, slowest N) + `--json`.
+- [x] **v0.1** — `sooth run -- <cmd>` runs your suite once, parses the JUnit XML it produced, and
+      prints a summary (total, pass/fail/skip, slowest N) + `--json`. Released.
 - [ ] **v0.2** — flaky detection: failure-rate ranking fed by fixed-order repeats *and* a local
       run history that accumulates observations from runs you make anyway (zero extra wall-time).
 - [ ] **v0.3** — refined slow-test analysis + order-dependence *detection* (no culprit bisection).
@@ -69,8 +69,6 @@ nothing leaves your machine. Any run history `sooth` keeps (v0.2) is a plain loc
 repo that you own and move yourself. See `SECURITY.md`.
 
 ## Install
-
-Not published yet. Once `v0.1` ships:
 
 ```
 cargo install sooth
