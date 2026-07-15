@@ -109,19 +109,9 @@ impl JunitSummary {
             slowest: by_duration
                 .into_iter()
                 .take(slowest)
-                .map(|case| (qualified_name(case), case.duration))
+                .map(|case| (case.qualified_name(), case.duration))
                 .collect(),
         }
-    }
-}
-
-/// `classname::name` when a classname is present, bare `name` otherwise.
-/// Runner test names (`testItWorks`, `test_create`) are anything but unique
-/// across classes; the classname is what disambiguates two slow tests.
-fn qualified_name(case: &junit::TestCase) -> String {
-    match &case.classname {
-        Some(classname) => format!("{classname}::{}", case.name),
-        None => case.name.clone(),
     }
 }
 
