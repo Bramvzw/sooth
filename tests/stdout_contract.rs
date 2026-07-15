@@ -317,7 +317,50 @@ fn repeated_runs_report_mixed_outcomes_as_flaky() {
         "got: {stdout:?}"
     );
     assert!(
-        stdout.contains("c::wobbly failed 1 of 2 runs (50%)"),
+        stdout.contains("c::wobbly failed 1 of 2 observed runs (50%)"),
         "got: {stdout:?}"
+    );
+}
+
+#[test]
+fn a_preset_runner_that_stops_writing_reports_fails_loudly() {
+    use std::os::unix::fs::PermissionsExt;
+    // Run 1 writes a report; run 2 writes nothing. Because sooth deletes the
+    // preset report before every run, run 2 must fail loudly instead of
+    // silently re-serving run 1's truth.
+    let dir = std::env::temp_dir().join(format!("sooth-fakebin-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("fake bin dir");
+    let marker = dir.join("ran-once");
+    let fake = dir.join("pytest");
+    let script = format!(
+        "#!/bin/sh\nout=\"\"\nfor a in \"$@\"; do case \"$a\" in --junit-xml=*) out=\"${{a#--junit-xml=}}\";; esac; done\nif [ ! -f '{marker}' ]; then printf '<testsuite><testcase name=\"ok\"/></testsuite>' > \"$out\"; touch '{marker}'; fi\nexit 0\n",
+        marker = marker.display()
+    );
+    std::fs::write(&fake, script).expect("fake pytest");
+    std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+
+    let path_env = format!(
+        "{}:{}",
+        dir.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let output = sooth()
+        .env("PATH", path_env)
+        .args([
+            "run", "--runs", "2", "--preset", "pytest", "--color", "never", "--", "pytest",
+        ])
+        .output()
+        .expect("sooth should run");
+    let _ = std::fs::remove_dir_all(&dir);
+
+    assert_eq!(
+        output.status.code(),
+        Some(2),
+        "silent run 2 is sooth's error"
+    );
+    let stderr = String::from_utf8(output.stderr).expect("stderr should be UTF-8");
+    assert!(
+        stderr.contains("wrote no JUnit-XML report"),
+        "got: {stderr:?}"
     );
 }

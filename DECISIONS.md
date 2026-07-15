@@ -284,15 +284,20 @@ revisit again if it grows nested or dynamic.
 
 ## A stale `--junit` report is an error, not input
 
-`--junit` means "the report this run produces". A file whose mtime predates
-the run start — with a generous 60-second tolerance that absorbs coarse
-filesystem timestamps *and* modest clock skew against a network filesystem's
-server (the genuine failure is minutes to days old) — is rejected with exit 2: the runner most likely wrote nothing
-(wrong reporter flag, crash), and presenting yesterday's suite as today's
-truth is the worst failure mode for this tool. Filesystems without mtimes
-skip the check; a false "stale" on a fresh report would be its own lie.
-Presets are immune by construction: their report lives in a directory created
-fresh for the invocation.
+`--junit` means "the report this run produces". Freshness is checked as an
+observed fact, not a clock comparison: sooth records the file's state (mtime
+plus size) before each run and rejects the report with exit 2 when the run
+did not change it — the runner most likely wrote nothing (wrong reporter
+flag, crash), and presenting yesterday's suite as today's truth is the worst
+failure mode for this tool. State comparison replaced an earlier wall-clock
+check with a 60s tolerance: it needs no tolerance window at all, is immune
+to clock skew against a network filesystem's server, and works per run under
+`--runs N`, where a wall clock cannot (run 1's write is always "recent" by
+run 2). Filesystems without mtimes skip the check; a false "stale" on a
+fresh report would be its own lie. Presets get the stronger guarantee: their
+report file is deleted before every run, so a runner that stops writing
+fails loudly with the no-report message instead of re-serving the previous
+run's file.
 
 ## Color: `--color` beats `NO_COLOR` beats terminal detection
 

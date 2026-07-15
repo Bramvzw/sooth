@@ -84,12 +84,6 @@ pub struct JunitSummary {
 }
 
 impl JunitSummary {
-    /// How many tests the report counts as failing: failures plus errors.
-    /// The one definition behind the suite verdict and the mismatch note.
-    pub fn failing(&self) -> usize {
-        self.failed + self.error
-    }
-
     pub fn from_report(report: &junit::JunitReport, slowest: usize) -> Self {
         let mut passed = 0;
         let mut failed = 0;
@@ -198,7 +192,7 @@ pub fn print_flaky(analysis: Option<&flaky::Analysis>, style: Style) {
                 index + 1,
                 test.id,
                 style.red(&format!(
-                    "failed {} of {} runs ({}%)",
+                    "failed {} of {} observed runs ({}%)",
                     test.failed,
                     test.observed(),
                     test.failure_rate_percent()
@@ -222,6 +216,7 @@ pub fn print_flaky(analysis: Option<&flaky::Analysis>, style: Style) {
 pub fn verdict_line(
     outcomes: &[RunOutcome],
     summary: Option<&JunitSummary>,
+    report_failures: usize,
     suite_failed: bool,
     style: Style,
 ) -> String {
@@ -232,10 +227,13 @@ pub fn verdict_line(
         let detail = if failed_runs > 0 {
             format!("{failed_runs} of {runs} runs failed")
         } else {
-            // The runner claimed success but the report disagrees; the
-            // mismatch note on stderr carries the full story.
-            let failures = summary.map_or(0, JunitSummary::failing);
-            format!("the report shows {}", count(failures, "failing test"))
+            // The runner claimed success but a report disagrees (counted
+            // over every run, not just the last — a green final run must not
+            // read as "0 failing"); the stderr note carries the full story.
+            format!(
+                "the report shows {}",
+                count(report_failures, "failing test")
+            )
         };
         style.bold_red(&format!("result: FAILED — {detail} ({total:.2?} total)"))
     } else {
@@ -441,7 +439,7 @@ mod tests {
 
     #[test]
     fn the_verdict_names_failed_runs() {
-        let line = verdict_line(&[outcome(true), outcome(false)], None, true, plain());
+        let line = verdict_line(&[outcome(true), outcome(false)], None, 0, true, plain());
         assert!(line.contains("FAILED"));
         assert!(line.contains("1 of 2 runs failed"));
     }
@@ -452,7 +450,7 @@ mod tests {
             test_cases: vec![test_case("bad", TestStatus::Failed, 0.1)],
         };
         let summary = JunitSummary::from_report(&report, 0);
-        let line = verdict_line(&[outcome(true)], Some(&summary), true, plain());
+        let line = verdict_line(&[outcome(true)], Some(&summary), 1, true, plain());
         assert!(line.contains("FAILED"));
         assert!(line.contains("the report shows 1 failing test"));
         assert!(!line.contains("1 failing tests"));
@@ -464,7 +462,7 @@ mod tests {
             test_cases: vec![test_case("ok", TestStatus::Passed, 0.1)],
         };
         let summary = JunitSummary::from_report(&report, 0);
-        let line = verdict_line(&[outcome(true)], Some(&summary), false, plain());
+        let line = verdict_line(&[outcome(true)], Some(&summary), 0, false, plain());
         assert!(line.contains("PASSED"));
         assert!(line.contains("1 of 1 runs, 1 test ("));
     }

@@ -67,15 +67,30 @@ pub fn analyze(reports: &[JunitReport]) -> Analysis {
 
     let mut by_test: BTreeMap<String, TestOutcomes> = BTreeMap::new();
     for report in reports {
+        // Collapse duplicate ids within one report first: data-provider rows
+        // sharing a name and retry reporters emit the same id several times
+        // in a single run. Without this, one report's mixed duplicates would
+        // fabricate "flakiness" out of a fully deterministic failure and
+        // inflate the run count. The run's outcome for an id is its worst
+        // status, counted exactly once.
+        let mut run_outcome: BTreeMap<String, TestStatus> = BTreeMap::new();
         for case in &report.test_cases {
-            let entry = by_test
+            run_outcome
                 .entry(case.qualified_name())
-                .or_insert_with(|| TestOutcomes {
-                    id: case.qualified_name(),
-                    passed: 0,
-                    failed: 0,
-                });
-            match case.status {
+                .and_modify(|status| {
+                    if case.status.severity() > status.severity() {
+                        *status = case.status;
+                    }
+                })
+                .or_insert(case.status);
+        }
+        for (id, status) in run_outcome {
+            let entry = by_test.entry(id.clone()).or_insert_with(|| TestOutcomes {
+                id,
+                passed: 0,
+                failed: 0,
+            });
+            match status {
                 TestStatus::Passed => entry.passed += 1,
                 TestStatus::Failed | TestStatus::Error => entry.failed += 1,
                 TestStatus::Skipped => {}
@@ -155,6 +170,22 @@ mod tests {
         // one failure, zero passes among observed runs: broken, rate on 1 run
         assert_eq!(analysis.broken.len(), 1);
         assert_eq!(analysis.broken[0].observed(), 1);
+    }
+
+    #[test]
+    fn duplicate_ids_within_one_report_do_not_fake_flakiness() {
+        // A data provider whose row B always fails, rows sharing one name:
+        // deterministic, so this must be broken — never flaky — and each
+        // run counts once, not once per row.
+        let row_mix = r#"<testcase classname="c" name="row"/><testcase classname="c" name="row"><failure/></testcase>"#;
+        let runs = [report(row_mix), report(row_mix)];
+        let analysis = analyze(&runs);
+        assert!(
+            analysis.flaky.is_empty(),
+            "deterministic failure got called flaky"
+        );
+        assert_eq!(analysis.broken.len(), 1);
+        assert_eq!(analysis.broken[0].observed(), 2);
     }
 
     #[test]

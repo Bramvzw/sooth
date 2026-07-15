@@ -20,6 +20,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - With `--runs N`, the suite verdict now considers every run's report: a
   failure in run 1 is not forgiven by a green run 2.
+- `--junit` freshness is now an observed fact instead of a clock comparison:
+  the report must actually change during each run (no tolerance window,
+  immune to clock skew). Presets delete their report before every run, so a
+  runner that stops writing fails loudly instead of re-serving the previous
+  run's file.
+- Duplicate test ids within one report (data-provider rows, retry reporters)
+  collapse to the run's worst status before flaky analysis, so a
+  deterministic failure can never be misreported as flaky.
 
 ## [0.1.0] - 2026-07-15
 

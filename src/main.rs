@@ -71,7 +71,19 @@ fn run(args: &cli::RunArgs) -> ExitCode {
     let mut outcomes = Vec::with_capacity(args.runs as usize);
     let mut reports: Vec<junit::JunitReport> = Vec::with_capacity(args.runs as usize);
     for _ in 0..args.runs {
-        let run_started = std::time::SystemTime::now();
+        let report_before = match &report_source {
+            // Delete the preset's report before every run: a runner that
+            // stops writing must fail loudly instead of silently re-serving
+            // the previous run's truth.
+            Some(ReportSource::Preset(path)) => {
+                let _ = std::fs::remove_file(path);
+                None
+            }
+            // A user's file is never deleted; remember its state instead so
+            // "did this run touch it" is a fact, not a clock comparison.
+            Some(ReportSource::User(path)) => file_state(path),
+            None => None,
+        };
         match runner::run_once(&command, &envs) {
             Ok(outcome) => outcomes.push(outcome),
             Err(err) => {
@@ -84,7 +96,7 @@ fn run(args: &cli::RunArgs) -> ExitCode {
             }
         }
         if let Some(source) = &report_source {
-            match load_run_report(source, &command[0], run_started, &outcomes) {
+            match load_run_report(source, &command[0], report_before, &outcomes) {
                 Ok(report) => reports.push(report),
                 Err(exit) => return exit,
             }
@@ -109,7 +121,13 @@ fn run(args: &cli::RunArgs) -> ExitCode {
     };
 
     let failed = suite_failed(&outcomes, &reports);
-    let report_failures = junit_summary.as_ref().map_or(0, JunitSummary::failing);
+    // The worst run's count, over all reports: the mismatch note and the
+    // verdict must not claim "0 failing" because the *last* run was green.
+    let report_failures = reports
+        .iter()
+        .map(junit::JunitReport::failing_count)
+        .max()
+        .unwrap_or(0);
     let runs_failed = outcomes.iter().any(|outcome| !outcome.success);
     if report_failures > 0 && !runs_failed {
         eprintln!(
@@ -123,6 +141,7 @@ fn run(args: &cli::RunArgs) -> ExitCode {
         &outcomes,
         junit_summary.as_ref(),
         flaky_analysis.as_ref(),
+        report_failures,
         failed,
         style,
     ) {
@@ -144,6 +163,7 @@ fn emit_output(
     outcomes: &[runner::RunOutcome],
     junit_summary: Option<&JunitSummary>,
     flaky: Option<&analyzers::flaky::Analysis>,
+    report_failures: usize,
     failed: bool,
     style: report::Style,
 ) -> Option<ExitCode> {
@@ -168,7 +188,7 @@ fn emit_output(
             }
             println!(
                 "{}",
-                report::verdict_line(outcomes, junit_summary, failed, style)
+                report::verdict_line(outcomes, junit_summary, report_failures, failed, style)
             );
         }
         (Some(summary), None) => {
@@ -177,7 +197,7 @@ fn emit_output(
             report::print_flaky(flaky, style);
             println!(
                 "{}",
-                report::verdict_line(outcomes, junit_summary, failed, style)
+                report::verdict_line(outcomes, junit_summary, report_failures, failed, style)
             );
         }
         (None, _) => {
@@ -186,7 +206,10 @@ fn emit_output(
             // a weakened guard fails loudly instead of dropping output.
             debug_assert!(args.json.is_none());
             report::print_runs(outcomes, style);
-            println!("{}", report::verdict_line(outcomes, None, failed, style));
+            println!(
+                "{}",
+                report::verdict_line(outcomes, None, report_failures, failed, style)
+            );
         }
     }
     None
@@ -239,11 +262,11 @@ impl ReportSource {
 fn load_run_report(
     source: &ReportSource,
     program: &str,
-    run_started: std::time::SystemTime,
+    report_before: Option<(std::time::SystemTime, u64)>,
     outcomes: &[runner::RunOutcome],
 ) -> Result<junit::JunitReport, ExitCode> {
     if let ReportSource::User(path) = source {
-        if report_is_stale(path, run_started) {
+        if report_before.is_some() && file_state(path) == report_before {
             eprintln!(
                 "sooth: the JUnit-XML report at `{}` was not touched by this run — it \
                  predates the test command. Is the runner writing its report to this path?",
@@ -293,29 +316,15 @@ fn load_report(
     })
 }
 
-/// Tolerance before a report counts as stale: wide enough to absorb coarse
-/// filesystem timestamps *and* modest clock skew between sooth and a network
-/// filesystem's server. The real failure mode this guards against — the
-/// runner wrote nothing and the file is from an earlier run — is minutes to
-/// days old, so generosity here costs almost nothing while a false "stale"
-/// on a fresh report would be its own lie.
-const STALE_TOLERANCE: std::time::Duration = std::time::Duration::from_secs(60);
-
-/// Whether the report predates this run. A missing file or a filesystem
-/// without mtimes skips the check (the parse step reports missing files with
-/// its own, better message).
-fn report_is_stale(path: &std::path::Path, run_started: std::time::SystemTime) -> bool {
-    let Ok(metadata) = std::fs::metadata(path) else {
-        return false;
-    };
-    let Ok(modified) = metadata.modified() else {
-        return false;
-    };
-    match run_started.duration_since(modified) {
-        Ok(age_before_start) => age_before_start > STALE_TOLERANCE,
-        // Modified after the run started: fresh.
-        Err(_) => false,
-    }
+/// A file's identity-for-freshness: mtime plus size. Comparing states
+/// before and after a run answers "did this run touch the report" as an
+/// observed fact — no wall clock, no tolerance window, immune to clock skew
+/// between sooth and a network filesystem. `None` when the file is missing
+/// or the filesystem has no mtimes (the parse step owns the missing-file
+/// message).
+fn file_state(path: &std::path::Path) -> Option<(std::time::SystemTime, u64)> {
+    let metadata = std::fs::metadata(path).ok()?;
+    Some((metadata.modified().ok()?, metadata.len()))
 }
 
 /// When the report is unusable and the runner itself failed, keep the run
@@ -459,31 +468,24 @@ mod tests {
     }
 
     #[test]
-    fn a_report_older_than_the_run_start_is_stale() {
+    fn file_state_changes_when_the_file_is_rewritten() {
         let path =
-            std::env::temp_dir().join(format!("sooth-stale-test-{}.xml", std::process::id()));
-        std::fs::write(&path, "x").unwrap();
-        let modified = std::fs::metadata(&path).unwrap().modified().unwrap();
-        // Pin the tolerance boundary itself, not just far-away cases: just
-        // inside stays fresh, just past it turns stale.
-        let just_inside =
-            modified + super::STALE_TOLERANCE.saturating_sub(std::time::Duration::from_secs(5));
-        assert!(!super::report_is_stale(&path, just_inside));
-        let just_past = modified + super::STALE_TOLERANCE + std::time::Duration::from_secs(5);
-        assert!(super::report_is_stale(&path, just_past));
-        let before_write = modified - std::time::Duration::from_secs(60);
-        assert!(!super::report_is_stale(&path, before_write));
+            std::env::temp_dir().join(format!("sooth-state-test-{}.xml", std::process::id()));
+        std::fs::write(&path, "one").unwrap();
+        let before = super::file_state(&path);
+        assert!(before.is_some());
+        // Same state when untouched — the "runner wrote nothing" signal.
+        assert_eq!(super::file_state(&path), before);
+        std::fs::write(&path, "two-longer").unwrap();
+        assert_ne!(super::file_state(&path), before);
         let _ = std::fs::remove_file(&path);
     }
 
     #[test]
-    fn a_missing_report_is_not_stale() {
+    fn a_missing_file_has_no_state() {
         // Missing files take the parse-error path, which has a better message.
-        let missing = std::env::temp_dir().join("sooth-stale-test-missing.xml");
-        assert!(!super::report_is_stale(
-            &missing,
-            std::time::SystemTime::now()
-        ));
+        let missing = std::env::temp_dir().join("sooth-state-test-missing.xml");
+        assert_eq!(super::file_state(&missing), None);
     }
 
     #[test]
