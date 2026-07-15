@@ -3,6 +3,7 @@
 use std::fmt::Write as _;
 use std::time::Duration;
 
+use crate::analyzers::flaky;
 use crate::cli::ColorChoice;
 use crate::junit;
 use crate::runner::RunOutcome;
@@ -180,6 +181,43 @@ pub fn print_summary(summary: &JunitSummary, style: Style) {
     }
 }
 
+/// The flaky pass, when one ran: mixed outcomes ranked by failure rate,
+/// then the always-failing tests — labeled broken, never flaky (see
+/// `DECISIONS.md`). Prints nothing when there is nothing to say: the healthy
+/// majority is not news.
+pub fn print_flaky(analysis: Option<&flaky::Analysis>, style: Style) {
+    let Some(analysis) = analysis else { return };
+    if analysis.is_empty() {
+        return;
+    }
+    if !analysis.flaky.is_empty() {
+        println!("{}", style.bold_red("flaky tests (mixed outcomes):"));
+        for (index, test) in analysis.flaky.iter().enumerate() {
+            println!(
+                "  {}. {} {}",
+                index + 1,
+                test.id,
+                style.red(&format!(
+                    "failed {} of {} runs ({}%)",
+                    test.failed,
+                    test.observed(),
+                    test.failure_rate_percent()
+                ))
+            );
+        }
+    }
+    if !analysis.broken.is_empty() {
+        println!("{}", style.red("consistently failing (broken, not flaky):"));
+        for test in &analysis.broken {
+            println!(
+                "  - {} {}",
+                test.id,
+                style.dim(&format!("(failed all {} observed runs)", test.observed()))
+            );
+        }
+    }
+}
+
 /// The closing verdict line: sooth's suite-level judgement at a glance.
 pub fn verdict_line(
     outcomes: &[RunOutcome],
@@ -223,7 +261,11 @@ fn count(amount: usize, noun: &str) -> String {
 /// `schema_version`. Revisited when this story landed and deliberately kept
 /// hand-rolled: the shape is still small and fixed, so `serde_json` is still
 /// not worth a second dependency — see `DECISIONS.md`.
-pub fn to_json(outcomes: &[RunOutcome], summary: &JunitSummary) -> String {
+pub fn to_json(
+    outcomes: &[RunOutcome],
+    summary: &JunitSummary,
+    flaky: Option<&flaky::Analysis>,
+) -> String {
     let runs: Vec<String> = outcomes
         .iter()
         .map(|outcome| {
@@ -250,8 +292,28 @@ pub fn to_json(outcomes: &[RunOutcome], summary: &JunitSummary) -> String {
         })
         .collect();
 
+    // Additive within schema_version 1: the flaky/broken fields appear only
+    // when a multi-run analysis ran.
+    let analysis = flaky.map_or(String::new(), |analysis| {
+        let entry = |test: &flaky::TestOutcomes| {
+            format!(
+                r#"{{"name":"{}","failed_runs":{},"observed_runs":{}}}"#,
+                json_escape(&test.id),
+                test.failed,
+                test.observed()
+            )
+        };
+        let flaky_entries: Vec<String> = analysis.flaky.iter().map(entry).collect();
+        let broken_entries: Vec<String> = analysis.broken.iter().map(entry).collect();
+        format!(
+            r#","flaky":[{}],"broken":[{}]"#,
+            flaky_entries.join(","),
+            broken_entries.join(",")
+        )
+    });
+
     format!(
-        r#"{{"schema_version":{JSON_SCHEMA_VERSION},"sooth_version":"{}","runs":[{}],"junit":{{"total":{},"passed":{},"failed":{},"errors":{},"skipped":{},"slowest":[{}]}}}}"#,
+        r#"{{"schema_version":{JSON_SCHEMA_VERSION},"sooth_version":"{}","runs":[{}],"junit":{{"total":{},"passed":{},"failed":{},"errors":{},"skipped":{},"slowest":[{}]}}{analysis}}}"#,
         env!("CARGO_PKG_VERSION"),
         runs.join(","),
         summary.total,
@@ -373,7 +435,7 @@ mod tests {
 
         // The qualified name rides into the machine output too — an
         // intentional content change to the existing `name` field, per #54.
-        let json = to_json(&[outcome(true)], &summary);
+        let json = to_json(&[outcome(true)], &summary, None);
         assert!(json.contains(r#""name":"Modules.Order.OrderTest::test_create""#));
     }
 
@@ -415,7 +477,7 @@ mod tests {
             },
             10,
         );
-        let json = to_json(&[outcome(true)], &summary);
+        let json = to_json(&[outcome(true)], &summary, None);
 
         assert!(json.starts_with(r#"{"schema_version":1,"#));
         assert!(json.contains(&format!(

@@ -23,6 +23,16 @@ pub struct JunitReport {
     pub test_cases: Vec<TestCase>,
 }
 
+impl JunitReport {
+    /// Whether any test case failed or errored — the report-side half of the
+    /// suite verdict.
+    pub fn has_failures(&self) -> bool {
+        self.test_cases
+            .iter()
+            .any(|case| matches!(case.status, TestStatus::Failed | TestStatus::Error))
+    }
+}
+
 /// A single `<testcase>` element.
 #[derive(Debug, Clone, PartialEq)]
 pub struct TestCase {

@@ -11,7 +11,7 @@ per version, and `DECISIONS.md` for the reasoning behind non-obvious choices.
 
 ## `src/` module structure
 
-Only `analyzers/` is still the shape to grow into; the rest exists, one module per concern:
+Everything below exists except `analyzers/slow.rs` and `analyzers/order.rs`; one module per concern:
 
 ```
 src/
@@ -20,7 +20,7 @@ src/
 ├── junit.rs       # EXISTS — tolerant JUnit-XML union schema (parse_str/parse_file)
 ├── preset.rs      # EXISTS — presets inject reporter flags/env and manage the temp report
 ├── report.rs      # EXISTS — colored human report + versioned machine JSON
-└── analyzers/     # flaky.rs, slow.rs, order.rs — kept strictly separate (see ROADMAP.md)
+└── analyzers/     # EXISTS — flaky.rs (mixed outcomes over runs); slow.rs, order.rs to come (strictly separate passes)
 ```
 
 Flags sooth cannot honor are rejected loudly, never silently ignored: `--json`/`--slowest`

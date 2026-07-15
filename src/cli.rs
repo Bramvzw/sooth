@@ -29,8 +29,9 @@ pub struct RunArgs {
     #[arg(long, value_enum, conflicts_with = "junit")]
     pub preset: Option<Preset>,
 
-    /// How many times to run the suite (fixed order; flaky detection lands in
-    /// v0.2). With a report source, the report summary reflects the final run.
+    /// How many times to run the suite (fixed order). With a report source
+    /// and more than one run, mixed outcomes are reported as flaky; the
+    /// summary table itself reflects the final run.
     #[arg(long, default_value_t = 1, value_parser = clap::value_parser!(u32).range(1..))]
     pub runs: u32,
 

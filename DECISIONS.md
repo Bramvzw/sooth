@@ -303,3 +303,17 @@ line says `runner exit=N` — never a bare `exit=N` — because `2` means
 something else in sooth's own exit-code contract and the two vocabularies
 were confused in practice on the first real run. ANSI codes are hand-rolled:
 six escape sequences do not justify a color dependency.
+
+## Flaky is mixed outcomes; always-failing is broken, never flaky
+
+A test is flaky iff the observed fixed-order runs show at least one pass
+*and* at least one failure or error. A test that fails every observed run is
+broken — reported in its own section, never in the flaky ranking: calling a
+dead test "flaky" would misstate its nature exactly where this tool promises
+truth, and it would send someone hunting for nondeterminism that is not
+there. Skipped observations carry no signal and are excluded from the
+failure rate. The ranking sorts by failure rate, then id, for stable output;
+the healthy majority — tests that passed every run — is not listed at all.
+The suite verdict considers every run's report: a failure in run 1 is not
+forgiven by a green run 2. This same mixed-outcome definition is what the
+v0.2 history file will apply across sessions instead of within one.

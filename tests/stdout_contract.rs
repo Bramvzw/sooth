@@ -276,3 +276,48 @@ fn an_unusable_report_after_a_crashed_runner_keeps_the_run_facts() {
     assert!(stderr.contains("runner exit=255"), "got: {stderr:?}");
     assert!(stderr.contains("output above"), "got: {stderr:?}");
 }
+
+#[test]
+fn repeated_runs_report_mixed_outcomes_as_flaky() {
+    let dir = std::env::temp_dir();
+    let report = dir.join(format!("sooth-contract-flaky-{}.xml", std::process::id()));
+    let marker = dir.join(format!(
+        "sooth-contract-flaky-marker-{}",
+        std::process::id()
+    ));
+    // Run 1: the test fails (runner exits 1). Run 2: it passes. Mixed = flaky.
+    let script = format!(
+        "if [ -f '{marker}' ]; then printf '<testsuite><testcase classname=\"c\" name=\"wobbly\"/></testsuite>' > '{report}'; else printf '<testsuite><testcase classname=\"c\" name=\"wobbly\"><failure/></testcase></testsuite>' > '{report}'; touch '{marker}'; exit 1; fi",
+        marker = marker.display(),
+        report = report.display()
+    );
+    let output = sooth()
+        .args([
+            "run",
+            "--runs",
+            "2",
+            "--junit",
+            &report.display().to_string(),
+            "--color",
+            "never",
+            "--",
+            "sh",
+            "-c",
+            &script,
+        ])
+        .output()
+        .expect("sooth should run");
+    let _ = std::fs::remove_file(&report);
+    let _ = std::fs::remove_file(&marker);
+
+    assert_eq!(output.status.code(), Some(1), "a flaky run failed run 1");
+    let stdout = String::from_utf8(output.stdout).expect("stdout should be UTF-8");
+    assert!(
+        stdout.contains("flaky tests (mixed outcomes):"),
+        "got: {stdout:?}"
+    );
+    assert!(
+        stdout.contains("c::wobbly failed 1 of 2 runs (50%)"),
+        "got: {stdout:?}"
+    );
+}

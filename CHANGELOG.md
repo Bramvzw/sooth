@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Flaky detection, the core value: with a report source and `--runs N`, the
+  report is parsed after every run and tests with mixed outcomes are ranked
+  by failure rate. Always-failing tests are listed separately as broken —
+  never called flaky. Skipped runs carry no signal.
+- The `--json` shape gains additive `flaky` and `broken` arrays when a
+  multi-run analysis ran (still `schema_version` 1).
+
+### Changed
+
+- With `--runs N`, the suite verdict now considers every run's report: a
+  failure in run 1 is not forgiven by a green run 2.
+
 ## [0.1.0] - 2026-07-15
 
 ### Added

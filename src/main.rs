@@ -5,6 +5,7 @@
 //! exit *or* failures in the parsed report — both must agree for a `0`);
 //! `2` — sooth itself failed (spawn error, unparsable report, bad flags).
 
+mod analyzers;
 mod cli;
 mod junit;
 mod preset;
@@ -63,69 +64,51 @@ fn run(args: &cli::RunArgs) -> ExitCode {
         ),
     };
 
-    let run_started = std::time::SystemTime::now();
     // The repetition loop lives here, not in the runner: repetition is an
-    // orchestration strategy (fixed-order repeats for flaky detection, and
-    // v0.2 parses the report per run right in this loop), while the runner's
-    // whole job is one spawn. Fixed order on purpose — see DECISIONS.md.
+    // orchestration strategy, and the report is parsed *per run* right in
+    // this loop — per-test outcomes across runs are what flaky detection
+    // ranks. Fixed order on purpose — see DECISIONS.md.
     let mut outcomes = Vec::with_capacity(args.runs as usize);
+    let mut reports: Vec<junit::JunitReport> = Vec::with_capacity(args.runs as usize);
     for _ in 0..args.runs {
+        let run_started = std::time::SystemTime::now();
         match runner::run_once(&command, &envs) {
             Ok(outcome) => outcomes.push(outcome),
             Err(err) => {
                 let program = &command[0];
                 eprintln!("sooth: failed to run `{program}`: {err}");
+                if let Some(ReportSource::Preset(path)) = &report_source {
+                    cleanup_preset_report(path);
+                }
                 return ExitCode::from(EXIT_SOOTH_ERROR);
             }
         }
-    }
-
-    let junit_summary = match &report_source {
-        Some(source) => {
-            // A --junit report that predates the run is the classic silent
-            // failure: the runner wrote nothing (wrong flag, crash) and sooth
-            // would report yesterday's truth. Presets skip this: their report
-            // lives in a directory created fresh for this invocation.
-            if let ReportSource::User(path) = source {
-                if report_is_stale(path, run_started) {
-                    eprintln!(
-                        "sooth: the JUnit-XML report at `{}` was not touched by this run — it \
-                         predates the test command. Is the runner writing its report to this path?",
-                        path.display()
-                    );
-                    return ExitCode::from(EXIT_SOOTH_ERROR);
-                }
-            }
-            let preset_program = match source {
-                ReportSource::Preset(_) => Some(command[0].as_str()),
-                ReportSource::User(_) => None,
-            };
-            let loaded = load_summary(
-                source.path(),
-                preset_program,
-                args.slowest.unwrap_or(DEFAULT_SLOWEST),
-            );
-            if let ReportSource::Preset(path) = source {
-                // Best-effort cleanup of the preset's private report dir —
-                // the parse result is already in memory. A user's own --junit
-                // file is never removed.
-                cleanup_preset_report(path);
-            }
-            match loaded {
-                Ok(summary) => Some(summary),
-                Err(message) => {
-                    eprintln!("sooth: {message}");
-                    if let Some(context) = crash_context(&outcomes) {
-                        eprintln!("sooth: {context}");
-                    }
-                    return ExitCode::from(EXIT_SOOTH_ERROR);
-                }
+        if let Some(source) = &report_source {
+            match load_run_report(source, &command[0], run_started, &outcomes) {
+                Ok(report) => reports.push(report),
+                Err(exit) => return exit,
             }
         }
-        None => None,
+    }
+    if let Some(ReportSource::Preset(path)) = &report_source {
+        // Best-effort cleanup of the preset's private report dir — every
+        // run's parse result is already in memory. A user's own --junit file
+        // is never removed.
+        cleanup_preset_report(path);
+    }
+
+    // The summary table keeps reflecting the final run (documented on
+    // --runs); the flaky analysis below is the cross-run view.
+    let junit_summary = reports
+        .last()
+        .map(|report| JunitSummary::from_report(report, args.slowest.unwrap_or(DEFAULT_SLOWEST)));
+    let flaky_analysis = if args.runs > 1 && !reports.is_empty() {
+        Some(analyzers::flaky::analyze(&reports))
+    } else {
+        None
     };
 
-    let failed = suite_failed(&outcomes, junit_summary.as_ref());
+    let failed = suite_failed(&outcomes, &reports);
     let report_failures = junit_summary.as_ref().map_or(0, JunitSummary::failing);
     let runs_failed = outcomes.iter().any(|outcome| !outcome.success);
     if report_failures > 0 && !runs_failed {
@@ -135,7 +118,14 @@ fn run(args: &cli::RunArgs) -> ExitCode {
         );
     }
 
-    if let Some(exit) = emit_output(args, &outcomes, junit_summary.as_ref(), failed, style) {
+    if let Some(exit) = emit_output(
+        args,
+        &outcomes,
+        junit_summary.as_ref(),
+        flaky_analysis.as_ref(),
+        failed,
+        style,
+    ) {
         return exit;
     }
 
@@ -153,6 +143,7 @@ fn emit_output(
     args: &cli::RunArgs,
     outcomes: &[runner::RunOutcome],
     junit_summary: Option<&JunitSummary>,
+    flaky: Option<&analyzers::flaky::Analysis>,
     failed: bool,
     style: report::Style,
 ) -> Option<ExitCode> {
@@ -160,13 +151,14 @@ fn emit_output(
         // Bare --json: sooth's own stdout output is exactly one line of
         // JSON, printed after the wrapped command finished (last-line
         // contract — the child's output still shares the stream).
-        (Some(summary), Some(None)) => println!("{}", report::to_json(outcomes, summary)),
+        (Some(summary), Some(None)) => println!("{}", report::to_json(outcomes, summary, flaky)),
         // --json=PATH: the machine output goes to a file, the human report
         // stays on stdout.
         (Some(summary), Some(Some(path))) => {
             report::print_runs(outcomes, style);
             report::print_summary(summary, style);
-            let json = report::to_json(outcomes, summary);
+            report::print_flaky(flaky, style);
+            let json = report::to_json(outcomes, summary, flaky);
             if let Err(err) = std::fs::write(path, json + "\n") {
                 eprintln!(
                     "sooth: failed to write JSON report `{}`: {err}",
@@ -182,6 +174,7 @@ fn emit_output(
         (Some(summary), None) => {
             report::print_runs(outcomes, style);
             report::print_summary(summary, style);
+            report::print_flaky(flaky, style);
             println!(
                 "{}",
                 report::verdict_line(outcomes, junit_summary, failed, style)
@@ -219,9 +212,9 @@ fn rejected_flag(args: &cli::RunArgs) -> Option<&'static str> {
 /// *or* failures/errors in the parsed report. A failure is never upgraded to
 /// success — sooth exits 0 only when the runner and its report agree that
 /// everything passed (see `DECISIONS.md`).
-fn suite_failed(outcomes: &[runner::RunOutcome], summary: Option<&JunitSummary>) -> bool {
+fn suite_failed(outcomes: &[runner::RunOutcome], reports: &[junit::JunitReport]) -> bool {
     outcomes.iter().any(|outcome| !outcome.success)
-        || summary.is_some_and(|summary| summary.failing() > 0)
+        || reports.iter().any(junit::JunitReport::has_failures)
 }
 
 /// Where the report comes from — the user's own file (`--junit`, freshness
@@ -241,15 +234,48 @@ impl ReportSource {
     }
 }
 
-/// Load and summarize the JUnit-XML report at `path`. `preset_program` is the
-/// wrapped program name when the report is preset-managed — used to turn "no
-/// report was written" into an actionable message instead of a parse error
-/// about a temp path the user never chose.
-fn load_summary(
+/// One run's report: freshness-checked (user files only), loaded, and — on
+/// the error path — annotated with crash context and cleaned up (presets).
+fn load_run_report(
+    source: &ReportSource,
+    program: &str,
+    run_started: std::time::SystemTime,
+    outcomes: &[runner::RunOutcome],
+) -> Result<junit::JunitReport, ExitCode> {
+    if let ReportSource::User(path) = source {
+        if report_is_stale(path, run_started) {
+            eprintln!(
+                "sooth: the JUnit-XML report at `{}` was not touched by this run — it \
+                 predates the test command. Is the runner writing its report to this path?",
+                path.display()
+            );
+            return Err(ExitCode::from(EXIT_SOOTH_ERROR));
+        }
+    }
+    let preset_program = match source {
+        ReportSource::Preset(_) => Some(program),
+        ReportSource::User(_) => None,
+    };
+    load_report(source.path(), preset_program).map_err(|message| {
+        eprintln!("sooth: {message}");
+        if let Some(context) = crash_context(outcomes) {
+            eprintln!("sooth: {context}");
+        }
+        if let ReportSource::Preset(path) = source {
+            cleanup_preset_report(path);
+        }
+        ExitCode::from(EXIT_SOOTH_ERROR)
+    })
+}
+
+/// Load the JUnit-XML report at `path`. `preset_program` is the wrapped
+/// program name when the report is preset-managed — used to turn "no report
+/// was written" into an actionable message instead of a parse error about a
+/// temp path the user never chose.
+fn load_report(
     path: &std::path::Path,
     preset_program: Option<&str>,
-    slowest: usize,
-) -> Result<JunitSummary, String> {
+) -> Result<junit::JunitReport, String> {
     if let Some(program) = preset_program {
         if !path.exists() {
             return Err(format!(
@@ -259,13 +285,12 @@ fn load_summary(
             ));
         }
     }
-    match junit::parse_file(path) {
-        Ok(parsed) => Ok(JunitSummary::from_report(&parsed, slowest)),
-        Err(err) => Err(format!(
+    junit::parse_file(path).map_err(|err| {
+        format!(
             "failed to parse JUnit-XML report `{}`: {err}",
             path.display()
-        )),
-    }
+        )
+    })
 }
 
 /// Tolerance before a report counts as stale: wide enough to absorb coarse
@@ -326,7 +351,6 @@ mod tests {
     use super::{rejected_flag, suite_failed};
     use crate::cli::{Cli, Command};
     use crate::junit::{JunitReport, TestCase, TestStatus};
-    use crate::report::JunitSummary;
     use crate::runner::RunOutcome;
     use clap::Parser;
     use std::time::Duration;
@@ -355,44 +379,58 @@ mod tests {
         }
     }
 
-    fn summary_of(status: TestStatus) -> JunitSummary {
-        let report = JunitReport {
+    fn report_of(status: TestStatus) -> JunitReport {
+        JunitReport {
             test_cases: vec![test_case("case", status, 0.1)],
-        };
-        JunitSummary::from_report(&report, 10)
+        }
     }
 
     #[test]
     fn the_suite_fails_when_the_report_shows_failures_even_if_the_runner_exited_zero() {
-        let summary = summary_of(TestStatus::Failed);
-        assert!(suite_failed(&[outcome(true)], Some(&summary)));
+        assert!(suite_failed(
+            &[outcome(true)],
+            &[report_of(TestStatus::Failed)]
+        ));
     }
 
     #[test]
     fn an_erroring_test_in_the_report_also_fails_the_suite() {
-        let summary = summary_of(TestStatus::Error);
-        assert!(suite_failed(&[outcome(true)], Some(&summary)));
+        assert!(suite_failed(
+            &[outcome(true)],
+            &[report_of(TestStatus::Error)]
+        ));
+    }
+
+    #[test]
+    fn any_runs_report_failing_fails_the_suite_not_just_the_last() {
+        // With --runs N every run's report counts: a failure in run 1 is not
+        // forgiven by a green run 2.
+        let reports = [report_of(TestStatus::Failed), report_of(TestStatus::Passed)];
+        assert!(suite_failed(&[outcome(true), outcome(true)], &reports));
     }
 
     #[test]
     fn the_suite_fails_on_a_nonzero_runner_even_with_a_clean_report() {
-        let summary = summary_of(TestStatus::Passed);
-        assert!(suite_failed(&[outcome(false)], Some(&summary)));
+        assert!(suite_failed(
+            &[outcome(false)],
+            &[report_of(TestStatus::Passed)]
+        ));
     }
 
     #[test]
     fn the_suite_passes_when_runner_and_report_agree() {
-        let summary = summary_of(TestStatus::Skipped);
-        assert!(!suite_failed(&[outcome(true)], Some(&summary)));
-        assert!(!suite_failed(&[outcome(true)], None));
+        assert!(!suite_failed(
+            &[outcome(true)],
+            &[report_of(TestStatus::Skipped)]
+        ));
+        assert!(!suite_failed(&[outcome(true)], &[]));
     }
 
     #[test]
     fn a_preset_run_that_writes_no_report_gets_an_actionable_error() {
         let missing = std::env::temp_dir().join("sooth-test-no-such-report.xml");
-        let message = super::load_summary(&missing, Some("pytest"), 10)
-            .err()
-            .expect("a missing preset report should error");
+        let message = super::load_report(&missing, Some("pytest"))
+            .expect_err("a missing preset report should error");
         assert!(message.contains("wrote no JUnit-XML report"));
         assert!(message.contains("pytest"));
     }
@@ -400,9 +438,8 @@ mod tests {
     #[test]
     fn a_missing_user_junit_file_reports_the_path() {
         let missing = std::env::temp_dir().join("sooth-test-no-such-report.xml");
-        let message = super::load_summary(&missing, None, 10)
-            .err()
-            .expect("a missing --junit file should error");
+        let message =
+            super::load_report(&missing, None).expect_err("a missing --junit file should error");
         assert!(message.contains("failed to parse"));
         assert!(message.contains("sooth-test-no-such-report.xml"));
     }
