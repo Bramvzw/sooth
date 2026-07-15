@@ -54,9 +54,13 @@ fn run(args: &cli::RunArgs) -> ExitCode {
                 }
             };
             let (command, envs) = preset::inject(&args.command, chosen, &path);
-            (command, envs, Some(path))
+            (command, envs, Some(ReportSource::Preset(path)))
         }
-        None => (args.command.clone(), Vec::new(), args.junit.clone()),
+        None => (
+            args.command.clone(),
+            Vec::new(),
+            args.junit.clone().map(ReportSource::User),
+        ),
     };
 
     let run_started = std::time::SystemTime::now();
@@ -70,26 +74,31 @@ fn run(args: &cli::RunArgs) -> ExitCode {
     };
 
     let junit_summary = match &report_source {
-        Some(path) => {
+        Some(source) => {
             // A --junit report that predates the run is the classic silent
             // failure: the runner wrote nothing (wrong flag, crash) and sooth
             // would report yesterday's truth. Presets skip this: their report
             // lives in a directory created fresh for this invocation.
-            if args.preset.is_none() && report_is_stale(path, run_started) {
-                eprintln!(
-                    "sooth: the JUnit-XML report at `{}` was not touched by this run — it \
-                     predates the test command. Is the runner writing its report to this path?",
-                    path.display()
-                );
-                return ExitCode::from(EXIT_SOOTH_ERROR);
+            if let ReportSource::User(path) = source {
+                if report_is_stale(path, run_started) {
+                    eprintln!(
+                        "sooth: the JUnit-XML report at `{}` was not touched by this run — it \
+                         predates the test command. Is the runner writing its report to this path?",
+                        path.display()
+                    );
+                    return ExitCode::from(EXIT_SOOTH_ERROR);
+                }
             }
-            let preset_program = args.preset.map(|_| command[0].as_str());
+            let preset_program = match source {
+                ReportSource::Preset(_) => Some(command[0].as_str()),
+                ReportSource::User(_) => None,
+            };
             let loaded = load_summary(
-                path,
+                source.path(),
                 preset_program,
                 args.slowest.unwrap_or(DEFAULT_SLOWEST),
             );
-            if args.preset.is_some() {
+            if let ReportSource::Preset(path) = source {
                 // Best-effort cleanup of the preset's private report dir —
                 // the parse result is already in memory. A user's own --junit
                 // file is never removed.
@@ -110,9 +119,7 @@ fn run(args: &cli::RunArgs) -> ExitCode {
     };
 
     let failed = suite_failed(&outcomes, junit_summary.as_ref());
-    let report_failures = junit_summary
-        .as_ref()
-        .map_or(0, |summary| summary.failed + summary.error);
+    let report_failures = junit_summary.as_ref().map_or(0, JunitSummary::failing);
     let runs_failed = outcomes.iter().any(|outcome| !outcome.success);
     if report_failures > 0 && !runs_failed {
         eprintln!(
@@ -207,7 +214,24 @@ fn rejected_flag(args: &cli::RunArgs) -> Option<&'static str> {
 /// everything passed (see `DECISIONS.md`).
 fn suite_failed(outcomes: &[runner::RunOutcome], summary: Option<&JunitSummary>) -> bool {
     outcomes.iter().any(|outcome| !outcome.success)
-        || summary.is_some_and(|summary| summary.failed + summary.error > 0)
+        || summary.is_some_and(|summary| summary.failing() > 0)
+}
+
+/// Where the report comes from — the user's own file (`--junit`, freshness
+/// checked, never deleted) or a preset-managed temp file (fresh by
+/// construction, cleaned up afterwards). One value carries what three
+/// separate `args.preset` checks used to coordinate.
+enum ReportSource {
+    User(std::path::PathBuf),
+    Preset(std::path::PathBuf),
+}
+
+impl ReportSource {
+    fn path(&self) -> &std::path::Path {
+        match self {
+            Self::User(path) | Self::Preset(path) => path,
+        }
+    }
 }
 
 /// Load and summarize the JUnit-XML report at `path`. `preset_program` is the
@@ -272,16 +296,12 @@ fn crash_context(outcomes: &[runner::RunOutcome]) -> Option<String> {
         .enumerate()
         .rev()
         .find(|(_, outcome)| !outcome.success)?;
-    let status = match (outcome.exit_code, outcome.signal) {
-        (Some(code), _) => format!("runner exit={code}"),
-        (None, Some(signal)) => format!("runner signal {signal}"),
-        (None, None) => "killed by a signal".to_owned(),
-    };
     Some(format!(
-        "run {} of {} failed ({status}, {:.2?}) — the runner's own output above likely \
+        "run {} of {} failed ({}, {:.2?}) — the runner's own output above likely \
          explains the unusable report",
         index + 1,
         outcomes.len(),
+        outcome.status_label(),
         outcome.duration
     ))
 }
