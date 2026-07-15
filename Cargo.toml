@@ -1,6 +1,6 @@
 [package]
 name = "sooth"
-version = "0.0.0"
+version = "0.1.0"
 edition = "2021"
 rust-version = "1.80"
 description = "The truth about your tests — a local test-suite observer that finds flaky, slow, and order-dependent tests. Work in progress."

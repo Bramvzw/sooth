@@ -151,7 +151,7 @@ dependencies = [
 
 [[package]]
 name = "sooth"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "clap",
  "quick-xml",
