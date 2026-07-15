@@ -64,14 +64,21 @@ fn run(args: &cli::RunArgs) -> ExitCode {
     };
 
     let run_started = std::time::SystemTime::now();
-    let outcomes = match runner::run(&command, args.runs, &envs) {
-        Ok(outcomes) => outcomes,
-        Err(err) => {
-            let program = &command[0];
-            eprintln!("sooth: failed to run `{program}`: {err}");
-            return ExitCode::from(EXIT_SOOTH_ERROR);
+    // The repetition loop lives here, not in the runner: repetition is an
+    // orchestration strategy (fixed-order repeats for flaky detection, and
+    // v0.2 parses the report per run right in this loop), while the runner's
+    // whole job is one spawn. Fixed order on purpose — see DECISIONS.md.
+    let mut outcomes = Vec::with_capacity(args.runs as usize);
+    for _ in 0..args.runs {
+        match runner::run_once(&command, &envs) {
+            Ok(outcome) => outcomes.push(outcome),
+            Err(err) => {
+                let program = &command[0];
+                eprintln!("sooth: failed to run `{program}`: {err}");
+                return ExitCode::from(EXIT_SOOTH_ERROR);
+            }
         }
-    };
+    }
 
     let junit_summary = match &report_source {
         Some(source) => {
