@@ -64,10 +64,9 @@ fn run(args: &cli::RunArgs) -> ExitCode {
         ),
     };
 
-    // The repetition loop lives here, not in the runner: repetition is an
-    // orchestration strategy, and the report is parsed *per run* right in
-    // this loop — per-test outcomes across runs are what flaky detection
-    // ranks. Fixed order on purpose — see DECISIONS.md.
+    // Repetition lives here, not in the runner: the report is parsed per
+    // run, and per-test outcomes across runs feed the flaky pass. Fixed
+    // order on purpose — see DECISIONS.md.
     let mut outcomes = Vec::with_capacity(args.runs as usize);
     let mut reports: Vec<junit::JunitReport> = Vec::with_capacity(args.runs as usize);
     for _ in 0..args.runs {
@@ -109,8 +108,6 @@ fn run(args: &cli::RunArgs) -> ExitCode {
         cleanup_preset_report(path);
     }
 
-    // The summary table keeps reflecting the final run (documented on
-    // --runs); the flaky analysis below is the cross-run view.
     let junit_summary = reports
         .last()
         .map(|report| JunitSummary::from_report(report, args.slowest.unwrap_or(DEFAULT_SLOWEST)));
