@@ -29,6 +29,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   collapse to the run's worst status before flaky analysis, so a
   deterministic failure can never be misreported as flaky.
 
+### Fixed
+
+- The crash context after an unusable report counts against the requested
+  `--runs` total: aborting on the first of three runs now says "run 1 of 3
+  failed" instead of "run 1 of 1", so the skipped runs are visible (#80).
+
 ## [0.1.0] - 2026-07-15
 
 ### Added

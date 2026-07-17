@@ -95,7 +95,7 @@ fn run(args: &cli::RunArgs) -> ExitCode {
             }
         }
         if let Some(source) = &report_source {
-            match load_run_report(source, &command[0], report_before, &outcomes) {
+            match load_run_report(source, &command[0], report_before, &outcomes, args.runs) {
                 Ok(report) => reports.push(report),
                 Err(exit) => return exit,
             }
@@ -261,6 +261,7 @@ fn load_run_report(
     program: &str,
     report_before: Option<(std::time::SystemTime, u64)>,
     outcomes: &[runner::RunOutcome],
+    requested_runs: u32,
 ) -> Result<junit::JunitReport, ExitCode> {
     if let ReportSource::User(path) = source {
         if report_before.is_some() && file_state(path) == report_before {
@@ -278,7 +279,7 @@ fn load_run_report(
     };
     load_report(source.path(), preset_program).map_err(|message| {
         eprintln!("sooth: {message}");
-        if let Some(context) = crash_context(outcomes) {
+        if let Some(context) = crash_context(outcomes, requested_runs) {
             eprintln!("sooth: {context}");
         }
         if let ReportSource::Preset(path) = source {
@@ -327,8 +328,10 @@ fn file_state(path: &std::path::Path) -> Option<(std::time::SystemTime, u64)> {
 /// When the report is unusable and the runner itself failed, keep the run
 /// facts sooth already measured instead of discarding them with the report:
 /// after a long run, "the crash output above is the real story" beats a bare
-/// parse error about a temp path. `None` when every run succeeded.
-fn crash_context(outcomes: &[runner::RunOutcome]) -> Option<String> {
+/// parse error about a temp path. The total is the *requested* `--runs`
+/// count, not the executed count — "run 1 of 3" also tells the user runs
+/// 2–3 were skipped. `None` when every run succeeded.
+fn crash_context(outcomes: &[runner::RunOutcome], requested_runs: u32) -> Option<String> {
     let (index, outcome) = outcomes
         .iter()
         .enumerate()
@@ -338,7 +341,7 @@ fn crash_context(outcomes: &[runner::RunOutcome]) -> Option<String> {
         "run {} of {} failed ({}, {:.2?}) — the runner's own output above likely \
          explains the unusable report",
         index + 1,
-        outcomes.len(),
+        requested_runs,
         outcome.status_label(),
         outcome.duration
     ))
@@ -453,15 +456,22 @@ mod tests {
     #[test]
     fn crash_context_names_the_failed_run_and_its_status() {
         let outcomes = [outcome(true), outcome(false)];
-        let context = super::crash_context(&outcomes).expect("a failed run should give context");
+        let context = super::crash_context(&outcomes, 2).expect("a failed run should give context");
         assert!(context.contains("run 2 of 2"));
         assert!(context.contains("runner exit=1"));
         assert!(context.contains("output above"));
     }
 
     #[test]
+    fn crash_context_counts_against_the_requested_runs_not_the_executed_ones() {
+        let outcomes = [outcome(false)];
+        let context = super::crash_context(&outcomes, 3).expect("a failed run should give context");
+        assert!(context.contains("run 1 of 3"));
+    }
+
+    #[test]
     fn crash_context_is_silent_when_every_run_succeeded() {
-        assert_eq!(super::crash_context(&[outcome(true)]), None);
+        assert_eq!(super::crash_context(&[outcome(true)], 1), None);
     }
 
     #[test]
