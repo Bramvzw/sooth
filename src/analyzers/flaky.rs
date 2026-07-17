@@ -1,10 +1,8 @@
 //! Flaky detection over repeated fixed-order runs.
 //!
-//! A test is *flaky* iff it shows mixed outcomes across the observed runs:
-//! at least one pass and at least one failure/error. A test that fails every
-//! observed run is not flaky — it is *broken*, and calling it flaky would be
-//! a lie about its nature (see `DECISIONS.md`). Skipped observations carry
-//! no signal and are excluded from the rate.
+//! A test is *flaky* iff it shows mixed outcomes across the observed runs;
+//! failed-every-run is *broken*, never flaky (see `DECISIONS.md`). Skipped
+//! observations carry no signal and are excluded from the rate.
 
 use crate::junit::{JunitReport, TestStatus};
 
