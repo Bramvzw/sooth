@@ -37,6 +37,24 @@ with `(#n)` only when it adds clarity; `Closes #n` in the PR body is enough.
       + `cargo test`. No `#[allow]` without a comment saying why; `unsafe` is denied crate-wide.
 - [ ] `DECISIONS.md` updated for any non-obvious choice.
 - [ ] Docs (`README.md`, `AGENTS.md`) updated if documented behaviour changed.
+- [ ] Comments follow the comment rule below.
+
+## Comment rule
+
+A comment exists for the next reader — a fresh AI agent, the owner weeks
+later, an external contributor — and states only facts the code cannot show.
+
+- **Rustdoc (`///`, `//!`) on public items**: yes — the definition or
+  constraint of the item ("`failed` counts errors too"). Link to
+  `DECISIONS.md` for rationale instead of paraphrasing it.
+- **Inline comments (`//`)**: only the one constraint line — why *this*
+  value or shape, i.e. what a refactor would silently undo.
+- **Never**: provenance stories ("observed live: ..."), restating an ADR,
+  narrating what the next line does, or arguing the change is correct —
+  that is the PR body's job and it dies with the review.
+- When in doubt, leave it out. One fact, one home: rationale lives in
+  `DECISIONS.md`, change context in the PR body, domain definitions on the
+  item that owns them.
 
 ## Security
 
