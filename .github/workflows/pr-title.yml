@@ -3,6 +3,10 @@ name: PR title
 on:
   pull_request:
     types: [opened, edited, reopened, synchronize]
+  # The merge queue has no PR title to lint (it was already checked to enter
+  # the queue), but this check is required, so it must still report green on
+  # merge_group refs or the queue stalls.
+  merge_group:
 
 permissions:
   contents: read
@@ -12,9 +16,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        if: github.event_name == 'pull_request'
       - name: Check the PR title against the commit convention
+        if: github.event_name == 'pull_request'
         env:
           TITLE: ${{ github.event.pull_request.title }}
         run: |
           printf '%s\n' "$TITLE" > .pr-title.txt
           bash bin/lint-commit-message.sh .pr-title.txt
+      - name: Pass through for merge-queue runs
+        if: github.event_name == 'merge_group'
+        run: echo "merge_group run — the title was validated on the pull request"
