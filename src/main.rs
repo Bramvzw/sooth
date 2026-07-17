@@ -329,8 +329,7 @@ fn file_state(path: &std::path::Path) -> Option<(std::time::SystemTime, u64)> {
 /// facts sooth already measured instead of discarding them with the report:
 /// after a long run, "the crash output above is the real story" beats a bare
 /// parse error about a temp path. The total is the *requested* `--runs`
-/// count, not the executed count — "run 1 of 3" also tells the user runs
-/// 2–3 were skipped. `None` when every run succeeded.
+/// count, not the executed count. `None` when every run succeeded.
 fn crash_context(outcomes: &[runner::RunOutcome], requested_runs: u32) -> Option<String> {
     let (index, outcome) = outcomes
         .iter()
