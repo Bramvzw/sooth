@@ -4,6 +4,9 @@ on:
   push:
     branches: [main]
   pull_request:
+  # The merge queue builds speculative merge refs; required checks must
+  # report on those refs or queued PRs never merge.
+  merge_group:
 
 permissions:
   contents: read
