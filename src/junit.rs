@@ -571,10 +571,7 @@ mod tests {
 
     #[test]
     fn xml_invalid_chars_in_test_output_do_not_break_an_otherwise_valid_report() {
-        // Observed live: a test leaked a raw byte stream into its output and
-        // the runner wrote U+FFFF into <system-out>; the merging tool's XML
-        // parser crashed on it. Sooth's contract is stronger than "never
-        // panics": the report still parses and the case is still counted.
+        // Real runners write these when a test leaks raw bytes into its output.
         for junk in ['\u{FFFF}', '\0'] {
             let xml = format!(
                 r#"<testsuites><testsuite name="s" tests="1"><testcase classname="c" name="t"><system-out>garbage: {junk} here</system-out></testcase></testsuite></testsuites>"#
