@@ -570,6 +570,22 @@ mod tests {
     }
 
     #[test]
+    fn xml_invalid_chars_in_test_output_do_not_break_an_otherwise_valid_report() {
+        // Observed live: a test leaked a raw byte stream into its output and
+        // the runner wrote U+FFFF into <system-out>; the merging tool's XML
+        // parser crashed on it. Sooth's contract is stronger than "never
+        // panics": the report still parses and the case is still counted.
+        for junk in ['\u{FFFF}', '\0'] {
+            let xml = format!(
+                r#"<testsuites><testsuite name="s" tests="1"><testcase classname="c" name="t"><system-out>garbage: {junk} here</system-out></testcase></testsuite></testsuites>"#
+            );
+            let report = parse_str(&xml).expect("XML-invalid chars in output must not reject");
+            assert_eq!(report.test_cases.len(), 1);
+            assert_eq!(report.test_cases[0].status, TestStatus::Passed);
+        }
+    }
+
+    #[test]
     fn deeply_nested_junk_does_not_panic_or_overflow_the_stack() {
         let depth = 50_000;
         let mut xml = String::new();
