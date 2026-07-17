@@ -45,6 +45,12 @@ pub struct RunArgs {
     #[arg(long, value_name = "PATH", num_args = 0..=1, require_equals = true)]
     pub json: Option<Option<PathBuf>>,
 
+    /// Do not record this run into `.sooth/history.jsonl` and do not report
+    /// from the accumulated history (recording needs a report source; without
+    /// one nothing is recorded either way).
+    #[arg(long)]
+    pub no_history: bool,
+
     /// When to color the report: auto respects `NO_COLOR` and whether stdout
     /// is a terminal.
     #[arg(long, value_enum, default_value = "auto")]

@@ -6,7 +6,14 @@ use std::path::PathBuf;
 use std::process::Command;
 
 fn sooth() -> Command {
-    Command::new(env!("CARGO_BIN_EXE_sooth"))
+    let mut command = Command::new(env!("CARGO_BIN_EXE_sooth"));
+    // History writes `.sooth/` into the working directory; the contract
+    // suite must not seed the repo's own history. Every test passes
+    // absolute paths, so the cwd itself is free to be scratch.
+    let cwd = std::env::temp_dir().join(format!("sooth-contract-cwd-{}", std::process::id()));
+    let _ = std::fs::create_dir_all(&cwd);
+    command.current_dir(cwd);
+    command
 }
 
 fn fixture() -> &'static str {
@@ -363,4 +370,129 @@ fn a_preset_runner_that_stops_writing_reports_fails_loudly() {
         stderr.contains("wrote no JUnit-XML report"),
         "got: {stderr:?}"
     );
+}
+
+/// A scratch git repo (one commit, `.sooth/` ignored) for history tests;
+/// returns `None` when git is unavailable.
+fn scratch_repo(tag: &str) -> Option<PathBuf> {
+    Command::new("git").arg("--version").output().ok()?;
+    let dir = std::env::temp_dir().join(format!("sooth-contract-{tag}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).ok()?;
+    std::fs::write(dir.join(".gitignore"), ".sooth/\n").ok()?;
+    for args in [
+        &["init", "-q"][..],
+        &["add", "."][..],
+        &["commit", "-q", "-m", "init"][..],
+    ] {
+        let ok = Command::new("git")
+            .arg("-C")
+            .arg(&dir)
+            .args(args)
+            .env("GIT_AUTHOR_NAME", "t")
+            .env("GIT_AUTHOR_EMAIL", "t@t")
+            .env("GIT_COMMITTER_NAME", "t")
+            .env("GIT_COMMITTER_EMAIL", "t@t")
+            .output()
+            .is_ok_and(|o| o.status.success());
+        assert!(ok, "git {args:?} failed");
+    }
+    Some(dir)
+}
+
+#[test]
+fn history_accumulates_across_invocations_and_reports_proven_flakes() {
+    let Some(dir) = scratch_repo("history") else {
+        return; // no git: identity degrades to unknown, covered by unit tests
+    };
+    // The report lives outside the repo so the working tree stays clean.
+    let report = std::env::temp_dir().join(format!(
+        "sooth-contract-history-report-{}.xml",
+        std::process::id()
+    ));
+    let run = |cases: &str| {
+        let script = format!(
+            "printf '<testsuite>{cases}</testsuite>' > '{}'",
+            report.display()
+        );
+        Command::new(env!("CARGO_BIN_EXE_sooth"))
+            .current_dir(&dir)
+            .args([
+                "run",
+                "--junit",
+                &report.display().to_string(),
+                "--color",
+                "never",
+                "--",
+                "sh",
+                "-c",
+                &script,
+            ])
+            .output()
+            .expect("sooth should run")
+    };
+
+    let first = run(r#"<testcase classname="c" name="wob"/>"#);
+    let stdout = String::from_utf8(first.stdout).expect("stdout should be UTF-8");
+    assert_eq!(first.status.code(), Some(0));
+    assert!(
+        !stdout.contains("flaky per history"),
+        "an all-green history reported flakes: {stdout:?}"
+    );
+
+    let second = run(r#"<testcase classname="c" name="wob"><failure/></testcase>"#);
+    let stdout = String::from_utf8(second.stdout).expect("stdout should be UTF-8");
+    assert_eq!(second.status.code(), Some(1));
+    assert!(
+        stdout.contains("flaky per history (mixed outcomes on one commit):"),
+        "got: {stdout:?}"
+    );
+    assert!(
+        stdout.contains("c::wob failed 1 of 2 observed runs (50%)"),
+        "got: {stdout:?}"
+    );
+
+    let history = std::fs::read_to_string(dir.join(".sooth/history.jsonl"))
+        .expect("history should have been written");
+    assert_eq!(history.lines().count(), 2);
+    let _ = std::fs::remove_file(&report);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn no_history_neither_writes_nor_reports() {
+    let Some(dir) = scratch_repo("nohistory") else {
+        return;
+    };
+    let report = std::env::temp_dir().join(format!(
+        "sooth-contract-nohistory-report-{}.xml",
+        std::process::id()
+    ));
+    let script = format!(
+        "printf '<testsuite><testcase classname=\"c\" name=\"t\"/></testsuite>' > '{}'",
+        report.display()
+    );
+    let output = Command::new(env!("CARGO_BIN_EXE_sooth"))
+        .current_dir(&dir)
+        .args([
+            "run",
+            "--no-history",
+            "--junit",
+            &report.display().to_string(),
+            "--color",
+            "never",
+            "--",
+            "sh",
+            "-c",
+            &script,
+        ])
+        .output()
+        .expect("sooth should run");
+    assert_eq!(output.status.code(), Some(0));
+    assert!(
+        !dir.join(".sooth").exists(),
+        "--no-history still wrote a history"
+    );
+    let _ = std::fs::remove_file(&report);
+    let _ = std::fs::remove_dir_all(&dir);
 }

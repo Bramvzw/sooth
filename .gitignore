@@ -8,3 +8,6 @@
 
 # AI-tooling session state
 .omc/
+
+# sooth's own run history (dogfooding)
+.sooth/

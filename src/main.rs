@@ -7,6 +7,7 @@
 
 mod analyzers;
 mod cli;
+mod history;
 mod junit;
 mod preset;
 mod report;
@@ -116,6 +117,11 @@ fn run(args: &cli::RunArgs) -> ExitCode {
     } else {
         None
     };
+    let history_analysis = record_history(args, &reports);
+    let analyses = Analyses {
+        flaky: flaky_analysis.as_ref(),
+        history: history_analysis.as_ref(),
+    };
 
     let failed = suite_failed(&outcomes, &reports);
     // The worst run's count, over all reports: the mismatch note and the
@@ -137,7 +143,7 @@ fn run(args: &cli::RunArgs) -> ExitCode {
         args,
         &outcomes,
         junit_summary.as_ref(),
-        flaky_analysis.as_ref(),
+        &analyses,
         report_failures,
         failed,
         style,
@@ -152,6 +158,56 @@ fn run(args: &cli::RunArgs) -> ExitCode {
     }
 }
 
+/// The cross-run analyses, when they ran: the active pass (`--runs N`) and
+/// the passive one (the accumulated history).
+struct Analyses<'a> {
+    flaky: Option<&'a analyzers::flaky::Analysis>,
+    history: Option<&'a analyzers::history::Analysis>,
+}
+
+/// Record this invocation's runs into the local history and classify the
+/// accumulated observations. Every failure degrades to a stderr warning:
+/// the passive layer must never change the run's outcome.
+fn record_history(
+    args: &cli::RunArgs,
+    reports: &[junit::JunitReport],
+) -> Option<analyzers::history::Analysis> {
+    if args.no_history || reports.is_empty() {
+        return None;
+    }
+    let identity = history::code_identity(std::path::Path::new("."));
+    let at_epoch_secs = history::now_epoch_secs();
+    let mut observations = Vec::new();
+    for report in reports {
+        for (id, status) in analyzers::flaky::run_outcomes(report) {
+            observations.push(history::Observation {
+                id,
+                status,
+                commit: identity.commit.clone(),
+                dirty: identity.dirty,
+                at_epoch_secs,
+            });
+        }
+    }
+    let path = std::path::Path::new(history::HISTORY_PATH);
+    if let Err(err) = history::append(path, &observations) {
+        eprintln!(
+            "sooth: could not write {}: {err} — history skipped for this run",
+            path.display()
+        );
+        return None;
+    }
+    let loaded = history::load(path);
+    if loaded.skipped_lines > 0 {
+        eprintln!(
+            "sooth: ignored {} unreadable line(s) in {}",
+            loaded.skipped_lines,
+            path.display()
+        );
+    }
+    Some(analyzers::history::analyze(&loaded.observations))
+}
+
 /// Print the run's output in the shape the flags ask for. Returns an exit
 /// code only when emitting itself failed (the JSON file could not be
 /// written).
@@ -159,7 +215,7 @@ fn emit_output(
     args: &cli::RunArgs,
     outcomes: &[runner::RunOutcome],
     junit_summary: Option<&JunitSummary>,
-    flaky: Option<&analyzers::flaky::Analysis>,
+    analyses: &Analyses<'_>,
     report_failures: usize,
     failed: bool,
     style: report::Style,
@@ -168,14 +224,18 @@ fn emit_output(
         // Bare --json: sooth's own stdout output is exactly one line of
         // JSON, printed after the wrapped command finished (last-line
         // contract — the child's output still shares the stream).
-        (Some(summary), Some(None)) => println!("{}", report::to_json(outcomes, summary, flaky)),
+        (Some(summary), Some(None)) => println!(
+            "{}",
+            report::to_json(outcomes, summary, analyses.flaky, analyses.history)
+        ),
         // --json=PATH: the machine output goes to a file, the human report
         // stays on stdout.
         (Some(summary), Some(Some(path))) => {
             report::print_runs(outcomes, style);
             report::print_summary(summary, style);
-            report::print_flaky(flaky, style);
-            let json = report::to_json(outcomes, summary, flaky);
+            report::print_flaky(analyses.flaky, style);
+            report::print_history(analyses.history, style);
+            let json = report::to_json(outcomes, summary, analyses.flaky, analyses.history);
             if let Err(err) = std::fs::write(path, json + "\n") {
                 eprintln!(
                     "sooth: failed to write JSON report `{}`: {err}",
@@ -191,7 +251,8 @@ fn emit_output(
         (Some(summary), None) => {
             report::print_runs(outcomes, style);
             report::print_summary(summary, style);
-            report::print_flaky(flaky, style);
+            report::print_flaky(analyses.flaky, style);
+            report::print_history(analyses.history, style);
             println!(
                 "{}",
                 report::verdict_line(outcomes, junit_summary, report_failures, failed, style)

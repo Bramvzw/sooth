@@ -2,3 +2,4 @@
 //! never combined (see `ROADMAP.md`).
 
 pub mod flaky;
+pub mod history;

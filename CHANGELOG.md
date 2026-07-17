@@ -15,6 +15,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   never called flaky. Skipped runs carry no signal.
 - The `--json` shape gains additive `flaky` and `broken` arrays when a
   multi-run analysis ran (still `schema_version` 1).
+- Local run history: every run with a report source appends one observation
+  per test to `.sooth/history.jsonl` (opt out with `--no-history`), stamped
+  with the git commit and a dirty flag. Mixed outcomes on one clean commit
+  are reported as flaky per history; a green→red flip at a commit boundary
+  as `failing since <commit>` — a regression pointer, never a flaky label.
+  Gitignore `.sooth/`. The `--json` shape gains an additive `history` object
+  when the pass ran.
 
 ### Changed
 
