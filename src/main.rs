@@ -103,8 +103,7 @@ fn run(args: &cli::RunArgs) -> ExitCode {
     }
     if let Some(ReportSource::Preset(path)) = &report_source {
         // Best-effort cleanup of the preset's private report dir — every
-        // run's parse result is already in memory. A user's own --junit file
-        // is never removed.
+        // run's parse result is already in memory.
         cleanup_preset_report(path);
     }
 

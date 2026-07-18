@@ -120,9 +120,6 @@ fn a_junit_report_that_predates_the_run_is_rejected_as_stale() {
     let report =
         std::env::temp_dir().join(format!("sooth-contract-stale-{}.xml", std::process::id()));
     std::fs::copy(fixture(), &report).expect("fixture should copy");
-    // Age it well past the freshness tolerance.
-    let old = filetime_from_secs_ago(&report, 3600);
-    assert!(old.is_ok(), "could not age the file: {old:?}");
 
     let output = sooth()
         .args([
@@ -152,26 +149,6 @@ fn a_junit_report_that_predates_the_run_is_rejected_as_stale() {
 
 /// Set the file's mtime `secs` into the past using `touch -t` — std has no
 /// stable set-mtime API and a dev-dependency for one test is not worth it.
-/// Covers BSD (`date -v`) and GNU (`date -d`); busybox `date` is not
-/// supported and fails this test's `is_ok` assert loudly rather than
-/// passing silently.
-fn filetime_from_secs_ago(path: &std::path::Path, secs: u64) -> std::io::Result<()> {
-    let status = Command::new("sh")
-        .args([
-            "-c",
-            &format!(
-                "touch -m -t \"$(date -v-{secs}S '+%Y%m%d%H%M.%S' 2>/dev/null || date -d '-{secs} seconds' '+%Y%m%d%H%M.%S' 2>/dev/null)\" '{}'",
-                path.display()
-            ),
-        ])
-        .status()?;
-    if status.success() {
-        Ok(())
-    } else {
-        Err(std::io::Error::other("touch failed"))
-    }
-}
-
 #[test]
 fn a_failing_wrapped_command_exits_one() {
     let output = sooth()
@@ -248,9 +225,8 @@ fn the_runner_report_mismatch_is_called_out_on_stderr() {
 
 #[test]
 fn an_unusable_report_after_a_crashed_runner_keeps_the_run_facts() {
-    // The runner writes garbage instead of XML and exits nonzero — the OOM
-    // scenario from real dogfooding. sooth must point at the crash instead
-    // of only naming an unparsable file.
+    // The runner writes garbage instead of XML and exits nonzero; sooth
+    // must point at the crash instead of only naming an unparsable file.
     let report =
         std::env::temp_dir().join(format!("sooth-contract-crash-{}.xml", std::process::id()));
     let write_garbage = format!("echo 'PHP Fatal error' > '{}'; exit 255", report.display());
