@@ -95,16 +95,17 @@ pub fn analyze(observations: &[Observation]) -> Analysis {
         }
 
         // Regression pointer: a trailing failure streak of at least two,
-        // anchored on clean, known code.
+        // anchored on the streak's earliest *clean* red — dirty reds still
+        // count in the streak, they just cannot carry the address.
         let streak: Vec<&&Observation> = signal.iter().rev().take_while(|o| failed(o)).collect();
         if streak.len() < 2 {
             continue;
         }
-        let first_red = streak[streak.len() - 1];
-        if first_red.dirty != Some(false) {
-            continue;
-        }
-        let Some(commit) = &first_red.commit else {
+        let anchor = streak
+            .iter()
+            .rev()
+            .find(|o| o.dirty == Some(false) && o.commit.is_some());
+        let Some(commit) = anchor.and_then(|o| o.commit.as_ref()) else {
             continue;
         };
         analysis.failing_since.push(FailingSince {
@@ -207,6 +208,22 @@ mod tests {
             obs("c::t", TestStatus::Failed, None, None),
         ];
         assert!(analyze(&history).is_empty());
+    }
+
+    #[test]
+    fn failing_since_anchors_on_the_earliest_clean_red_of_the_streak() {
+        let history = [
+            clean("c::t", TestStatus::Passed, "aaa"),
+            obs("c::t", TestStatus::Failed, Some("bbb"), Some(true)),
+            clean("c::t", TestStatus::Failed, "bbb"),
+            clean("c::t", TestStatus::Failed, "bbb"),
+        ];
+        let analysis = analyze(&history);
+        assert!(analysis.flaky.is_empty());
+        assert_eq!(analysis.failing_since.len(), 1);
+        assert_eq!(analysis.failing_since[0].commit, "bbb");
+        // Dirty reds count in the streak; they only cannot carry the address.
+        assert_eq!(analysis.failing_since[0].failed_runs, 3);
     }
 
     #[test]

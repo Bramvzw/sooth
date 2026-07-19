@@ -354,5 +354,7 @@ value. Write or read failures degrade to a stderr warning and never change
 the exit contract. The file is append-only JSON lines, hand-written and
 hand-parsed like the `--json` output (same no-serde reasoning); unreadable
 lines are counted and skipped, never fatal. Analysis looks at each test's
-last 50 observations, so drift ages out without sooth ever pruning a file
-the user owns.
+last 50 observations, and loading reads at most the file's last 64 MiB —
+the file is append-only and never pruned by sooth, so the read must be
+bounded or every run would pay for the entire past. Drift ages out; the
+user prunes (or doesn't) a file they own.

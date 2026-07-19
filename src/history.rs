@@ -18,6 +18,12 @@ pub const HISTORY_PATH: &str = ".sooth/history.jsonl";
 /// How many of a test's most recent observations the analysis considers.
 pub const WINDOW_PER_TEST: usize = 50;
 
+/// How much of the history file's tail one load reads. The file is
+/// append-only and never pruned, so reads must be bounded or every run pays
+/// for the entire past: 64 MiB is roughly half a million observations —
+/// window-filling even for a ten-thousand-test suite.
+pub const MAX_LOAD_BYTES: u64 = 64 * 1024 * 1024;
+
 /// The code state observations were made on. `None` means unknowable (no
 /// git binary, not a repository): such observations count in totals but can
 /// never be identity-bound evidence.
@@ -117,22 +123,68 @@ fn to_line(observation: &Observation) -> String {
     )
 }
 
-const fn status_str(status: TestStatus) -> &'static str {
-    match status {
-        TestStatus::Passed => "passed",
-        TestStatus::Failed => "failed",
-        TestStatus::Error => "error",
-        TestStatus::Skipped => "skipped",
-    }
+/// Every status with its wire name — the one table both directions use.
+const STATUS_NAMES: [(TestStatus, &str); 4] = [
+    (TestStatus::Passed, "passed"),
+    (TestStatus::Failed, "failed"),
+    (TestStatus::Error, "error"),
+    (TestStatus::Skipped, "skipped"),
+];
+
+fn status_str(status: TestStatus) -> &'static str {
+    STATUS_NAMES
+        .iter()
+        .find(|(candidate, _)| *candidate == status)
+        .map_or("", |(_, name)| name)
+}
+
+fn status_from_str(name: &str) -> Option<TestStatus> {
+    STATUS_NAMES
+        .iter()
+        .find(|(_, candidate)| *candidate == name)
+        .map(|(status, _)| *status)
 }
 
 /// Load the history at `path`; a missing file is an empty history.
 pub fn load(path: &Path) -> Loaded {
-    let Ok(text) = fs::read_to_string(path) else {
-        return Loaded {
-            observations: Vec::new(),
-            skipped_lines: 0,
-        };
+    load_tail(path, MAX_LOAD_BYTES)
+}
+
+/// Read at most the last `max_bytes` of the file. A truncated first line is
+/// expected when the tail cuts mid-line and is dropped silently — it is not
+/// corruption, so it must not trip the unreadable-lines warning every run.
+fn load_tail(path: &Path, max_bytes: u64) -> Loaded {
+    use std::io::{Read as _, Seek as _, SeekFrom};
+
+    let empty = Loaded {
+        observations: Vec::new(),
+        skipped_lines: 0,
+    };
+    let Ok(mut file) = fs::File::open(path) else {
+        return empty;
+    };
+    let Ok(len) = file.metadata().map(|m| m.len()) else {
+        return empty;
+    };
+    let mut bytes = Vec::new();
+    let mut truncated = false;
+    if len > max_bytes {
+        truncated = true;
+        if file
+            .seek(SeekFrom::End(-i64::try_from(max_bytes).unwrap_or(0)))
+            .is_err()
+        {
+            return empty;
+        }
+    }
+    if file.read_to_end(&mut bytes).is_err() {
+        return empty;
+    }
+    let text = String::from_utf8_lossy(&bytes);
+    let text: &str = if truncated {
+        text.find('\n').map_or("", |cut| &text[cut + 1..])
+    } else {
+        &text
     };
     let mut observations = Vec::new();
     let mut skipped_lines = 0;
@@ -158,13 +210,7 @@ fn parse_line(line: &str) -> Option<Observation> {
     let at_epoch_secs = extract_u64(line, "at")?;
     let commit = extract_string_or_null(line, "commit")?;
     let dirty = extract_bool_or_null(line, "dirty")?;
-    let status = match extract_string_or_null(line, "status")??.as_str() {
-        "passed" => TestStatus::Passed,
-        "failed" => TestStatus::Failed,
-        "error" => TestStatus::Error,
-        "skipped" => TestStatus::Skipped,
-        _ => return None,
-    };
+    let status = status_from_str(&extract_string_or_null(line, "status")??)?;
     let id = extract_string_or_null(line, "id")??;
     Some(Observation {
         id,
@@ -313,6 +359,28 @@ mod tests {
         let loaded = load(&path);
         assert_eq!(loaded.observations.len(), 1);
         assert_eq!(loaded.skipped_lines, 2);
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn loading_reads_only_the_tail_of_a_large_file() {
+        let path = temp_path("tail");
+        let written: Vec<Observation> = (0..10)
+            .map(|i| observation(&format!("c::t{i}"), TestStatus::Passed))
+            .collect();
+        append(&path, &written).expect("append");
+        let line_len = (std::fs::metadata(&path).unwrap().len() / 10) + 1;
+
+        let loaded = super::load_tail(&path, line_len * 3);
+        assert!(loaded.observations.len() < 10, "tail read the whole file");
+        assert!(!loaded.observations.is_empty());
+        assert_eq!(
+            loaded.observations.last().unwrap().id,
+            "c::t9",
+            "the newest observations must survive"
+        );
+        // The cut-off first line is expected truncation, not corruption.
+        assert_eq!(loaded.skipped_lines, 0);
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 
