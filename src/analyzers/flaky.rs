@@ -4,6 +4,8 @@
 //! failed-every-run is *broken*, never flaky (see `DECISIONS.md`). Skipped
 //! observations carry no signal and are excluded from the rate.
 
+use std::collections::BTreeMap;
+
 use crate::junit::{JunitReport, TestStatus};
 
 /// One test's aggregated outcomes across the observed runs.
@@ -57,32 +59,32 @@ impl Analysis {
     }
 }
 
+/// One run's outcome per test id. Duplicate ids within one report
+/// (data-provider rows, retry reporters) collapse to the worst status and
+/// count once — mixed duplicates in a single run must never read as
+/// flakiness. This collapse is also the shape history records per run.
+pub(crate) fn run_outcomes(report: &JunitReport) -> BTreeMap<String, TestStatus> {
+    let mut run_outcome: BTreeMap<String, TestStatus> = BTreeMap::new();
+    for case in &report.test_cases {
+        run_outcome
+            .entry(case.qualified_name())
+            .and_modify(|status| {
+                if case.status.severity() > status.severity() {
+                    *status = case.status;
+                }
+            })
+            .or_insert(case.status);
+    }
+    run_outcome
+}
+
 /// Aggregate per-test outcomes across the runs' reports and split them into
 /// flaky (mixed) and broken (always failing). Tests that passed every run —
 /// the healthy majority — are not reported at all.
 pub fn analyze(reports: &[JunitReport]) -> Analysis {
-    use std::collections::BTreeMap;
-
     let mut by_test: BTreeMap<String, TestOutcomes> = BTreeMap::new();
     for report in reports {
-        // Collapse duplicate ids within one report first: data-provider rows
-        // sharing a name and retry reporters emit the same id several times
-        // in a single run. Without this, one report's mixed duplicates would
-        // fabricate "flakiness" out of a fully deterministic failure and
-        // inflate the run count. The run's outcome for an id is its worst
-        // status, counted exactly once.
-        let mut run_outcome: BTreeMap<String, TestStatus> = BTreeMap::new();
-        for case in &report.test_cases {
-            run_outcome
-                .entry(case.qualified_name())
-                .and_modify(|status| {
-                    if case.status.severity() > status.severity() {
-                        *status = case.status;
-                    }
-                })
-                .or_insert(case.status);
-        }
-        for (id, status) in run_outcome {
+        for (id, status) in run_outcomes(report) {
             let entry = by_test.entry(id.clone()).or_insert_with(|| TestOutcomes {
                 id,
                 passed: 0,

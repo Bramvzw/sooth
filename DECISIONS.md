@@ -322,3 +322,39 @@ the healthy majority — tests that passed every run — is not listed at all.
 The suite verdict considers every run's report: a failure in run 1 is not
 forgiven by a green run 2. This same mixed-outcome definition is what the
 v0.2 history file will apply across sessions instead of within one.
+
+## Flaky evidence requires one clean commit; regressions get "failing since"
+
+History spans commits, so "40 green, then red" is ambiguous: nondeterminism
+or a regression? Labeling a regression "flaky" sends someone hunting
+nondeterminism that isn't there — the exact sin the flaky/broken distinction
+guards against, extended to the time axis. So every observation records the
+code it ran on (git `HEAD` plus a dirty flag; untracked files count as dirty
+because they are code the commit does not describe), and the classification
+is strict about proof:
+
+- Mixed outcomes **within one clean commit** prove flaky — same code,
+  different result, no other explanation.
+- All green until commit X, all red from X on (a trailing streak of at least
+  two, anchored on a clean commit) reports **"failing since X"** — a
+  regression pointer, never a flaky label.
+- Observations on dirty or unknown code count in the totals but are never
+  evidence: the code they ran on is unknowable afterwards. One new red
+  observation concludes nothing; the verdict converges over subsequent runs
+  (or instantly via active `--runs N`).
+
+Git stays optional — no git, no repo, no problem: identity degrades to
+unknown and sooth simply makes no identity-bound claims. No new dependency,
+no network call.
+
+Mechanics that keep the passive layer passive: recording is on by default
+whenever a report source exists (`--no-history` opts out) because passive
+accumulation is the point — an opt-in flag would kill the flight-recorder
+value. Write or read failures degrade to a stderr warning and never change
+the exit contract. The file is append-only JSON lines, hand-written and
+hand-parsed like the `--json` output (same no-serde reasoning); unreadable
+lines are counted and skipped, never fatal. Analysis looks at each test's
+last 50 observations, and loading reads at most the file's last 64 MiB —
+the file is append-only and never pruned by sooth, so the read must be
+bounded or every run would pay for the entire past. Drift ages out; the
+user prunes (or doesn't) a file they own.

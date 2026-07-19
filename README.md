@@ -41,6 +41,25 @@ Exit codes: `0` — the runner and its report agree everything passed; `1` —
 the suite failed; `2` — sooth itself failed (your CI can tell a red suite
 from a broken invocation).
 
+## Run history
+
+Every run with a report source appends one observation per test to
+`.sooth/history.jsonl` in the directory you run from — add `.sooth/` to your
+`.gitignore`. Flaky evidence then accumulates from runs you make anyway:
+
+- **flaky per history** — the same test both passed and failed on one clean
+  commit: proven nondeterminism, ranked by failure rate.
+- **failing since `<commit>`** — green until a commit, red ever since: a
+  regression pointer, deliberately *not* called flaky. Start at `git show
+  <commit>`.
+
+Runs on a dirty working tree count in the totals but are never used as
+evidence — sooth does not draw conclusions from code it can no longer
+identify. Opt out per run with `--no-history`; delete or trim the file
+whenever you like, it is yours. In CI, cache `.sooth/` between runs (or pass
+it as an artifact) and twenty pipeline runs a day become twenty observations
+a day.
+
 ## Status
 
 - [x] **v0.1** — `sooth run -- <cmd>` runs your suite once, parses the JUnit XML it produced, and

@@ -3,7 +3,7 @@
 use std::fmt::Write as _;
 use std::time::Duration;
 
-use crate::analyzers::flaky;
+use crate::analyzers::{flaky, history};
 use crate::cli::ColorChoice;
 use crate::junit;
 use crate::runner::RunOutcome;
@@ -245,6 +245,49 @@ pub fn verdict_line(
     }
 }
 
+/// The history pass's findings: proven flakes over the accumulated
+/// observations, then regression pointers. Prints nothing when there is
+/// nothing to say.
+pub fn print_history(analysis: Option<&history::Analysis>, style: Style) {
+    let Some(analysis) = analysis else { return };
+    if analysis.is_empty() {
+        return;
+    }
+    if !analysis.flaky.is_empty() {
+        println!(
+            "{}",
+            style.bold_red("flaky per history (mixed outcomes on one commit):")
+        );
+        for (index, test) in analysis.flaky.iter().enumerate() {
+            println!(
+                "  {}. {} {}",
+                index + 1,
+                test.id,
+                style.red(&format!(
+                    "failed {} of {} observed runs ({}%)",
+                    test.failed,
+                    test.observed(),
+                    test.failure_rate_percent()
+                ))
+            );
+        }
+    }
+    if !analysis.failing_since.is_empty() {
+        println!("{}", style.red("failing since a commit boundary:"));
+        for test in &analysis.failing_since {
+            let short = &test.commit[..test.commit.len().min(7)];
+            println!(
+                "  - {} {}",
+                test.id,
+                style.dim(&format!(
+                    "(since {short}, failed the last {} observed runs)",
+                    test.failed_runs
+                ))
+            );
+        }
+    }
+}
+
 /// `1 error`, `2 errors` — a count with a correctly pluralized noun.
 fn count(amount: usize, noun: &str) -> String {
     if amount == 1 {
@@ -262,6 +305,7 @@ pub fn to_json(
     outcomes: &[RunOutcome],
     summary: &JunitSummary,
     flaky: Option<&flaky::Analysis>,
+    history: Option<&history::Analysis>,
 ) -> String {
     let runs: Vec<String> = outcomes
         .iter()
@@ -309,8 +353,41 @@ pub fn to_json(
         )
     });
 
+    // Additive within schema_version 1: present whenever the history pass ran.
+    let history = history.map_or(String::new(), |analysis| {
+        let flaky_entries: Vec<String> = analysis
+            .flaky
+            .iter()
+            .map(|test| {
+                format!(
+                    r#"{{"name":"{}","failed_runs":{},"observed_runs":{}}}"#,
+                    json_escape(&test.id),
+                    test.failed,
+                    test.observed()
+                )
+            })
+            .collect();
+        let since_entries: Vec<String> = analysis
+            .failing_since
+            .iter()
+            .map(|test| {
+                format!(
+                    r#"{{"name":"{}","commit":"{}","failed_runs":{}}}"#,
+                    json_escape(&test.id),
+                    json_escape(&test.commit),
+                    test.failed_runs
+                )
+            })
+            .collect();
+        format!(
+            r#","history":{{"flaky":[{}],"failing_since":[{}]}}"#,
+            flaky_entries.join(","),
+            since_entries.join(",")
+        )
+    });
+
     format!(
-        r#"{{"schema_version":{JSON_SCHEMA_VERSION},"sooth_version":"{}","runs":[{}],"junit":{{"total":{},"passed":{},"failed":{},"errors":{},"skipped":{},"slowest":[{}]}}{analysis}}}"#,
+        r#"{{"schema_version":{JSON_SCHEMA_VERSION},"sooth_version":"{}","runs":[{}],"junit":{{"total":{},"passed":{},"failed":{},"errors":{},"skipped":{},"slowest":[{}]}}{analysis}{history}}}"#,
         env!("CARGO_PKG_VERSION"),
         runs.join(","),
         summary.total,
@@ -323,7 +400,7 @@ pub fn to_json(
 }
 
 /// Escape a string for inclusion in a hand-rolled JSON string literal.
-fn json_escape(value: &str) -> String {
+pub(crate) fn json_escape(value: &str) -> String {
     let mut escaped = String::with_capacity(value.len());
     for character in value.chars() {
         match character {
@@ -432,7 +509,7 @@ mod tests {
 
         // The qualified name deliberately rides into the frozen JSON
         // `name` field.
-        let json = to_json(&[outcome(true)], &summary, None);
+        let json = to_json(&[outcome(true)], &summary, None, None);
         assert!(json.contains(r#""name":"Modules.Order.OrderTest::test_create""#));
     }
 
@@ -474,7 +551,7 @@ mod tests {
             },
             10,
         );
-        let json = to_json(&[outcome(true)], &summary, None);
+        let json = to_json(&[outcome(true)], &summary, None, None);
 
         assert!(json.starts_with(r#"{"schema_version":1,"#));
         assert!(json.contains(&format!(

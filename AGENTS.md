@@ -19,8 +19,9 @@ src/
 ├── runner.rs      # EXISTS — spawns the test subprocess (with env injection), captures exit status + wall time
 ├── junit.rs       # EXISTS — tolerant JUnit-XML union schema (parse_str/parse_file)
 ├── preset.rs      # EXISTS — presets inject reporter flags/env and manage the temp report
+├── history.rs     # EXISTS — local run history (.sooth/history.jsonl) + git code identity
 ├── report.rs      # EXISTS — colored human report + versioned machine JSON
-└── analyzers/     # EXISTS — flaky.rs (mixed outcomes over runs); slow.rs, order.rs to come (strictly separate passes)
+└── analyzers/     # EXISTS — flaky.rs (mixed outcomes over runs), history.rs (classify the accumulated history); slow.rs, order.rs to come (strictly separate passes)
 ```
 
 Flags sooth cannot honor are rejected loudly, never silently ignored: `--json`/`--slowest`
