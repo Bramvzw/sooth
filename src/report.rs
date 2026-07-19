@@ -227,9 +227,8 @@ pub fn verdict_line(
         let detail = if failed_runs > 0 {
             format!("{failed_runs} of {runs} runs failed")
         } else {
-            // The runner claimed success but a report disagrees (counted
-            // over every run, not just the last — a green final run must not
-            // read as "0 failing"); the stderr note carries the full story.
+            // The runner claimed success but a report disagrees; the
+            // stderr note carries the full story.
             format!(
                 "the report shows {}",
                 count(report_failures, "failing test")
@@ -508,8 +507,8 @@ mod tests {
         assert_eq!(summary.slowest[0].0, "Modules.Order.OrderTest::test_create");
         assert_eq!(summary.slowest[1].0, "bare");
 
-        // The qualified name rides into the machine output too — an
-        // intentional content change to the existing `name` field, per #54.
+        // The qualified name deliberately rides into the frozen JSON
+        // `name` field.
         let json = to_json(&[outcome(true)], &summary, None, None);
         assert!(json.contains(r#""name":"Modules.Order.OrderTest::test_create""#));
     }
