@@ -245,6 +245,44 @@ fn the_runner_report_mismatch_is_called_out_on_stderr() {
 }
 
 #[test]
+fn a_failing_runner_with_a_green_report_is_called_out_on_stderr() {
+    // The wrapped command writes an all-passing report but exits nonzero:
+    // the failure wins (exit 1) and the disagreement lands on stderr.
+    let report = std::env::temp_dir().join(format!(
+        "sooth-contract-green-mismatch-{}.xml",
+        std::process::id()
+    ));
+    let write_green_then_fail = format!(
+        "printf '<testsuite><testcase classname=\"c\" name=\"ok\"/></testsuite>' > '{}'; exit 3",
+        report.display()
+    );
+    let output = sooth()
+        .args([
+            "run",
+            "--junit",
+            &report.display().to_string(),
+            "--color",
+            "never",
+            "--",
+            "sh",
+            "-c",
+            &write_green_then_fail,
+        ])
+        .output()
+        .expect("sooth should run");
+    let _ = std::fs::remove_file(&report);
+
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = String::from_utf8(output.stderr).expect("stderr should be UTF-8");
+    assert!(
+        stderr.contains("the runner failed but the report shows 0 failing tests"),
+        "got: {stderr:?}"
+    );
+    let stdout = String::from_utf8(output.stdout).expect("stdout should be UTF-8");
+    assert!(stdout.contains("result: FAILED"), "got: {stdout:?}");
+}
+
+#[test]
 fn an_unusable_report_after_a_crashed_runner_keeps_the_run_facts() {
     // The runner writes garbage instead of XML and exits nonzero; sooth
     // must point at the crash instead of only naming an unparsable file.

@@ -15,6 +15,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   never called flaky. Skipped runs carry no signal.
 - The `--json` shape gains additive `flaky` and `broken` arrays when a
   multi-run analysis ran (still `schema_version` 1).
+- The runner/report disagreement note now covers both directions: a failing
+  runner whose report shows 0 failing tests is called out on stderr too —
+  a swallowed failure would otherwise poison the history with false passes.
 - `--verify`: after a failing single run with `--preset`, re-run only the
   failed tests twice and split them into real failures, flaky-or-order-
   dependent ones, and unverified ones (the selection never re-ran them).

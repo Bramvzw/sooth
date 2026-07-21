@@ -135,12 +135,7 @@ fn run(args: &cli::RunArgs) -> ExitCode {
         .max()
         .unwrap_or(0);
     let runs_failed = outcomes.iter().any(|outcome| !outcome.success);
-    if report_failures > 0 && !runs_failed {
-        eprintln!(
-            "sooth: the runner exited 0 but the report shows {report_failures} failing \
-             test(s) — exiting 1 (the runner and its report must agree for a 0)"
-        );
-    }
+    print_disagreement(runs_failed, report_failures, !reports.is_empty());
 
     if let Some(exit) = emit_output(
         args,
@@ -167,6 +162,22 @@ struct Analyses<'a> {
     flaky: Option<&'a analyzers::flaky::Analysis>,
     history: Option<&'a analyzers::history::Analysis>,
     verify: Option<&'a verify::Verdict>,
+}
+
+/// The stderr note when the runner's exit and the report disagree, in
+/// either direction. The exit code is settled elsewhere; this explains it.
+fn print_disagreement(runs_failed: bool, report_failures: usize, has_reports: bool) {
+    if report_failures > 0 && !runs_failed {
+        eprintln!(
+            "sooth: the runner exited 0 but the report shows {report_failures} failing \
+             test(s) — exiting 1 (the runner and its report must agree for a 0)"
+        );
+    } else if runs_failed && report_failures == 0 && has_reports {
+        eprintln!(
+            "sooth: the runner failed but the report shows 0 failing tests — \
+             exiting 1 (a failure is never upgraded to a pass)"
+        );
+    }
 }
 
 /// Re-run only the failed tests and classify them. Every failure mode
