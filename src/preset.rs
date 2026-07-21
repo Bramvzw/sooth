@@ -14,6 +14,9 @@ struct Injection {
     envs: Vec<(String, String)>,
 }
 
+/// A command to spawn plus the environment to add.
+type Spawn = (Vec<String>, Vec<(String, String)>);
+
 /// Create a fresh, private directory for a preset-managed report and return
 /// the report path inside it.
 ///
@@ -62,17 +65,86 @@ fn create_private_dir(dir: &Path) -> io::Result<()> {
 /// The injected arguments go directly after the program name on purpose: they
 /// must precede any `--` separator the runner itself understands (gotestsum
 /// splits its own flags from `go test`'s at `--`).
-pub fn inject(
-    command: &[String],
-    preset: Preset,
-    report: &Path,
-) -> (Vec<String>, Vec<(String, String)>) {
+pub fn inject(command: &[String], preset: Preset, report: &Path) -> Spawn {
     let Injection { args, envs } = injection(preset, report);
     let mut full = Vec::with_capacity(command.len() + args.len());
     full.push(command[0].clone());
     full.extend(args);
     full.extend(command[1..].iter().cloned());
     (full, envs)
+}
+
+/// The full command to re-run **only** `ids` under `preset`, writing to
+/// `report` — the report flags, then the selection flag, then the user's own
+/// arguments. `None` when sooth cannot restrict this preset reliably; the
+/// caller must then refuse verification loudly rather than silently re-run
+/// the whole suite. Selection prefers over-matching (see `DECISIONS.md`).
+pub fn inject_selected(
+    command: &[String],
+    preset: Preset,
+    report: &Path,
+    ids: &[String],
+) -> Option<Spawn> {
+    let selection = selection_args(preset, ids)?;
+    let Injection { args, envs } = injection(preset, report);
+    let mut full = Vec::with_capacity(command.len() + args.len() + selection.len());
+    full.push(command[0].clone());
+    full.extend(args);
+    full.extend(selection);
+    full.extend(command[1..].iter().cloned());
+    Some((full, envs))
+}
+
+/// The selection flag(s) that restrict `preset` to `ids`; `None` for presets
+/// sooth cannot restrict yet (see `DECISIONS.md`).
+fn selection_args(preset: Preset, ids: &[String]) -> Option<Vec<String>> {
+    match preset {
+        // Unanchored on purpose: a failing method's data-provider rows match too.
+        Preset::Phpunit => {
+            let pattern = ids
+                .iter()
+                .map(|id| regex_escape(id))
+                .collect::<Vec<_>>()
+                .join("|");
+            Some(vec!["--filter".to_owned(), format!("/{pattern}/")])
+        }
+        // A JUnit classname is not a pytest node id; select by method name.
+        Preset::Pytest => {
+            let mut names: Vec<&str> = ids.iter().map(|id| method_of(id)).collect();
+            names.sort_unstable();
+            names.dedup();
+            Some(vec!["-k".to_owned(), names.join(" or ")])
+        }
+        // jest -t matches the test name, not the classname.
+        Preset::Jest => {
+            let pattern = ids
+                .iter()
+                .map(|id| regex_escape(method_of(id)))
+                .collect::<Vec<_>>()
+                .join("|");
+            Some(vec!["-t".to_owned(), format!("({pattern})")])
+        }
+        Preset::Go => None,
+    }
+}
+
+/// The method half of a `classname::name` identity (the whole string when
+/// there is no `::`).
+fn method_of(id: &str) -> &str {
+    id.rsplit_once("::").map_or(id, |(_, method)| method)
+}
+
+/// Escape the PCRE/RE2 metacharacters that appear in test identities so a
+/// name is matched literally inside an alternation.
+fn regex_escape(value: &str) -> String {
+    let mut escaped = String::with_capacity(value.len());
+    for ch in value.chars() {
+        if "\\^$.|?*+()[]{}/".contains(ch) {
+            escaped.push('\\');
+        }
+        escaped.push(ch);
+    }
+    escaped
 }
 
 /// The reporter flags and environment for `preset`, writing to `report`.
@@ -105,7 +177,7 @@ fn injection(preset: Preset, report: &Path) -> Injection {
 
 #[cfg(test)]
 mod tests {
-    use super::{inject, report_path};
+    use super::{inject, inject_selected, report_path, selection_args};
     use crate::cli::Preset;
     use std::path::Path;
 
@@ -194,5 +266,50 @@ mod tests {
             full,
             command(&["gotestsum", "--junitfile=/tmp/r.xml", "--", "./..."])
         );
+    }
+
+    fn ids(parts: &[&str]) -> Vec<String> {
+        parts.iter().map(|part| (*part).to_owned()).collect()
+    }
+
+    #[test]
+    fn phpunit_selection_filters_on_the_full_identity_with_escaping() {
+        let (full, _) = inject_selected(
+            &command(&["phpunit"]),
+            Preset::Phpunit,
+            Path::new("/tmp/r.xml"),
+            &ids(&["App\\FooTest::test_a", "App\\FooTest::test_b"]),
+        )
+        .expect("phpunit supports selection");
+        assert_eq!(
+            full,
+            command(&[
+                "phpunit",
+                "--log-junit",
+                "/tmp/r.xml",
+                "--filter",
+                r"/App\\FooTest::test_a|App\\FooTest::test_b/",
+            ])
+        );
+    }
+
+    #[test]
+    fn pytest_selection_uses_deduped_method_names_in_a_k_expression() {
+        let (full, _) = inject_selected(
+            &command(&["pytest"]),
+            Preset::Pytest,
+            Path::new("/tmp/r.xml"),
+            &ids(&["mod.A::test_x", "mod.B::test_x", "mod.A::test_y"]),
+        )
+        .expect("pytest supports selection");
+        assert_eq!(
+            full,
+            command(&["pytest", "--junit-xml=/tmp/r.xml", "-k", "test_x or test_y",])
+        );
+    }
+
+    #[test]
+    fn go_selection_is_declined_so_verification_refuses_loudly() {
+        assert!(selection_args(Preset::Go, &ids(&["pkg::TestX"])).is_none());
     }
 }

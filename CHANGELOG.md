@@ -15,6 +15,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   never called flaky. Skipped runs carry no signal.
 - The `--json` shape gains additive `flaky` and `broken` arrays when a
   multi-run analysis ran (still `schema_version` 1).
+- `--verify`: after a failing single run with `--preset`, re-run only the
+  failed tests twice and split them into real failures, flaky-or-order-
+  dependent ones, and unverified ones (the selection never re-ran them).
+  The suite verdict and exit code are unchanged — sooth classifies, it
+  never absorbs a failure. The `--json` shape gains an additive
+  `verification` object when the pass ran (still `schema_version` 1). Not
+  supported for the go preset yet; refused loudly.
 - Local run history: every run with a report source appends one observation
   per test to `.sooth/history.jsonl` (opt out with `--no-history`), stamped
   with the git commit and a dirty flag. Mixed outcomes on one clean commit
