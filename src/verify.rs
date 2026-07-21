@@ -37,11 +37,14 @@ pub fn classify(failed_ids: &[String], verify_reports: &[JunitReport]) -> Verdic
         let mut seen = false;
         let mut passed_once = false;
         for run in &per_run {
-            if let Some(status) = run.get(id) {
-                seen = true;
-                if matches!(status, TestStatus::Passed) {
+            // A skip carries no signal: it does not count as re-run.
+            match run.get(id) {
+                Some(TestStatus::Passed) => {
+                    seen = true;
                     passed_once = true;
                 }
+                Some(TestStatus::Failed | TestStatus::Error) => seen = true,
+                Some(TestStatus::Skipped) | None => {}
             }
         }
         if !seen {
@@ -104,6 +107,18 @@ mod tests {
         let verify = [report(r#"<testcase classname="c" name="other"/>"#)];
         let verdict = classify(&failed, &verify);
         assert_eq!(verdict.unverified, ["c::missed"]);
+        assert!(verdict.real.is_empty());
+    }
+
+    #[test]
+    fn a_failure_that_is_only_skipped_on_re_run_is_unverified_not_real() {
+        let failed = vec!["c::skippy".to_owned()];
+        let verify = [
+            report(r#"<testcase classname="c" name="skippy"><skipped/></testcase>"#),
+            report(r#"<testcase classname="c" name="skippy"><skipped/></testcase>"#),
+        ];
+        let verdict = classify(&failed, &verify);
+        assert_eq!(verdict.unverified, ["c::skippy"]);
         assert!(verdict.real.is_empty());
     }
 

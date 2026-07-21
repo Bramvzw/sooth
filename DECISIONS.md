@@ -374,12 +374,17 @@ Restricting a runner to a subset means mapping JUnit identities
 or under-match. Selection therefore favours over-matching — extra passing
 tests merely confirm they pass — and under-matching is never silently
 swallowed: a failed test the verification never actually re-ran is reported
-as `unverified`, never as `real`. Concretely: phpunit's `--filter` takes the
-full identity, unanchored so a failing method's data-provider rows match too;
-pytest selects by method name because a JUnit classname is a dotted module
-path, not a node id; jest's `-t` matches test names. The go preset declines
-selection for now — `-run` must sit after gotestsum's `--` split, and
-deferring beats placing it wrong.
+as `unverified`, never as `real`. A test that is only *skipped* during
+verification was likewise never re-run and lands in `unverified` — skips
+carry no signal, here as everywhere. Concretely: phpunit's `--filter` takes
+the full identity, unanchored so a failing method's data-provider rows match
+too; pytest selects by method name with any `[parameter]` suffix stripped
+(brackets and spaces would break a `-k` expression, and the base name merely
+over-matches) because a JUnit classname is a dotted module path, not a node
+id; jest's `-t` matches test names. The go preset declines selection for now
+— `-run` must sit after gotestsum's `--` split, and deferring beats placing
+it wrong — and that refusal happens at flag validation, before any suite
+run is wasted.
 
 Verification is a diagnosis on top of the verdict, never part of it: every
 failure mode degrades to a stderr warning and no classification, and the exit

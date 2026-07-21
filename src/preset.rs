@@ -106,7 +106,7 @@ fn selection_args(preset: Preset, ids: &[String]) -> Option<Vec<String>> {
         }
         // A JUnit classname is not a pytest node id; select by method name.
         Preset::Pytest => {
-            let mut names: Vec<&str> = ids.iter().map(|id| method_of(id)).collect();
+            let mut names: Vec<&str> = ids.iter().map(|id| base_name(method_of(id))).collect();
             names.sort_unstable();
             names.dedup();
             Some(vec!["-k".to_owned(), names.join(" or ")])
@@ -124,9 +124,19 @@ fn selection_args(preset: Preset, ids: &[String]) -> Option<Vec<String>> {
     }
 }
 
+/// Whether `preset` can be restricted to a subset of tests.
+pub fn supports_selection(preset: Preset) -> bool {
+    selection_args(preset, &[]).is_some()
+}
+
 /// The method half of a `classname::name` identity.
 fn method_of(id: &str) -> &str {
     id.rsplit_once("::").map_or(id, |(_, method)| method)
+}
+
+/// The name without its `[parameters]` suffix (brackets break a `-k` expression).
+fn base_name(name: &str) -> &str {
+    name.find('[').map_or(name, |i| &name[..i])
 }
 
 /// Escape regex metacharacters so an identity matches literally.
@@ -299,6 +309,24 @@ mod tests {
         assert_eq!(
             full,
             command(&["pytest", "--junit-xml=/tmp/r.xml", "-k", "test_x or test_y",])
+        );
+    }
+
+    #[test]
+    fn pytest_selection_strips_parameter_suffixes() {
+        let (full, _) = inject_selected(
+            &command(&["pytest"]),
+            Preset::Pytest,
+            Path::new("/tmp/r.xml"),
+            &ids(&[
+                "mod.A::test_login[user with spaces]",
+                "mod.A::test_login[admin]",
+            ]),
+        )
+        .expect("pytest supports selection");
+        assert_eq!(
+            full,
+            command(&["pytest", "--junit-xml=/tmp/r.xml", "-k", "test_login"])
         );
     }
 

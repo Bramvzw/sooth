@@ -359,11 +359,20 @@ fn rejected_flag(args: &cli::RunArgs) -> Option<&'static str> {
         }
     }
     if args.verify {
-        if args.preset.is_none() {
-            return Some(
-                "`--verify` needs `--preset <RUNNER>`: it re-invokes the runner on the \
-                 failed tests, which sooth can only do for a known runner",
-            );
+        match args.preset {
+            None => {
+                return Some(
+                    "`--verify` needs `--preset <RUNNER>`: it re-invokes the runner on the \
+                     failed tests, which sooth can only do for a known runner",
+                );
+            }
+            Some(preset) if !preset::supports_selection(preset) => {
+                return Some(
+                    "`--verify` is not supported for this preset yet — sooth cannot \
+                     restrict its runner to a subset of tests",
+                );
+            }
+            Some(_) => {}
         }
         if args.runs > 1 {
             return Some(
