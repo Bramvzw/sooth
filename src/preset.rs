@@ -95,14 +95,17 @@ pub fn inject_selected(
 /// The selection flag(s) that restrict `preset` to `ids`.
 fn selection_args(preset: Preset, ids: &[String]) -> Option<Vec<String>> {
     match preset {
-        // Unanchored on purpose: a failing method's data-provider rows match too.
+        // The JUnit classname is dotted but --filter wants the backslashed
+        // FQCN; only the method half survives both (#93).
         Preset::Phpunit => {
-            let pattern = ids
-                .iter()
-                .map(|id| regex_escape(id))
-                .collect::<Vec<_>>()
-                .join("|");
-            Some(vec!["--filter".to_owned(), format!("/{pattern}/")])
+            let mut methods: Vec<String> =
+                ids.iter().map(|id| regex_escape(method_of(id))).collect();
+            methods.sort_unstable();
+            methods.dedup();
+            Some(vec![
+                "--filter".to_owned(),
+                format!("/::({})/", methods.join("|")),
+            ])
         }
         // A JUnit classname is not a pytest node id; select by method name.
         Preset::Pytest => {
@@ -277,12 +280,16 @@ mod tests {
     }
 
     #[test]
-    fn phpunit_selection_filters_on_the_full_identity_with_escaping() {
+    fn phpunit_selection_matches_the_method_half_of_a_dotted_classname() {
+        // The classname is dotted exactly as PHPUnit's JUnit XML writes it.
         let (full, _) = inject_selected(
             &command(&["phpunit"]),
             Preset::Phpunit,
             Path::new("/tmp/r.xml"),
-            &ids(&["App\\FooTest::test_a", "App\\FooTest::test_b"]),
+            &ids(&[
+                "Tests.Central.Tenants.TenantFormTest::test_it_journals_a_flag",
+                "Tests.Central.Tenants.OtherTest::test_b",
+            ]),
         )
         .expect("phpunit supports selection");
         assert_eq!(
@@ -292,7 +299,28 @@ mod tests {
                 "--log-junit",
                 "/tmp/r.xml",
                 "--filter",
-                r"/App\\FooTest::test_a|App\\FooTest::test_b/",
+                "/::(test_b|test_it_journals_a_flag)/",
+            ])
+        );
+    }
+
+    #[test]
+    fn phpunit_selection_escapes_data_provider_row_names() {
+        let (full, _) = inject_selected(
+            &command(&["phpunit"]),
+            Preset::Phpunit,
+            Path::new("/tmp/r.xml"),
+            &ids(&[r#"App.FooTest::test_a with data set "x.y""#]),
+        )
+        .expect("phpunit supports selection");
+        assert_eq!(
+            full,
+            command(&[
+                "phpunit",
+                "--log-junit",
+                "/tmp/r.xml",
+                "--filter",
+                r#"/::(test_a with data set "x\.y")/"#,
             ])
         );
     }
