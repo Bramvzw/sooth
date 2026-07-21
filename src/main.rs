@@ -208,6 +208,11 @@ fn quarantine_pardon(
     }
     let mut pardoned = std::collections::BTreeSet::new();
     for (outcome, report) in outcomes.iter().zip(reports) {
+        // A signal-killed run is a crash, never a pardonable flake — even
+        // when the report was written before the kill.
+        if outcome.signal.is_some() {
+            return None;
+        }
         let failing = verify::failed_ids(report);
         if !outcome.success && failing.is_empty() {
             return None;
@@ -858,5 +863,20 @@ mod tests {
     fn a_pardon_needs_a_report_for_every_run() {
         let quarantine = BTreeSet::from(["case".to_owned()]);
         assert_eq!(quarantine_pardon(&quarantine, &[outcome(false)], &[]), None);
+    }
+
+    #[test]
+    fn a_signal_killed_run_is_never_pardoned() {
+        let quarantine = BTreeSet::from(["case".to_owned()]);
+        let killed = RunOutcome {
+            exit_code: None,
+            signal: Some(9),
+            success: false,
+            duration: Duration::from_millis(1),
+        };
+        assert_eq!(
+            quarantine_pardon(&quarantine, &[killed], &[report_of(TestStatus::Failed)]),
+            None
+        );
     }
 }

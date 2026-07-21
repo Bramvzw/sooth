@@ -25,10 +25,12 @@ pub fn load_or_empty(path: &Path) -> BTreeSet<String> {
     }
 }
 
-/// One id per line, exactly as reports write them; `#` comments and blank
-/// lines are ignored, surrounding whitespace is trimmed.
+/// One id per line, exactly as reports write them; `#` comments, blank
+/// lines, and a leading BOM are ignored, surrounding whitespace is trimmed.
 fn parse(content: &str) -> BTreeSet<String> {
     content
+        .strip_prefix('\u{feff}')
+        .unwrap_or(content)
         .lines()
         .map(str::trim)
         .filter(|line| !line.is_empty() && !line.starts_with('#'))
@@ -49,6 +51,12 @@ mod tests {
         assert_eq!(set.len(), 2);
         assert!(set.contains("tests.test_math::test_subtraction"));
         assert!(set.contains(r#"App.FooTest::test_a with data set "x""#));
+    }
+
+    #[test]
+    fn a_leading_bom_does_not_hide_the_first_entry() {
+        let set = parse("\u{feff}tests.test_math::test_subtraction\n");
+        assert!(set.contains("tests.test_math::test_subtraction"));
     }
 
     #[test]

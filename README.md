@@ -83,8 +83,9 @@ sooth run --verify --preset phpunit -- vendor/bin/phpunit
 
 Day one in an existing codebase finds twenty flaky tests — quarantine keeps
 them from blocking every merge while you fix them. Commit a
-`.sooth-quarantine` file (one test id per line, copied from sooth's own
-output; `#` comments allowed) and run with `--fail-on-flaky`:
+`.sooth-quarantine` file in the directory you run from (one test id per
+line, copied from sooth's own output; `#` comments allowed) and run with
+`--fail-on-flaky`:
 
 ```bash
 sooth run --fail-on-flaky --preset phpunit -- vendor/bin/phpunit

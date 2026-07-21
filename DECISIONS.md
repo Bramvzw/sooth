@@ -414,6 +414,15 @@ and the verdict says why the exit is 0 ("only quarantined flakes failed");
 exit steering happens only behind the explicit flag — the file alone changes
 nothing, per the guardrail that sooth never silently absorbs a failure.
 
+Attribution has a documented limit: the pardon trusts the report to be the
+complete story of why the runner failed. A runner configured to fail on
+signals the report does not record (phpunit's `failOnWarning`/`failOnRisky`,
+a lint step inside the test command) can be masked by a pardon — sooth
+cannot see what the report does not say, the same report-is-truth limit the
+rest of the tool lives with. The one detectable subcase is closed: a
+signal-killed run is a crash and is never pardoned, even when the report
+was written before the kill.
+
 The format is plain lines (one id per line, `#` comments), not TOML: no new
 dependency (the hand-rolled-JSON reasoning), trivially diffable, and the ids
 are pasted verbatim from sooth's own output — exactly as reports write them,
