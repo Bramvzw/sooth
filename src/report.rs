@@ -324,6 +324,31 @@ pub fn print_verification(verdict: Option<&verify::Verdict>, style: Style) {
     }
 }
 
+/// The failures `--fail-on-flaky` pardoned via the quarantine file.
+pub fn print_pardoned(pardoned: Option<&[String]>, style: Style) {
+    let Some(pardoned) = pardoned else { return };
+    println!(
+        "{}",
+        style.yellow(&format!(
+            "quarantined failures (pardoned by {}):",
+            crate::quarantine::FILE_NAME
+        ))
+    );
+    for id in pardoned {
+        println!("  - {id}");
+    }
+}
+
+/// The verdict when `--fail-on-flaky` pardoned every failure: honest about
+/// the failures, explicit about why the exit is 0.
+pub fn pardoned_verdict(outcomes: &[RunOutcome], pardoned: usize, style: Style) -> String {
+    let total: Duration = outcomes.iter().map(|outcome| outcome.duration).sum();
+    style.yellow(&format!(
+        "result: PASSED — only quarantined flakes failed ({} pardoned) ({total:.2?} total)",
+        count(pardoned, "test")
+    ))
+}
+
 /// `1 error`, `2 errors` — a count with a correctly pluralized noun.
 fn count(amount: usize, noun: &str) -> String {
     if amount == 1 {
@@ -343,6 +368,7 @@ pub fn to_json(
     flaky: Option<&flaky::Analysis>,
     history: Option<&history::Analysis>,
     verify: Option<&verify::Verdict>,
+    pardoned: Option<&[String]>,
 ) -> String {
     let runs: Vec<String> = outcomes
         .iter()
@@ -424,22 +450,20 @@ pub fn to_json(
     });
 
     let verification = verify.map_or(String::new(), |verdict| {
-        let names = |ids: &[String]| {
-            ids.iter()
-                .map(|id| format!(r#""{}""#, json_escape(id)))
-                .collect::<Vec<_>>()
-                .join(",")
-        };
         format!(
             r#","verification":{{"real":[{}],"flaky_or_order_dependent":[{}],"unverified":[{}]}}"#,
-            names(&verdict.real),
-            names(&verdict.flaky_or_order),
-            names(&verdict.unverified)
+            json_ids(&verdict.real),
+            json_ids(&verdict.flaky_or_order),
+            json_ids(&verdict.unverified)
         )
     });
 
+    let quarantine = pardoned.map_or(String::new(), |ids| {
+        format!(r#","quarantine":{{"pardoned":[{}]}}"#, json_ids(ids))
+    });
+
     format!(
-        r#"{{"schema_version":{JSON_SCHEMA_VERSION},"sooth_version":"{}","runs":[{}],"junit":{{"total":{},"passed":{},"failed":{},"errors":{},"skipped":{},"slowest":[{}]}}{analysis}{history}{verification}}}"#,
+        r#"{{"schema_version":{JSON_SCHEMA_VERSION},"sooth_version":"{}","runs":[{}],"junit":{{"total":{},"passed":{},"failed":{},"errors":{},"skipped":{},"slowest":[{}]}}{analysis}{history}{verification}{quarantine}}}"#,
         env!("CARGO_PKG_VERSION"),
         runs.join(","),
         summary.total,
@@ -449,6 +473,14 @@ pub fn to_json(
         summary.skipped,
         slowest.join(","),
     )
+}
+
+/// A comma-joined JSON array body of escaped id strings.
+fn json_ids(ids: &[String]) -> String {
+    ids.iter()
+        .map(|id| format!(r#""{}""#, json_escape(id)))
+        .collect::<Vec<_>>()
+        .join(",")
 }
 
 /// Escape a string for inclusion in a hand-rolled JSON string literal.
@@ -561,7 +593,7 @@ mod tests {
 
         // The qualified name deliberately rides into the frozen JSON
         // `name` field.
-        let json = to_json(&[outcome(true)], &summary, None, None, None);
+        let json = to_json(&[outcome(true)], &summary, None, None, None, None);
         assert!(json.contains(r#""name":"Modules.Order.OrderTest::test_create""#));
     }
 
@@ -603,7 +635,7 @@ mod tests {
             },
             10,
         );
-        let json = to_json(&[outcome(true)], &summary, None, None, None);
+        let json = to_json(&[outcome(true)], &summary, None, None, None, None);
 
         assert!(json.starts_with(r#"{"schema_version":1,"#));
         assert!(json.contains(&format!(

@@ -204,6 +204,97 @@ fn verify_with_an_unselectable_preset_is_rejected_up_front_with_exit_two() {
     );
 }
 
+/// A sooth invocation in its own scratch cwd, so a `.sooth-quarantine`
+/// written for one test never leaks into another.
+fn sooth_in(tag: &str) -> (PathBuf, Command) {
+    let cwd = std::env::temp_dir().join(format!("sooth-contract-{tag}-cwd-{}", std::process::id()));
+    let _ = std::fs::create_dir_all(&cwd);
+    let mut command = Command::new(env!("CARGO_BIN_EXE_sooth"));
+    command.current_dir(&cwd);
+    (cwd, command)
+}
+
+#[test]
+fn a_quarantined_failure_is_pardoned_with_fail_on_flaky() {
+    let (cwd, mut command) = sooth_in("quarantine-hit");
+    std::fs::write(
+        cwd.join(".sooth-quarantine"),
+        "# known flakes\ntests.test_math::test_subtraction\n",
+    )
+    .expect("quarantine file should write");
+    let (report, write_report) = fresh_report("quarantine-hit");
+    let output = command
+        .args([
+            "run",
+            "--junit",
+            &report.display().to_string(),
+            "--fail-on-flaky",
+            "--color",
+            "never",
+            "--",
+            "sh",
+            "-c",
+            &write_report,
+        ])
+        .output()
+        .expect("sooth should run");
+    let _ = std::fs::remove_file(&report);
+
+    let stdout = String::from_utf8(output.stdout).expect("stdout should be UTF-8");
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "a fully quarantined failure must be pardoned, got: {stdout:?}"
+    );
+    assert!(
+        stdout.contains("tests.test_math::test_subtraction"),
+        "the pardoned id must be reported, got: {stdout:?}"
+    );
+    assert!(
+        stdout.contains("result: PASSED — only quarantined flakes failed"),
+        "got: {stdout:?}"
+    );
+}
+
+#[test]
+fn an_unlisted_failure_still_fails_with_fail_on_flaky() {
+    let (cwd, mut command) = sooth_in("quarantine-miss");
+    std::fs::write(cwd.join(".sooth-quarantine"), "some.other::test_flake\n")
+        .expect("quarantine file should write");
+    let (report, write_report) = fresh_report("quarantine-miss");
+    let output = command
+        .args([
+            "run",
+            "--junit",
+            &report.display().to_string(),
+            "--fail-on-flaky",
+            "--color",
+            "never",
+            "--",
+            "sh",
+            "-c",
+            &write_report,
+        ])
+        .output()
+        .expect("sooth should run");
+    let _ = std::fs::remove_file(&report);
+
+    assert_eq!(output.status.code(), Some(1));
+    let stdout = String::from_utf8(output.stdout).expect("stdout should be UTF-8");
+    assert!(stdout.contains("result: FAILED"), "got: {stdout:?}");
+}
+
+#[test]
+fn reportless_fail_on_flaky_is_rejected_with_exit_two() {
+    let output = sooth()
+        .args(["run", "--fail-on-flaky", "--", "true"])
+        .output()
+        .expect("sooth should run");
+    assert_eq!(output.status.code(), Some(2));
+    let stderr = String::from_utf8(output.stderr).expect("stderr should be UTF-8");
+    assert!(stderr.contains("requires a report"), "got: {stderr:?}");
+}
+
 #[test]
 fn a_signal_killed_run_reports_the_signal_and_exits_one() {
     let output = sooth()

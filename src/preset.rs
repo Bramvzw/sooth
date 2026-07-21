@@ -15,7 +15,7 @@ struct Injection {
 }
 
 /// A command to spawn plus the environment to add.
-type Spawn = (Vec<String>, Vec<(String, String)>);
+pub type Spawn = (Vec<String>, Vec<(String, String)>);
 
 /// Create a fresh, private directory for a preset-managed report and return
 /// the report path inside it.

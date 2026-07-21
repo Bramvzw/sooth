@@ -56,6 +56,12 @@ pub struct RunArgs {
     #[arg(long)]
     pub verify: bool,
 
+    /// Fail only on new flakiness: failures of tests listed in
+    /// .sooth-quarantine are pardoned — reported loudly, but the run exits 0
+    /// when nothing else failed (requires a report source)
+    #[arg(long)]
+    pub fail_on_flaky: bool,
+
     /// When to color the report: auto respects `NO_COLOR` and whether stdout
     /// is a terminal.
     #[arg(long, value_enum, default_value = "auto")]
