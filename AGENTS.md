@@ -15,17 +15,19 @@ Everything below exists except `analyzers/slow.rs` and `analyzers/order.rs`; one
 
 ```
 src/
-├── cli.rs        # EXISTS — clap definitions: subcommands, --preset, --runs, --json[=PATH], --slowest, --junit, --color
+├── cli.rs        # EXISTS — clap definitions: subcommands, --preset, --runs, --json[=PATH], --slowest, --junit, --color, --verify
 ├── runner.rs      # EXISTS — spawns the test subprocess (with env injection), captures exit status + wall time
 ├── junit.rs       # EXISTS — tolerant JUnit-XML union schema (parse_str/parse_file)
 ├── preset.rs      # EXISTS — presets inject reporter flags/env and manage the temp report
 ├── history.rs     # EXISTS — local run history (.sooth/history.jsonl) + git code identity
+├── verify.rs      # EXISTS — failure re-verification: classify failed tests after re-running only them
 ├── report.rs      # EXISTS — colored human report + versioned machine JSON
 └── analyzers/     # EXISTS — flaky.rs (mixed outcomes over runs), history.rs (classify the accumulated history); slow.rs, order.rs to come (strictly separate passes)
 ```
 
 Flags sooth cannot honor are rejected loudly, never silently ignored: `--json`/`--slowest`
-require a report source (`--junit` or `--preset`), and `--preset` conflicts with `--junit`. Exit
+require a report source (`--junit` or `--preset`), `--preset` conflicts with `--junit`, and
+`--verify` needs `--preset` and a single run. Exit
 codes are a contract: `0` every run passed, `1` at least one run failed, `2` sooth itself failed
 (see `DECISIONS.md`).
 

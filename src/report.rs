@@ -7,6 +7,7 @@ use crate::analyzers::{flaky, history};
 use crate::cli::ColorChoice;
 use crate::junit;
 use crate::runner::RunOutcome;
+use crate::verify;
 
 /// Version of the `--json` shape. Fields are only added within a version;
 /// this number is bumped when the shape changes incompatibly.
@@ -288,6 +289,41 @@ pub fn print_history(analysis: Option<&history::Analysis>, style: Style) {
     }
 }
 
+/// Verification's verdict, when it ran. The suite verdict is unchanged.
+pub fn print_verification(verdict: Option<&verify::Verdict>, style: Style) {
+    let Some(verdict) = verdict else { return };
+    if verdict.is_empty() {
+        return;
+    }
+    if !verdict.real.is_empty() {
+        println!(
+            "{}",
+            style.bold_red("real failures (reproduced on re-run):")
+        );
+        for id in &verdict.real {
+            println!("  - {id}");
+        }
+    }
+    if !verdict.flaky_or_order.is_empty() {
+        println!(
+            "{}",
+            style.yellow("flaky or order-dependent (passed on re-run in isolation):")
+        );
+        for id in &verdict.flaky_or_order {
+            println!("  - {id}");
+        }
+    }
+    if !verdict.unverified.is_empty() {
+        println!(
+            "{}",
+            style.dim("unverified (the re-run did not cover these):")
+        );
+        for id in &verdict.unverified {
+            println!("  - {id}");
+        }
+    }
+}
+
 /// `1 error`, `2 errors` — a count with a correctly pluralized noun.
 fn count(amount: usize, noun: &str) -> String {
     if amount == 1 {
@@ -306,6 +342,7 @@ pub fn to_json(
     summary: &JunitSummary,
     flaky: Option<&flaky::Analysis>,
     history: Option<&history::Analysis>,
+    verify: Option<&verify::Verdict>,
 ) -> String {
     let runs: Vec<String> = outcomes
         .iter()
@@ -386,8 +423,23 @@ pub fn to_json(
         )
     });
 
+    let verification = verify.map_or(String::new(), |verdict| {
+        let names = |ids: &[String]| {
+            ids.iter()
+                .map(|id| format!(r#""{}""#, json_escape(id)))
+                .collect::<Vec<_>>()
+                .join(",")
+        };
+        format!(
+            r#","verification":{{"real":[{}],"flaky_or_order_dependent":[{}],"unverified":[{}]}}"#,
+            names(&verdict.real),
+            names(&verdict.flaky_or_order),
+            names(&verdict.unverified)
+        )
+    });
+
     format!(
-        r#"{{"schema_version":{JSON_SCHEMA_VERSION},"sooth_version":"{}","runs":[{}],"junit":{{"total":{},"passed":{},"failed":{},"errors":{},"skipped":{},"slowest":[{}]}}{analysis}{history}}}"#,
+        r#"{{"schema_version":{JSON_SCHEMA_VERSION},"sooth_version":"{}","runs":[{}],"junit":{{"total":{},"passed":{},"failed":{},"errors":{},"skipped":{},"slowest":[{}]}}{analysis}{history}{verification}}}"#,
         env!("CARGO_PKG_VERSION"),
         runs.join(","),
         summary.total,
@@ -509,7 +561,7 @@ mod tests {
 
         // The qualified name deliberately rides into the frozen JSON
         // `name` field.
-        let json = to_json(&[outcome(true)], &summary, None, None);
+        let json = to_json(&[outcome(true)], &summary, None, None, None);
         assert!(json.contains(r#""name":"Modules.Order.OrderTest::test_create""#));
     }
 
@@ -551,7 +603,7 @@ mod tests {
             },
             10,
         );
-        let json = to_json(&[outcome(true)], &summary, None, None);
+        let json = to_json(&[outcome(true)], &summary, None, None, None);
 
         assert!(json.starts_with(r#"{"schema_version":1,"#));
         assert!(json.contains(&format!(

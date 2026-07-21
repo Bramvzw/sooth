@@ -12,6 +12,7 @@ mod junit;
 mod preset;
 mod report;
 mod runner;
+mod verify;
 
 use std::process::ExitCode;
 
@@ -117,9 +118,12 @@ fn run(args: &cli::RunArgs) -> ExitCode {
         None
     };
     let history_analysis = record_history(args, &reports);
+    // The raw command: inject_selected re-injects the report flags itself.
+    let verify_verdict = verify_failures(args, &args.command, reports.last());
     let analyses = Analyses {
         flaky: flaky_analysis.as_ref(),
         history: history_analysis.as_ref(),
+        verify: verify_verdict.as_ref(),
     };
 
     let failed = suite_failed(&outcomes, &reports);
@@ -162,6 +166,61 @@ fn run(args: &cli::RunArgs) -> ExitCode {
 struct Analyses<'a> {
     flaky: Option<&'a analyzers::flaky::Analysis>,
     history: Option<&'a analyzers::history::Analysis>,
+    verify: Option<&'a verify::Verdict>,
+}
+
+/// Re-run only the failed tests and classify them. Every failure mode
+/// degrades to a warning and `None`; the exit code is never changed.
+fn verify_failures(
+    args: &cli::RunArgs,
+    command: &[String],
+    final_report: Option<&junit::JunitReport>,
+) -> Option<verify::Verdict> {
+    if !args.verify {
+        return None;
+    }
+    let preset = args.preset?;
+    let report = final_report?;
+    let failed = verify::failed_ids(report);
+    if failed.is_empty() {
+        return None;
+    }
+    let mut verify_reports = Vec::with_capacity(verify::VERIFY_RUNS as usize);
+    for attempt in 1..=verify::VERIFY_RUNS {
+        let path = match preset::report_path() {
+            Ok(path) => path,
+            Err(err) => {
+                eprintln!("sooth: verification skipped — could not create a temp report: {err}");
+                return None;
+            }
+        };
+        let Some((cmd, envs)) = preset::inject_selected(command, preset, &path, &failed) else {
+            eprintln!(
+                "sooth: verification is not supported for this preset yet — \
+                 sooth cannot restrict its runner to a subset of tests"
+            );
+            let _ = std::fs::remove_dir(path.parent().unwrap_or(&path));
+            return None;
+        };
+        match runner::run_once(&cmd, &envs) {
+            Ok(_) => {}
+            Err(err) => {
+                eprintln!("sooth: verification run {attempt} failed to start: {err}");
+                cleanup_preset_report(&path);
+                return None;
+            }
+        }
+        match junit::parse_file(&path) {
+            Ok(report) => verify_reports.push(report),
+            Err(err) => {
+                eprintln!("sooth: verification run {attempt} produced no usable report: {err}");
+                cleanup_preset_report(&path);
+                return None;
+            }
+        }
+        cleanup_preset_report(&path);
+    }
+    Some(verify::classify(&failed, &verify_reports))
 }
 
 /// Record this invocation's runs into the local history and classify the
@@ -225,7 +284,13 @@ fn emit_output(
         // contract — the child's output still shares the stream).
         (Some(summary), Some(None)) => println!(
             "{}",
-            report::to_json(outcomes, summary, analyses.flaky, analyses.history)
+            report::to_json(
+                outcomes,
+                summary,
+                analyses.flaky,
+                analyses.history,
+                analyses.verify
+            )
         ),
         // --json=PATH: the machine output goes to a file, the human report
         // stays on stdout.
@@ -234,7 +299,14 @@ fn emit_output(
             report::print_summary(summary, style);
             report::print_flaky(analyses.flaky, style);
             report::print_history(analyses.history, style);
-            let json = report::to_json(outcomes, summary, analyses.flaky, analyses.history);
+            report::print_verification(analyses.verify, style);
+            let json = report::to_json(
+                outcomes,
+                summary,
+                analyses.flaky,
+                analyses.history,
+                analyses.verify,
+            );
             if let Err(err) = std::fs::write(path, json + "\n") {
                 eprintln!(
                     "sooth: failed to write JSON report `{}`: {err}",
@@ -252,6 +324,7 @@ fn emit_output(
             report::print_summary(summary, style);
             report::print_flaky(analyses.flaky, style);
             report::print_history(analyses.history, style);
+            report::print_verification(analyses.verify, style);
             println!(
                 "{}",
                 report::verdict_line(outcomes, junit_summary, report_failures, failed, style)
@@ -283,6 +356,28 @@ fn rejected_flag(args: &cli::RunArgs) -> Option<&'static str> {
         }
         if args.slowest.is_some() {
             return Some("`--slowest` requires a report: `--junit <PATH>` or `--preset <RUNNER>`");
+        }
+    }
+    if args.verify {
+        match args.preset {
+            None => {
+                return Some(
+                    "`--verify` needs `--preset <RUNNER>`: it re-invokes the runner on the \
+                     failed tests, which sooth can only do for a known runner",
+                );
+            }
+            Some(preset) if !preset::supports_selection(preset) => {
+                return Some(
+                    "`--verify` is not supported for this preset yet — sooth cannot \
+                     restrict its runner to a subset of tests",
+                );
+            }
+            Some(_) => {}
+        }
+        if args.runs > 1 {
+            return Some(
+                "`--verify` re-runs the failures itself; use it with a single run (drop `--runs`)",
+            );
         }
     }
     None

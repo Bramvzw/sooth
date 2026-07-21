@@ -358,3 +358,40 @@ last 50 observations, and loading reads at most the file's last 64 MiB —
 the file is append-only and never pruned by sooth, so the read must be
 bounded or every run would pay for the entire past. Drift ages out; the
 user prunes (or doesn't) a file they own.
+
+## Verification re-runs only the failures; a missed test is never "real"
+
+`--verify` is the layered flaky model's active classifier: after a failing
+run it re-invokes the runner on just the failed tests — seconds of re-running
+instead of N× the whole suite. Two verification runs, not one: a single pass
+already proves "not a deterministic failure", but a second run also catches a
+test that is flaky under isolation too (fails the suite, fails verify run 1,
+passes verify run 2). The count is fixed; a `--verify-runs` knob can be added
+additively if a real need appears.
+
+Restricting a runner to a subset means mapping JUnit identities
+(`classname::name`) onto each runner's selector, and that mapping can over-
+or under-match. Selection therefore favours over-matching — extra passing
+tests merely confirm they pass — and under-matching is never silently
+swallowed: a failed test the verification never actually re-ran is reported
+as `unverified`, never as `real`. A test that is only *skipped* during
+verification was likewise never re-run and lands in `unverified` — skips
+carry no signal, here as everywhere. Concretely: phpunit's `--filter` takes
+the full identity, unanchored so a failing method's data-provider rows match
+too; pytest selects by method name with any `[parameter]` suffix stripped
+(brackets and spaces would break a `-k` expression, and the base name merely
+over-matches) because a JUnit classname is a dotted module path, not a node
+id; jest's `-t` matches test names. The go preset declines selection for now
+— `-run` must sit after gotestsum's `--` split, and deferring beats placing
+it wrong — and that refusal happens at flag validation, before any suite
+run is wasted.
+
+Verification is a diagnosis on top of the verdict, never part of it: every
+failure mode degrades to a stderr warning and no classification, and the exit
+code is untouched. It needs `--preset` (only then does sooth control the
+command shape) and conflicts with `--runs N` (the flaky pass already answers
+that question). Verification never shuffles — order-dependence stays a
+separate pass. Verification runs do not feed the history file either: they
+execute a hand-picked subset in isolation, and recording an isolated pass as
+an ordinary observation would mint "flaky per history" evidence from a
+context the passive layer never saw.

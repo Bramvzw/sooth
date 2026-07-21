@@ -191,6 +191,20 @@ fn reportless_json_is_rejected_with_exit_two() {
 }
 
 #[test]
+fn verify_with_an_unselectable_preset_is_rejected_up_front_with_exit_two() {
+    let output = sooth()
+        .args(["run", "--verify", "--preset", "go", "--", "true"])
+        .output()
+        .expect("sooth should run");
+    assert_eq!(output.status.code(), Some(2));
+    let stderr = String::from_utf8(output.stderr).expect("stderr should be UTF-8");
+    assert!(
+        stderr.contains("not supported for this preset"),
+        "got: {stderr:?}"
+    );
+}
+
+#[test]
 fn a_signal_killed_run_reports_the_signal_and_exits_one() {
     let output = sooth()
         .args(["run", "--color", "never", "--", "sh", "-c", "kill -TERM $$"])

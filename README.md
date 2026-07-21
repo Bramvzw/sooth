@@ -60,6 +60,25 @@ whenever you like, it is yours. In CI, cache `.sooth/` between runs (or pass
 it as an artifact) and twenty pipeline runs a day become twenty observations
 a day.
 
+## Verify failures
+
+`--verify` removes the `--runs N` cost from daily use. When a run fails,
+sooth re-runs *only the failed tests* twice — seconds instead of N× the
+suite — and splits the failures:
+
+- **real** — reproduced on every re-run: fix the test or the code.
+- **flaky or order-dependent** — passed on re-run in isolation.
+- **unverified** — the re-run did not cover them; sooth does not guess.
+
+The suite verdict and exit code are unchanged: sooth classifies failures, it
+never absorbs them the way retry plugins do. Requires `--preset` (sooth must
+re-invoke your runner on a subset) and a single run; not supported for the
+go preset yet.
+
+```bash
+sooth run --verify --preset phpunit -- vendor/bin/phpunit
+```
+
 ## Status
 
 - [x] **v0.1** — `sooth run -- <cmd>` runs your suite once, parses the JUnit XML it produced, and

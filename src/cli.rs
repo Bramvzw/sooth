@@ -51,6 +51,11 @@ pub struct RunArgs {
     #[arg(long)]
     pub no_history: bool,
 
+    /// After a failing run, re-run only the failed tests and classify them
+    /// as real or flaky/order-dependent (needs --preset, single run)
+    #[arg(long)]
+    pub verify: bool,
+
     /// When to color the report: auto respects `NO_COLOR` and whether stdout
     /// is a terminal.
     #[arg(long, value_enum, default_value = "auto")]
