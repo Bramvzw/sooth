@@ -14,11 +14,9 @@ pub const VERIFY_RUNS: u32 = 2;
 pub struct Verdict {
     /// Failed the suite and failed every verification run it appeared in.
     pub real: Vec<String>,
-    /// Failed the suite but passed at least one verification run — flaky
-    /// or order-dependent.
+    /// Failed the suite but passed at least one verification run.
     pub flaky_or_order: Vec<String>,
-    /// Failed the suite but never appeared in a verification report —
-    /// reported apart, never folded into `real`.
+    /// Failed the suite but never appeared in a verification report.
     pub unverified: Vec<String>,
 }
 
@@ -28,9 +26,8 @@ impl Verdict {
     }
 }
 
-/// Classify each originally-failed id against the verification reports.
-/// `failed_ids` must already be the suite's failed identities; their order
-/// is preserved within each bucket.
+/// Classify each originally-failed id against the verification reports;
+/// order is preserved within each bucket.
 pub fn classify(failed_ids: &[String], verify_reports: &[JunitReport]) -> Verdict {
     let per_run: Vec<BTreeMap<String, TestStatus>> =
         verify_reports.iter().map(run_outcomes).collect();

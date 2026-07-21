@@ -118,8 +118,7 @@ fn run(args: &cli::RunArgs) -> ExitCode {
         None
     };
     let history_analysis = record_history(args, &reports);
-    // The raw command, not the injected one: inject_selected re-injects the
-    // report flags itself.
+    // The raw command: inject_selected re-injects the report flags itself.
     let verify_verdict = verify_failures(args, &args.command, reports.last());
     let analyses = Analyses {
         flaky: flaky_analysis.as_ref(),
@@ -170,9 +169,8 @@ struct Analyses<'a> {
     verify: Option<&'a verify::Verdict>,
 }
 
-/// When `--verify` is set and the run failed, re-run only the failed tests
-/// and classify them. Every failure mode degrades to a warning and `None`:
-/// verification never changes the run's exit code.
+/// Re-run only the failed tests and classify them. Every failure mode
+/// degrades to a warning and `None`; the exit code is never changed.
 fn verify_failures(
     args: &cli::RunArgs,
     command: &[String],

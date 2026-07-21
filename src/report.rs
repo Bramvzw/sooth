@@ -423,7 +423,6 @@ pub fn to_json(
         )
     });
 
-    // Additive within schema_version 1: present whenever verification ran.
     let verification = verify.map_or(String::new(), |verdict| {
         let names = |ids: &[String]| {
             ids.iter()

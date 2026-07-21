@@ -51,10 +51,8 @@ pub struct RunArgs {
     #[arg(long)]
     pub no_history: bool,
 
-    /// After a failing run, re-run only the failed tests a few times and
-    /// split them into real failures and flaky/order-dependent ones. Needs
-    /// `--preset` (sooth must re-invoke the runner on a subset) and a single
-    /// run (drop `--runs`).
+    /// After a failing run, re-run only the failed tests and classify them
+    /// as real or flaky/order-dependent (needs --preset, single run)
     #[arg(long)]
     pub verify: bool,
 

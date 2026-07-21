@@ -74,11 +74,8 @@ pub fn inject(command: &[String], preset: Preset, report: &Path) -> Spawn {
     (full, envs)
 }
 
-/// The full command to re-run **only** `ids` under `preset`, writing to
-/// `report` — the report flags, then the selection flag, then the user's own
-/// arguments. `None` when sooth cannot restrict this preset reliably; the
-/// caller must then refuse verification loudly rather than silently re-run
-/// the whole suite. Selection prefers over-matching (see `DECISIONS.md`).
+/// The full command to re-run only `ids` under `preset`, writing to `report`.
+/// `None` when sooth cannot restrict this preset (see `DECISIONS.md`).
 pub fn inject_selected(
     command: &[String],
     preset: Preset,
@@ -95,8 +92,7 @@ pub fn inject_selected(
     Some((full, envs))
 }
 
-/// The selection flag(s) that restrict `preset` to `ids`; `None` for presets
-/// sooth cannot restrict yet (see `DECISIONS.md`).
+/// The selection flag(s) that restrict `preset` to `ids`.
 fn selection_args(preset: Preset, ids: &[String]) -> Option<Vec<String>> {
     match preset {
         // Unanchored on purpose: a failing method's data-provider rows match too.
@@ -128,14 +124,12 @@ fn selection_args(preset: Preset, ids: &[String]) -> Option<Vec<String>> {
     }
 }
 
-/// The method half of a `classname::name` identity (the whole string when
-/// there is no `::`).
+/// The method half of a `classname::name` identity.
 fn method_of(id: &str) -> &str {
     id.rsplit_once("::").map_or(id, |(_, method)| method)
 }
 
-/// Escape the PCRE/RE2 metacharacters that appear in test identities so a
-/// name is matched literally inside an alternation.
+/// Escape regex metacharacters so an identity matches literally.
 fn regex_escape(value: &str) -> String {
     let mut escaped = String::with_capacity(value.len());
     for ch in value.chars() {
