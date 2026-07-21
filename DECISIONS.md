@@ -376,9 +376,13 @@ tests merely confirm they pass — and under-matching is never silently
 swallowed: a failed test the verification never actually re-ran is reported
 as `unverified`, never as `real`. A test that is only *skipped* during
 verification was likewise never re-run and lands in `unverified` — skips
-carry no signal, here as everywhere. Concretely: phpunit's `--filter` takes
-the full identity, unanchored so a failing method's data-provider rows match
-too; pytest selects by method name with any `[parameter]` suffix stripped
+carry no signal, here as everywhere. Concretely: phpunit selects on the
+method half anchored to `::` — PHPUnit writes its JUnit `classname` dotted
+while `--filter` matches the backslashed FQCN (observed live on a production
+suite: a full-identity filter matched zero tests), and the method name is
+the only half that survives both formats; data-provider rows still match
+because `with data set …` follows the method name; pytest selects by method
+name with any `[parameter]` suffix stripped
 (brackets and spaces would break a `-k` expression, and the base name merely
 over-matches) because a JUnit classname is a dotted module path, not a node
 id; jest's `-t` matches test names. The go preset declines selection for now
