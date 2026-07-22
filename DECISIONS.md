@@ -399,3 +399,35 @@ separate pass. Verification runs do not feed the history file either: they
 execute a hand-picked subset in isolation, and recording an isolated pass as
 an ordinary observation would mint "flaky per history" evidence from a
 context the passive layer never saw.
+
+## Quarantine is a committed pardon list; the exit is steered only when asked
+
+Day one in an existing codebase finds twenty flaky tests and nobody can
+merge — so known flakes live in a committed `.sooth-quarantine` (unlike the
+gitignored `.sooth/` history: the pardon list is a team decision and belongs
+in review), and `--fail-on-flaky` pardons them. The rule is all-or-nothing
+per invocation: the run exits 0 iff every failure in every run's report is
+on the list, and every failed run is explained by its report — a failed run
+with a green or missing report is never pardoned, because sooth cannot
+attribute that failure to a known flake. The failures are still printed,
+and the verdict says why the exit is 0 ("only quarantined flakes failed");
+exit steering happens only behind the explicit flag — the file alone changes
+nothing, per the guardrail that sooth never silently absorbs a failure.
+
+Attribution has a documented limit: the pardon trusts the report to be the
+complete story of why the runner failed. A runner configured to fail on
+signals the report does not record (phpunit's `failOnWarning`/`failOnRisky`,
+a lint step inside the test command) can be masked by a pardon — sooth
+cannot see what the report does not say, the same report-is-truth limit the
+rest of the tool lives with. The one detectable subcase is closed: a
+signal-killed run is a crash and is never pardoned, even when the report
+was written before the kill.
+
+The format is plain lines (one id per line, `#` comments), not TOML: no new
+dependency (the hand-rolled-JSON reasoning), trivially diffable, and the ids
+are pasted verbatim from sooth's own output — exactly as reports write them,
+because identities must round-trip byte-for-byte (the phpunit dotted-vs-
+backslashed lesson). A missing file is the normal day-one state (empty
+list); an unreadable file warns and pardons nothing — failing the run is
+the safe direction. History records pardoned failures as failures: the
+record keeps the truth, the pardon only steers the exit.

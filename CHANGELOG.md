@@ -25,6 +25,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   never absorbs a failure. The `--json` shape gains an additive
   `verification` object when the pass ran (still `schema_version` 1). Not
   supported for the go preset yet; refused loudly.
+- Quarantine for known flakes: a committed `.sooth-quarantine` file (one
+  test id per line, `#` comments) plus `--fail-on-flaky` make the run exit 0
+  when every failure in every run's report is on the list — reported loudly,
+  never hidden. Any unlisted failure, or a failed run its report cannot
+  explain, still fails the run. Requires a report source; without the flag
+  the file is inert. The `--json` shape gains an additive `quarantine`
+  object when a pardon happened (still `schema_version` 1).
 - Local run history: every run with a report source appends one observation
   per test to `.sooth/history.jsonl` (opt out with `--no-history`), stamped
   with the git commit and a dirty flag. Mixed outcomes on one clean commit

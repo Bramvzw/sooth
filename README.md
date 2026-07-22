@@ -79,6 +79,24 @@ go preset yet.
 sooth run --verify --preset phpunit -- vendor/bin/phpunit
 ```
 
+## Quarantine known flakes
+
+Day one in an existing codebase finds twenty flaky tests — quarantine keeps
+them from blocking every merge while you fix them. Commit a
+`.sooth-quarantine` file in the directory you run from (one test id per
+line, copied from sooth's own output; `#` comments allowed) and run with
+`--fail-on-flaky`:
+
+```bash
+sooth run --fail-on-flaky --preset phpunit -- vendor/bin/phpunit
+```
+
+The run exits 0 only when *every* failure is on the list — the pardoned
+failures are still printed, and the verdict says exactly what happened
+(`result: PASSED — only quarantined flakes failed (2 tests pardoned)`).
+Any new failure, new flakiness, or a failed run the report cannot explain
+still fails the build. Without the flag the file changes nothing.
+
 ## Status
 
 - [x] **v0.1** — `sooth run -- <cmd>` runs your suite once, parses the JUnit XML it produced, and

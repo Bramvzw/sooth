@@ -21,13 +21,14 @@ src/
 ├── preset.rs      # EXISTS — presets inject reporter flags/env and manage the temp report
 ├── history.rs     # EXISTS — local run history (.sooth/history.jsonl) + git code identity
 ├── verify.rs      # EXISTS — failure re-verification: classify failed tests after re-running only them
+├── quarantine.rs  # EXISTS — committed .sooth-quarantine list that --fail-on-flaky pardons
 ├── report.rs      # EXISTS — colored human report + versioned machine JSON
 └── analyzers/     # EXISTS — flaky.rs (mixed outcomes over runs), history.rs (classify the accumulated history); slow.rs, order.rs to come (strictly separate passes)
 ```
 
 Flags sooth cannot honor are rejected loudly, never silently ignored: `--json`/`--slowest`
-require a report source (`--junit` or `--preset`), `--preset` conflicts with `--junit`, and
-`--verify` needs `--preset` and a single run. Exit
+require a report source (`--junit` or `--preset`), `--preset` conflicts with `--junit`,
+`--verify` needs `--preset` and a single run, and `--fail-on-flaky` requires a report source. Exit
 codes are a contract: `0` every run passed, `1` at least one run failed, `2` sooth itself failed
 (see `DECISIONS.md`).
 

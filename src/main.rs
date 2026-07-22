@@ -10,6 +10,7 @@ mod cli;
 mod history;
 mod junit;
 mod preset;
+mod quarantine;
 mod report;
 mod runner;
 mod verify;
@@ -47,23 +48,9 @@ fn run(args: &cli::RunArgs) -> ExitCode {
     }
     let style = report::Style::resolved(args.color);
 
-    let (command, envs, report_source) = match args.preset {
-        Some(chosen) => {
-            let path = match preset::report_path() {
-                Ok(path) => path,
-                Err(err) => {
-                    eprintln!("sooth: failed to create a temp directory for the report: {err}");
-                    return ExitCode::from(EXIT_SOOTH_ERROR);
-                }
-            };
-            let (command, envs) = preset::inject(&args.command, chosen, &path);
-            (command, envs, Some(ReportSource::Preset(path)))
-        }
-        None => (
-            args.command.clone(),
-            Vec::new(),
-            args.junit.clone().map(ReportSource::User),
-        ),
+    let ((command, envs), report_source) = match prepared_command(args) {
+        Ok(prepared) => prepared,
+        Err(exit) => return exit,
     };
 
     // Repetition lives here, not in the runner: the report is parsed per
@@ -120,13 +107,16 @@ fn run(args: &cli::RunArgs) -> ExitCode {
     let history_analysis = record_history(args, &reports);
     // The raw command: inject_selected re-injects the report flags itself.
     let verify_verdict = verify_failures(args, &args.command, reports.last());
+
+    let suite_red = suite_failed(&outcomes, &reports);
+    let pardoned = pardoned_failures(args, suite_red, &outcomes, &reports);
+    let failed = suite_red && pardoned.is_none();
     let analyses = Analyses {
         flaky: flaky_analysis.as_ref(),
         history: history_analysis.as_ref(),
         verify: verify_verdict.as_ref(),
+        pardoned: pardoned.as_deref(),
     };
-
-    let failed = suite_failed(&outcomes, &reports);
     // The worst run's count, over all reports: the mismatch note and the
     // verdict must not claim "0 failing" because the *last* run was green.
     let report_failures = reports
@@ -135,7 +125,10 @@ fn run(args: &cli::RunArgs) -> ExitCode {
         .max()
         .unwrap_or(0);
     let runs_failed = outcomes.iter().any(|outcome| !outcome.success);
-    print_disagreement(runs_failed, report_failures, !reports.is_empty());
+    // A pardoned run exits 0; the note's "exiting 1" would then be a lie.
+    if failed {
+        print_disagreement(runs_failed, report_failures, !reports.is_empty());
+    }
 
     if let Some(exit) = emit_output(
         args,
@@ -156,12 +149,82 @@ fn run(args: &cli::RunArgs) -> ExitCode {
     }
 }
 
+/// The command to spawn, its environment, and where its report comes from:
+/// the preset injects flags and manages a temp report, `--junit` points at
+/// the user's own file.
+fn prepared_command(
+    args: &cli::RunArgs,
+) -> Result<(preset::Spawn, Option<ReportSource>), ExitCode> {
+    match args.preset {
+        Some(chosen) => {
+            let path = preset::report_path().map_err(|err| {
+                eprintln!("sooth: failed to create a temp directory for the report: {err}");
+                ExitCode::from(EXIT_SOOTH_ERROR)
+            })?;
+            let spawn = preset::inject(&args.command, chosen, &path);
+            Ok((spawn, Some(ReportSource::Preset(path))))
+        }
+        None => Ok((
+            (args.command.clone(), Vec::new()),
+            args.junit.clone().map(ReportSource::User),
+        )),
+    }
+}
+
 /// The cross-run analyses, when they ran: the active pass (`--runs N`) and
 /// the passive one (the accumulated history).
 struct Analyses<'a> {
     flaky: Option<&'a analyzers::flaky::Analysis>,
     history: Option<&'a analyzers::history::Analysis>,
     verify: Option<&'a verify::Verdict>,
+    pardoned: Option<&'a [String]>,
+}
+
+/// The failures pardoned by the quarantine file: `Some` — and the run exits
+/// 0 — only when `--fail-on-flaky` is set, the suite failed, and every
+/// failure in every run's report is quarantined. A failed run its report
+/// cannot explain is never pardoned.
+fn pardoned_failures(
+    args: &cli::RunArgs,
+    suite_red: bool,
+    outcomes: &[runner::RunOutcome],
+    reports: &[junit::JunitReport],
+) -> Option<Vec<String>> {
+    if !args.fail_on_flaky || !suite_red {
+        return None;
+    }
+    let quarantine = quarantine::load_or_empty(std::path::Path::new(quarantine::FILE_NAME));
+    quarantine_pardon(&quarantine, outcomes, reports)
+}
+
+/// The pardon decision itself: all-or-nothing over every run.
+fn quarantine_pardon(
+    quarantine: &std::collections::BTreeSet<String>,
+    outcomes: &[runner::RunOutcome],
+    reports: &[junit::JunitReport],
+) -> Option<Vec<String>> {
+    if reports.is_empty() || reports.len() != outcomes.len() {
+        return None;
+    }
+    let mut pardoned = std::collections::BTreeSet::new();
+    for (outcome, report) in outcomes.iter().zip(reports) {
+        // A signal-killed run is a crash, never a pardonable flake — even
+        // when the report was written before the kill.
+        if outcome.signal.is_some() {
+            return None;
+        }
+        let failing = verify::failed_ids(report);
+        if !outcome.success && failing.is_empty() {
+            return None;
+        }
+        for id in failing {
+            if !quarantine.contains(&id) {
+                return None;
+            }
+            pardoned.insert(id);
+        }
+    }
+    (!pardoned.is_empty()).then(|| pardoned.into_iter().collect())
 }
 
 /// The stderr note when the runner's exit and the report disagree, in
@@ -300,7 +363,8 @@ fn emit_output(
                 summary,
                 analyses.flaky,
                 analyses.history,
-                analyses.verify
+                analyses.verify,
+                analyses.pardoned
             )
         ),
         // --json=PATH: the machine output goes to a file, the human report
@@ -311,12 +375,14 @@ fn emit_output(
             report::print_flaky(analyses.flaky, style);
             report::print_history(analyses.history, style);
             report::print_verification(analyses.verify, style);
+            report::print_pardoned(analyses.pardoned, style);
             let json = report::to_json(
                 outcomes,
                 summary,
                 analyses.flaky,
                 analyses.history,
                 analyses.verify,
+                analyses.pardoned,
             );
             if let Err(err) = std::fs::write(path, json + "\n") {
                 eprintln!(
@@ -327,7 +393,14 @@ fn emit_output(
             }
             println!(
                 "{}",
-                report::verdict_line(outcomes, junit_summary, report_failures, failed, style)
+                verdict(
+                    analyses,
+                    outcomes,
+                    junit_summary,
+                    report_failures,
+                    failed,
+                    style
+                )
             );
         }
         (Some(summary), None) => {
@@ -336,9 +409,17 @@ fn emit_output(
             report::print_flaky(analyses.flaky, style);
             report::print_history(analyses.history, style);
             report::print_verification(analyses.verify, style);
+            report::print_pardoned(analyses.pardoned, style);
             println!(
                 "{}",
-                report::verdict_line(outcomes, junit_summary, report_failures, failed, style)
+                verdict(
+                    analyses,
+                    outcomes,
+                    junit_summary,
+                    report_failures,
+                    failed,
+                    style
+                )
             );
         }
         (None, _) => {
@@ -356,6 +437,22 @@ fn emit_output(
     None
 }
 
+/// The closing verdict line, pardon-aware: a pardoned run explains why it
+/// exits 0 instead of claiming a clean pass.
+fn verdict(
+    analyses: &Analyses<'_>,
+    outcomes: &[runner::RunOutcome],
+    junit_summary: Option<&JunitSummary>,
+    report_failures: usize,
+    failed: bool,
+    style: report::Style,
+) -> String {
+    match analyses.pardoned {
+        Some(pardoned) => report::pardoned_verdict(outcomes, pardoned.len(), style),
+        None => report::verdict_line(outcomes, junit_summary, report_failures, failed, style),
+    }
+}
+
 /// A flag `sooth` cannot honor, if any. Rejecting loudly beats silently
 /// ignoring — this tool's brand is the truth. `--json` and `--slowest` only
 /// mean something once there is a report to summarize: `--junit` brings your
@@ -367,6 +464,11 @@ fn rejected_flag(args: &cli::RunArgs) -> Option<&'static str> {
         }
         if args.slowest.is_some() {
             return Some("`--slowest` requires a report: `--junit <PATH>` or `--preset <RUNNER>`");
+        }
+        if args.fail_on_flaky {
+            return Some(
+                "`--fail-on-flaky` requires a report: `--junit <PATH>` or `--preset <RUNNER>`",
+            );
         }
     }
     if args.verify {
@@ -522,11 +624,12 @@ fn cleanup_preset_report(path: &std::path::Path) {
 
 #[cfg(test)]
 mod tests {
-    use super::{rejected_flag, suite_failed};
+    use super::{quarantine_pardon, rejected_flag, suite_failed};
     use crate::cli::{Cli, Command};
     use crate::junit::{JunitReport, TestCase, TestStatus};
     use crate::runner::RunOutcome;
     use clap::Parser;
+    use std::collections::BTreeSet;
     use std::time::Duration;
 
     fn outcome(success: bool) -> RunOutcome {
@@ -715,5 +818,65 @@ mod tests {
             let reason = rejected_flag(&args).expect("flag should be rejected");
             assert!(reason.contains(fragment), "{reason} should name {fragment}");
         }
+    }
+
+    #[test]
+    fn reportless_fail_on_flaky_is_rejected() {
+        let args = parse_run_args(&["sooth", "run", "--fail-on-flaky", "--", "true"]);
+        let reason = rejected_flag(&args).expect("flag should be rejected");
+        assert!(reason.contains("--fail-on-flaky"), "got: {reason}");
+    }
+
+    #[test]
+    fn quarantine_pardons_when_every_failure_is_listed() {
+        let quarantine = BTreeSet::from(["case".to_owned()]);
+        let pardoned = quarantine_pardon(
+            &quarantine,
+            &[outcome(false), outcome(true)],
+            &[report_of(TestStatus::Failed), report_of(TestStatus::Passed)],
+        );
+        assert_eq!(pardoned, Some(vec!["case".to_owned()]));
+    }
+
+    #[test]
+    fn an_unlisted_failure_blocks_the_whole_pardon() {
+        let pardoned = quarantine_pardon(
+            &BTreeSet::new(),
+            &[outcome(false)],
+            &[report_of(TestStatus::Failed)],
+        );
+        assert_eq!(pardoned, None);
+    }
+
+    #[test]
+    fn a_failed_run_with_a_green_report_is_never_pardoned() {
+        let quarantine = BTreeSet::from(["case".to_owned()]);
+        let pardoned = quarantine_pardon(
+            &quarantine,
+            &[outcome(false)],
+            &[report_of(TestStatus::Passed)],
+        );
+        assert_eq!(pardoned, None);
+    }
+
+    #[test]
+    fn a_pardon_needs_a_report_for_every_run() {
+        let quarantine = BTreeSet::from(["case".to_owned()]);
+        assert_eq!(quarantine_pardon(&quarantine, &[outcome(false)], &[]), None);
+    }
+
+    #[test]
+    fn a_signal_killed_run_is_never_pardoned() {
+        let quarantine = BTreeSet::from(["case".to_owned()]);
+        let killed = RunOutcome {
+            exit_code: None,
+            signal: Some(9),
+            success: false,
+            duration: Duration::from_millis(1),
+        };
+        assert_eq!(
+            quarantine_pardon(&quarantine, &[killed], &[report_of(TestStatus::Failed)]),
+            None
+        );
     }
 }
