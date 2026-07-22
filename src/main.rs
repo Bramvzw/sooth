@@ -255,10 +255,12 @@ fn verify_failures(
     }
     let preset = args.preset?;
     let report = final_report?;
-    let failed = verify::failed_ids(report);
+    let failed = verify::failed_tests(report);
     if failed.is_empty() {
         return None;
     }
+    // Selection gets the raw name half; the joined id is never re-split.
+    let names: Vec<String> = failed.iter().map(|test| test.name.clone()).collect();
     let mut verify_reports = Vec::with_capacity(verify::VERIFY_RUNS as usize);
     for attempt in 1..=verify::VERIFY_RUNS {
         let path = match preset::report_path() {
@@ -268,7 +270,7 @@ fn verify_failures(
                 return None;
             }
         };
-        let Some((cmd, envs)) = preset::inject_selected(command, preset, &path, &failed) else {
+        let Some((cmd, envs)) = preset::inject_selected(command, preset, &path, &names) else {
             eprintln!(
                 "sooth: verification is not supported for this preset yet — \
                  sooth cannot restrict its runner to a subset of tests"
@@ -294,7 +296,8 @@ fn verify_failures(
         }
         cleanup_preset_report(&path);
     }
-    Some(verify::classify(&failed, &verify_reports))
+    let ids: Vec<String> = failed.into_iter().map(|test| test.id).collect();
+    Some(verify::classify(&ids, &verify_reports))
 }
 
 /// Record this invocation's runs into the local history and classify the

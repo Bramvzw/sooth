@@ -376,11 +376,14 @@ tests merely confirm they pass — and under-matching is never silently
 swallowed: a failed test the verification never actually re-ran is reported
 as `unverified`, never as `real`. A test that is only *skipped* during
 verification was likewise never re-run and lands in `unverified` — skips
-carry no signal, here as everywhere. Concretely: phpunit selects on the
-method half anchored to `::` — PHPUnit writes its JUnit `classname` dotted
-while `--filter` matches the backslashed FQCN (observed live on a production
-suite: a full-identity filter matched zero tests), and the method name is
-the only half that survives both formats; data-provider rows still match
+carry no signal, here as everywhere. Selection receives the raw `name`
+attribute carried separately from the report, never re-split from the joined
+`classname::name` identity — a name may itself contain `::` (a jest title,
+say), so the join is one-way and any re-split is lossy (#91). Concretely:
+phpunit selects on that name half — PHPUnit writes its JUnit `classname`
+dotted while `--filter` matches the backslashed FQCN (observed live on a
+production suite: a full-identity filter matched zero tests), and the name
+is the only half that survives both formats; data-provider rows still match
 because `with data set …` follows the method name; pytest selects by method
 name with any `[parameter]` suffix stripped
 (brackets and spaces would break a `-k` expression, and the base name merely

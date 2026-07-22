@@ -58,18 +58,43 @@ pub fn classify(failed_ids: &[String], verify_reports: &[JunitReport]) -> Verdic
     verdict
 }
 
-/// The suite's failed identities, collapsed per report (worst status wins).
-pub fn failed_ids(report: &JunitReport) -> Vec<String> {
+/// A failed test carrying both halves of its identity: `id` is the joined
+/// `classname::name` that reports, history, and quarantine key on; `name`
+/// is the raw `name` attribute selection needs. The halves travel
+/// separately — a name may itself contain `::`, so the join is one-way.
+#[derive(Debug, PartialEq, Eq)]
+pub struct FailedTest {
+    pub id: String,
+    pub name: String,
+}
+
+/// The suite's failed tests, collapsed per report (worst status wins).
+pub fn failed_tests(report: &JunitReport) -> Vec<FailedTest> {
     run_outcomes(report)
         .into_iter()
         .filter(|(_, status)| matches!(status, TestStatus::Failed | TestStatus::Error))
-        .map(|(id, _)| id)
+        .map(|(id, _)| {
+            let name = report
+                .test_cases
+                .iter()
+                .find(|case| case.qualified_name() == id)
+                .map_or_else(|| id.clone(), |case| case.name.clone());
+            FailedTest { id, name }
+        })
+        .collect()
+}
+
+/// The suite's failed identities, collapsed per report (worst status wins).
+pub fn failed_ids(report: &JunitReport) -> Vec<String> {
+    failed_tests(report)
+        .into_iter()
+        .map(|test| test.id)
         .collect()
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{classify, failed_ids};
+    use super::{classify, failed_ids, failed_tests};
     use crate::junit::parse_str;
 
     fn report(cases: &str) -> crate::junit::JunitReport {
@@ -138,6 +163,28 @@ mod tests {
             r#"<testcase classname="c" name="row"/><testcase classname="c" name="row"><failure/></testcase>"#,
         );
         assert_eq!(failed_ids(&report), ["c::row"]);
+    }
+
+    #[test]
+    fn failed_tests_carry_the_raw_name_even_when_it_contains_double_colons() {
+        // Re-splitting the joined id on `::` would yield "load reads the
+        // env" and the selection would miss this test (#91).
+        let report = report(
+            r#"<testcase classname="config" name="Config::load reads the env"><failure/></testcase>"#,
+        );
+        let tests = failed_tests(&report);
+        assert_eq!(tests.len(), 1);
+        assert_eq!(tests[0].id, "config::Config::load reads the env");
+        assert_eq!(tests[0].name, "Config::load reads the env");
+    }
+
+    #[test]
+    fn failed_tests_keep_a_bare_name_with_double_colons_whole() {
+        // No classname: the id IS the name, and any split would be wrong.
+        let report = report(r#"<testcase name="a::b"><failure/></testcase>"#);
+        let tests = failed_tests(&report);
+        assert_eq!(tests[0].id, "a::b");
+        assert_eq!(tests[0].name, "a::b");
     }
 
     #[test]

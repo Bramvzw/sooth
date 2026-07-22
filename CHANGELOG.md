@@ -55,6 +55,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Verify selection carries the test's raw name instead of re-splitting the
+  joined `classname::name` identity, so a test whose own name contains `::`
+  (a jest title, say) is actually re-run instead of landing in `unverified`
+  (#91).
 - The crash context after an unusable report counts against the requested
   `--runs` total: aborting on the first of three runs now says "run 1 of 3
   failed" instead of "run 1 of 1", so the skipped runs are visible (#80).

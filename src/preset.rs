@@ -74,15 +74,18 @@ pub fn inject(command: &[String], preset: Preset, report: &Path) -> Spawn {
     (full, envs)
 }
 
-/// The full command to re-run only `ids` under `preset`, writing to `report`.
-/// `None` when sooth cannot restrict this preset (see `DECISIONS.md`).
+/// The full command to re-run only the tests named `names` under `preset`,
+/// writing to `report`. `names` are raw `name` attributes straight from the
+/// report, never joined `classname::name` identities — a name may itself
+/// contain `::`, so re-splitting a joined id is lossy (#91). `None` when
+/// sooth cannot restrict this preset (see `DECISIONS.md`).
 pub fn inject_selected(
     command: &[String],
     preset: Preset,
     report: &Path,
-    ids: &[String],
+    names: &[String],
 ) -> Option<Spawn> {
-    let selection = selection_args(preset, ids)?;
+    let selection = selection_args(preset, names)?;
     let Injection { args, envs } = injection(preset, report);
     let mut full = Vec::with_capacity(command.len() + args.len() + selection.len());
     full.push(command[0].clone());
@@ -92,14 +95,13 @@ pub fn inject_selected(
     Some((full, envs))
 }
 
-/// The selection flag(s) that restrict `preset` to `ids`.
-fn selection_args(preset: Preset, ids: &[String]) -> Option<Vec<String>> {
+/// The selection flag(s) that restrict `preset` to the tests named `names`.
+fn selection_args(preset: Preset, names: &[String]) -> Option<Vec<String>> {
     match preset {
         // The JUnit classname is dotted but --filter wants the backslashed
-        // FQCN; only the method half survives both (#93).
+        // FQCN; only the name half survives both (#93).
         Preset::Phpunit => {
-            let mut methods: Vec<String> =
-                ids.iter().map(|id| regex_escape(method_of(id))).collect();
+            let mut methods: Vec<String> = names.iter().map(|name| regex_escape(name)).collect();
             methods.sort_unstable();
             methods.dedup();
             Some(vec![
@@ -107,18 +109,18 @@ fn selection_args(preset: Preset, ids: &[String]) -> Option<Vec<String>> {
                 format!("/::({})/", methods.join("|")),
             ])
         }
-        // A JUnit classname is not a pytest node id; select by method name.
+        // A JUnit classname is not a pytest node id; select by test name.
         Preset::Pytest => {
-            let mut names: Vec<&str> = ids.iter().map(|id| base_name(method_of(id))).collect();
-            names.sort_unstable();
-            names.dedup();
-            Some(vec!["-k".to_owned(), names.join(" or ")])
+            let mut bases: Vec<&str> = names.iter().map(|name| base_name(name)).collect();
+            bases.sort_unstable();
+            bases.dedup();
+            Some(vec!["-k".to_owned(), bases.join(" or ")])
         }
         // jest -t matches the test name, not the classname.
         Preset::Jest => {
-            let pattern = ids
+            let pattern = names
                 .iter()
-                .map(|id| regex_escape(method_of(id)))
+                .map(|name| regex_escape(name))
                 .collect::<Vec<_>>()
                 .join("|");
             Some(vec!["-t".to_owned(), format!("({pattern})")])
@@ -130,11 +132,6 @@ fn selection_args(preset: Preset, ids: &[String]) -> Option<Vec<String>> {
 /// Whether `preset` can be restricted to a subset of tests.
 pub fn supports_selection(preset: Preset) -> bool {
     selection_args(preset, &[]).is_some()
-}
-
-/// The method half of a `classname::name` identity.
-fn method_of(id: &str) -> &str {
-    id.rsplit_once("::").map_or(id, |(_, method)| method)
 }
 
 /// The name without its `[parameters]` suffix (brackets break a `-k` expression).
@@ -275,21 +272,17 @@ mod tests {
         );
     }
 
-    fn ids(parts: &[&str]) -> Vec<String> {
+    fn names(parts: &[&str]) -> Vec<String> {
         parts.iter().map(|part| (*part).to_owned()).collect()
     }
 
     #[test]
-    fn phpunit_selection_matches_the_method_half_of_a_dotted_classname() {
-        // The classname is dotted exactly as PHPUnit's JUnit XML writes it.
+    fn phpunit_selection_anchors_the_deduped_names_in_a_filter_regex() {
         let (full, _) = inject_selected(
             &command(&["phpunit"]),
             Preset::Phpunit,
             Path::new("/tmp/r.xml"),
-            &ids(&[
-                "Tests.Central.Tenants.TenantFormTest::test_it_journals_a_flag",
-                "Tests.Central.Tenants.OtherTest::test_b",
-            ]),
+            &names(&["test_it_journals_a_flag", "test_b"]),
         )
         .expect("phpunit supports selection");
         assert_eq!(
@@ -310,7 +303,7 @@ mod tests {
             &command(&["phpunit"]),
             Preset::Phpunit,
             Path::new("/tmp/r.xml"),
-            &ids(&[r#"App.FooTest::test_a with data set "x.y""#]),
+            &names(&[r#"test_a with data set "x.y""#]),
         )
         .expect("phpunit supports selection");
         assert_eq!(
@@ -326,12 +319,13 @@ mod tests {
     }
 
     #[test]
-    fn pytest_selection_uses_deduped_method_names_in_a_k_expression() {
+    fn pytest_selection_uses_deduped_test_names_in_a_k_expression() {
+        // Two classnames shared one method name; the names arrive pre-joined.
         let (full, _) = inject_selected(
             &command(&["pytest"]),
             Preset::Pytest,
             Path::new("/tmp/r.xml"),
-            &ids(&["mod.A::test_x", "mod.B::test_x", "mod.A::test_y"]),
+            &names(&["test_x", "test_x", "test_y"]),
         )
         .expect("pytest supports selection");
         assert_eq!(
@@ -346,10 +340,7 @@ mod tests {
             &command(&["pytest"]),
             Preset::Pytest,
             Path::new("/tmp/r.xml"),
-            &ids(&[
-                "mod.A::test_login[user with spaces]",
-                "mod.A::test_login[admin]",
-            ]),
+            &names(&["test_login[user with spaces]", "test_login[admin]"]),
         )
         .expect("pytest supports selection");
         assert_eq!(
@@ -359,7 +350,30 @@ mod tests {
     }
 
     #[test]
+    fn jest_selection_keeps_a_name_containing_double_colons_whole() {
+        // A jest title may contain `::`; the selection must match the whole
+        // name, never a re-split tail (#91).
+        let (full, _) = inject_selected(
+            &command(&["jest"]),
+            Preset::Jest,
+            Path::new("/tmp/r.xml"),
+            &names(&["Config::load reads the env"]),
+        )
+        .expect("jest supports selection");
+        assert_eq!(
+            full,
+            command(&[
+                "jest",
+                "--reporters=default",
+                "--reporters=jest-junit",
+                "-t",
+                "(Config::load reads the env)",
+            ])
+        );
+    }
+
+    #[test]
     fn go_selection_is_declined_so_verification_refuses_loudly() {
-        assert!(selection_args(Preset::Go, &ids(&["pkg::TestX"])).is_none());
+        assert!(selection_args(Preset::Go, &names(&["TestX"])).is_none());
     }
 }
