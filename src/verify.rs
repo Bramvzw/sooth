@@ -167,8 +167,8 @@ mod tests {
 
     #[test]
     fn failed_tests_carry_the_raw_name_even_when_it_contains_double_colons() {
-        // Re-splitting the joined id on `::` would yield "load reads the
-        // env" and the selection would miss this test (#91).
+        // A name may itself contain `::`: the raw name must survive whole,
+        // never as a re-split tail of the joined id (#91).
         let report = report(
             r#"<testcase classname="config" name="Config::load reads the env"><failure/></testcase>"#,
         );
