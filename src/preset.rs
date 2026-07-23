@@ -320,7 +320,6 @@ mod tests {
 
     #[test]
     fn pytest_selection_uses_deduped_test_names_in_a_k_expression() {
-        // Two classnames shared one method name; the names arrive pre-joined.
         let (full, _) = inject_selected(
             &command(&["pytest"]),
             Preset::Pytest,
