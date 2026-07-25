@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Every red run is classified against what sooth already knows: each failure
+  is labeled a known flake (with its failure rate), a regression (`failing
+  since <commit>`), quarantined, or new, under a headline that answers the
+  question a red build asks — `2 failures — all known flakes, nothing new`.
+  The `--json` shape gains an additive `explanation` object. The verdict and
+  exit code are untouched: sooth explains failures, it never absorbs them.
+- `sooth explain --junit <PATH>`: the same classification for a report you
+  already have, without running anything. It records nothing, always exits 0
+  when it could read the report (2 when it could not), and `--json` makes its
+  whole output machine-readable.
+
 - Flaky detection, the core value: with a report source and `--runs N`, the
   report is parsed after every run and tests with mixed outcomes are ranked
   by failure rate. Always-failing tests are listed separately as broken —
@@ -42,6 +53,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- The quarantine file is now read on every failing run, not only under
+  `--fail-on-flaky`: its entries label failures as known. Exit steering is
+  unchanged — without the flag the list still pardons nothing.
 - With `--runs N`, the suite verdict now considers every run's report: a
   failure in run 1 is not forgiven by a green run 2.
 - `--junit` freshness is now an observed fact instead of a clock comparison:

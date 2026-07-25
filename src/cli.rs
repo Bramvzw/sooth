@@ -17,6 +17,30 @@ pub struct Cli {
 pub enum Command {
     /// Run a test command and report what your tests actually do.
     Run(RunArgs),
+
+    /// Classify the failures in a JUnit-XML report against what sooth already
+    /// knows: the run history and the quarantine list. Runs no tests.
+    Explain(ExplainArgs),
+}
+
+/// Arguments for `sooth explain`.
+#[derive(Debug, Args)]
+pub struct ExplainArgs {
+    /// Path to the JUnit-XML report to explain — the one your failing run
+    /// wrote. Unlike `sooth run --junit`, an older file is fine here: explain
+    /// reads a report, it does not observe a run.
+    #[arg(long, value_name = "PATH", required = true)]
+    pub junit: PathBuf,
+
+    /// Emit machine-readable JSON instead of the human report (no wrapped
+    /// command shares this stdout, so the whole output is the JSON).
+    #[arg(long)]
+    pub json: bool,
+
+    /// When to color the report: auto respects `NO_COLOR` and whether stdout
+    /// is a terminal.
+    #[arg(long, value_enum, default_value = "auto")]
+    pub color: ColorChoice,
 }
 
 /// Arguments for `sooth run`.
@@ -117,8 +141,10 @@ mod tests {
 
     fn parse_run_args(cmdline: &[&str]) -> super::RunArgs {
         let parsed = Cli::try_parse_from(cmdline).unwrap();
-        let Command::Run(args) = parsed.command;
-        args
+        match parsed.command {
+            Command::Run(args) => args,
+            Command::Explain(_) => panic!("expected `run`, got `explain`"),
+        }
     }
 
     #[test]
@@ -204,13 +230,27 @@ mod tests {
 
     #[test]
     fn parses_the_junit_path() {
-        let parsed =
-            Cli::try_parse_from(["sooth", "run", "--junit", "target/report.xml", "--", "true"])
-                .unwrap();
-        let Command::Run(args) = parsed.command;
+        let args = parse_run_args(&["sooth", "run", "--junit", "target/report.xml", "--", "true"]);
         assert_eq!(
             args.junit,
             Some(std::path::PathBuf::from("target/report.xml"))
         );
+    }
+
+    #[test]
+    fn explain_takes_a_report_and_runs_no_command() {
+        let parsed =
+            Cli::try_parse_from(["sooth", "explain", "--junit", "report.xml", "--json"]).unwrap();
+        let Command::Explain(args) = parsed.command else {
+            panic!("expected `explain`");
+        };
+        assert_eq!(args.junit, std::path::PathBuf::from("report.xml"));
+        assert!(args.json);
+        assert_eq!(args.color, ColorChoice::Auto);
+    }
+
+    #[test]
+    fn explain_requires_a_report() {
+        assert!(Cli::try_parse_from(["sooth", "explain"]).is_err());
     }
 }

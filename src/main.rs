@@ -20,7 +20,7 @@ use std::process::ExitCode;
 use clap::Parser;
 
 use crate::cli::{Cli, Command};
-use crate::report::JunitSummary;
+use crate::report::{Analyses, JunitSummary};
 
 /// Exit code for "sooth itself failed", as opposed to "the tests failed" (1).
 const EXIT_SOOTH_ERROR: u8 = 2;
@@ -33,6 +33,7 @@ fn main() -> ExitCode {
     let parsed = Cli::parse();
     match parsed.command {
         Command::Run(args) => run(&args),
+        Command::Explain(args) => explain(&args),
     }
 }
 
@@ -104,18 +105,29 @@ fn run(args: &cli::RunArgs) -> ExitCode {
     } else {
         None
     };
-    let history_analysis = record_history(args, &reports);
+    let history_pass = record_history(args, &reports);
+    let history_analysis = history_pass.as_ref().map(|pass| &pass.analysis);
     // The raw command: inject_selected re-injects the report flags itself.
     let verify_verdict = verify_failures(args, &args.command, reports.last());
 
     let suite_red = suite_failed(&outcomes, &reports);
-    let pardoned = pardoned_failures(args, suite_red, &outcomes, &reports);
+    // Read once, used twice, and only when something failed: the list labels
+    // known flakes always, but steers the exit only behind --fail-on-flaky.
+    let quarantine = if suite_red {
+        quarantine::load_or_empty(std::path::Path::new(quarantine::FILE_NAME))
+    } else {
+        std::collections::BTreeSet::new()
+    };
+    let explanation = explain_failures(suite_red, &reports, history_analysis, &quarantine);
+    let pardoned = pardoned_failures(args, suite_red, &quarantine, &outcomes, &reports);
     let failed = suite_red && pardoned.is_none();
     let analyses = Analyses {
         flaky: flaky_analysis.as_ref(),
-        history: history_analysis.as_ref(),
+        history: history_analysis,
+        history_observations: history_pass.as_ref().map(|pass| pass.observations),
         verify: verify_verdict.as_ref(),
         pardoned: pardoned.as_deref(),
+        explanation: explanation.as_deref(),
     };
     // The worst run's count, over all reports: the mismatch note and the
     // verdict must not claim "0 failing" because the *last* run was green.
@@ -171,15 +183,6 @@ fn prepared_command(
     }
 }
 
-/// The cross-run analyses, when they ran: the active pass (`--runs N`) and
-/// the passive one (the accumulated history).
-struct Analyses<'a> {
-    flaky: Option<&'a analyzers::flaky::Analysis>,
-    history: Option<&'a analyzers::history::Analysis>,
-    verify: Option<&'a verify::Verdict>,
-    pardoned: Option<&'a [String]>,
-}
-
 /// The failures pardoned by the quarantine file: `Some` — and the run exits
 /// 0 — only when `--fail-on-flaky` is set, the suite failed, and every
 /// failure in every run's report is quarantined. A failed run its report
@@ -187,14 +190,41 @@ struct Analyses<'a> {
 fn pardoned_failures(
     args: &cli::RunArgs,
     suite_red: bool,
+    quarantine: &std::collections::BTreeSet<String>,
     outcomes: &[runner::RunOutcome],
     reports: &[junit::JunitReport],
 ) -> Option<Vec<String>> {
     if !args.fail_on_flaky || !suite_red {
         return None;
     }
-    let quarantine = quarantine::load_or_empty(std::path::Path::new(quarantine::FILE_NAME));
-    quarantine_pardon(&quarantine, outcomes, reports)
+    quarantine_pardon(quarantine, outcomes, reports)
+}
+
+/// Label a failing run's failures with what sooth already knew about them.
+/// Every red run gets it: "is any of this new" is the question a red build
+/// actually asks, and answering it costs no extra run. A red run without a
+/// report leaves nothing to label — sooth does not guess which test failed.
+fn explain_failures(
+    suite_red: bool,
+    reports: &[junit::JunitReport],
+    history: Option<&analyzers::history::Analysis>,
+    quarantine: &std::collections::BTreeSet<String>,
+) -> Option<Vec<analyzers::explain::Explanation>> {
+    if !suite_red {
+        return None;
+    }
+    // Every run's failures, not just the last: a failure in run 1 is not
+    // forgiven by a green run 2, so it must not vanish from the diagnosis.
+    let failed: Vec<String> = reports
+        .iter()
+        .flat_map(verify::failed_ids)
+        .collect::<std::collections::BTreeSet<String>>()
+        .into_iter()
+        .collect();
+    if failed.is_empty() {
+        return None;
+    }
+    Some(analyzers::explain::explain(&failed, history, quarantine))
 }
 
 /// The pardon decision itself: all-or-nothing over every run.
@@ -300,13 +330,18 @@ fn verify_failures(
     Some(verify::classify(&ids, &verify_reports))
 }
 
+/// What the passive layer produced for this run: the classification, plus
+/// how many observations backed it — an empty history is why every failure
+/// would read as new.
+struct HistoryPass {
+    analysis: analyzers::history::Analysis,
+    observations: usize,
+}
+
 /// Record this invocation's runs into the local history and classify the
 /// accumulated observations. Every failure degrades to a stderr warning:
 /// the passive layer must never change the run's outcome.
-fn record_history(
-    args: &cli::RunArgs,
-    reports: &[junit::JunitReport],
-) -> Option<analyzers::history::Analysis> {
+fn record_history(args: &cli::RunArgs, reports: &[junit::JunitReport]) -> Option<HistoryPass> {
     if args.no_history || reports.is_empty() {
         return None;
     }
@@ -332,6 +367,15 @@ fn record_history(
         );
         return None;
     }
+    let loaded = load_history(path);
+    Some(HistoryPass {
+        analysis: analyzers::history::analyze(&loaded.observations),
+        observations: loaded.observations.len(),
+    })
+}
+
+/// Load the history file, warning once about lines it could not read.
+fn load_history(path: &std::path::Path) -> history::Loaded {
     let loaded = history::load(path);
     if loaded.skipped_lines > 0 {
         eprintln!(
@@ -340,7 +384,48 @@ fn record_history(
             path.display()
         );
     }
-    Some(analyzers::history::analyze(&loaded.observations))
+    loaded
+}
+
+/// Handle `sooth explain`: read a JUnit-XML report and label every failure
+/// in it against the accumulated evidence. It runs nothing, records nothing,
+/// and never steers an exit code — the diagnosis is the whole product. Exit
+/// 0 when the report could be read, 2 when it could not.
+fn explain(args: &cli::ExplainArgs) -> ExitCode {
+    let style = report::Style::resolved(args.color);
+    let report = match load_report(&args.junit, None) {
+        Ok(report) => report,
+        Err(message) => {
+            eprintln!("sooth: {message}");
+            return ExitCode::from(EXIT_SOOTH_ERROR);
+        }
+    };
+    let loaded = load_history(std::path::Path::new(history::HISTORY_PATH));
+    let analysis = analyzers::history::analyze(&loaded.observations);
+    let quarantine = quarantine::load_or_empty(std::path::Path::new(quarantine::FILE_NAME));
+    let explanations =
+        analyzers::explain::explain(&verify::failed_ids(&report), Some(&analysis), &quarantine);
+
+    if args.json {
+        println!("{}", report::explanation_json(&args.junit, &explanations));
+        return ExitCode::SUCCESS;
+    }
+    if explanations.is_empty() {
+        println!(
+            "no failures in `{}` — nothing to explain",
+            args.junit.display()
+        );
+        return ExitCode::SUCCESS;
+    }
+    report::print_explanation(
+        &Analyses {
+            explanation: Some(&explanations),
+            history_observations: Some(loaded.observations.len()),
+            ..Analyses::default()
+        },
+        style,
+    );
+    ExitCode::SUCCESS
 }
 
 /// Print the run's output in the shape the flags ask for. Returns an exit
@@ -359,17 +444,9 @@ fn emit_output(
         // Bare --json: sooth's own stdout output is exactly one line of
         // JSON, printed after the wrapped command finished (last-line
         // contract — the child's output still shares the stream).
-        (Some(summary), Some(None)) => println!(
-            "{}",
-            report::to_json(
-                outcomes,
-                summary,
-                analyses.flaky,
-                analyses.history,
-                analyses.verify,
-                analyses.pardoned
-            )
-        ),
+        (Some(summary), Some(None)) => {
+            println!("{}", report::to_json(outcomes, summary, analyses));
+        }
         // --json=PATH: the machine output goes to a file, the human report
         // stays on stdout.
         (Some(summary), Some(Some(path))) => {
@@ -377,16 +454,10 @@ fn emit_output(
             report::print_summary(summary, style);
             report::print_flaky(analyses.flaky, style);
             report::print_history(analyses.history, style);
+            report::print_explanation(analyses, style);
             report::print_verification(analyses.verify, style);
             report::print_pardoned(analyses.pardoned, style);
-            let json = report::to_json(
-                outcomes,
-                summary,
-                analyses.flaky,
-                analyses.history,
-                analyses.verify,
-                analyses.pardoned,
-            );
+            let json = report::to_json(outcomes, summary, analyses);
             if let Err(err) = std::fs::write(path, json + "\n") {
                 eprintln!(
                     "sooth: failed to write JSON report `{}`: {err}",
@@ -411,6 +482,7 @@ fn emit_output(
             report::print_summary(summary, style);
             report::print_flaky(analyses.flaky, style);
             report::print_history(analyses.history, style);
+            report::print_explanation(analyses, style);
             report::print_verification(analyses.verify, style);
             report::print_pardoned(analyses.pardoned, style);
             println!(
@@ -646,7 +718,9 @@ mod tests {
 
     fn parse_run_args(cmdline: &[&str]) -> crate::cli::RunArgs {
         let parsed = Cli::try_parse_from(cmdline).unwrap();
-        let Command::Run(args) = parsed.command;
+        let Command::Run(args) = parsed.command else {
+            panic!("expected `run`, got `explain`");
+        };
         args
     }
 

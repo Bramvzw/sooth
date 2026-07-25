@@ -3,7 +3,7 @@
 use std::fmt::Write as _;
 use std::time::Duration;
 
-use crate::analyzers::{flaky, history};
+use crate::analyzers::{explain, flaky, history};
 use crate::cli::ColorChoice;
 use crate::junit;
 use crate::runner::RunOutcome;
@@ -276,7 +276,7 @@ pub fn print_history(analysis: Option<&history::Analysis>, style: Style) {
     if !analysis.failing_since.is_empty() {
         println!("{}", style.red("failing since a commit boundary:"));
         for test in &analysis.failing_since {
-            let short = &test.commit[..test.commit.len().min(7)];
+            let short = short_commit(&test.commit);
             println!(
                 "  - {} {}",
                 test.id,
@@ -324,6 +324,107 @@ pub fn print_verification(verdict: Option<&verify::Verdict>, style: Style) {
     }
 }
 
+/// The run's failures, each labeled with what sooth already knew about it.
+/// The headline answers the question a red build actually asks — is any of
+/// this new? — and the per-failure lines carry the evidence behind it.
+pub fn print_explanation(analyses: &Analyses<'_>, style: Style) {
+    let Some(explanations) = analyses.explanation else {
+        return;
+    };
+    if explanations.is_empty() {
+        return;
+    }
+    let counts = explain::Counts::of(explanations);
+    let headline = explanation_headline(&counts);
+    println!(
+        "{}",
+        if counts.only_known_flakes() {
+            style.yellow(&headline)
+        } else {
+            style.bold_red(&headline)
+        }
+    );
+    for explanation in explanations {
+        let detail = match &explanation.verdict {
+            explain::Verdict::KnownFlake {
+                failed_runs,
+                observed_runs,
+            } => style.yellow(&format!(
+                "known flake (failed {failed_runs} of {observed_runs} observed runs, {}%)",
+                flaky::failure_rate_percent(*failed_runs, *observed_runs)
+            )),
+            explain::Verdict::FailingSince {
+                commit,
+                failed_runs,
+            } => style.red(&format!(
+                "failing since {} (the last {failed_runs} observed runs)",
+                short_commit(commit)
+            )),
+            explain::Verdict::Unknown if explanation.quarantined => style.yellow(&format!(
+                "quarantined (listed in {})",
+                crate::quarantine::FILE_NAME
+            )),
+            explain::Verdict::Unknown => style.bold_red("new (the history holds no evidence)"),
+        };
+        // Only where the label adds something: a quarantined-only failure
+        // already says so in its verdict.
+        let listed = if explanation.quarantined && explanation.verdict != explain::Verdict::Unknown
+        {
+            style.dim(", quarantined")
+        } else {
+            String::new()
+        };
+        println!("  - {} — {detail}{listed}", explanation.id);
+    }
+    print_history_gap(analyses.history_observations, style);
+}
+
+/// `3 failures — 1 known flake, 2 new`, or the sentence a red build hopes
+/// for when nothing in it is new.
+fn explanation_headline(counts: &explain::Counts) -> String {
+    let failures = count(counts.total(), "failure");
+    if counts.only_known_flakes() {
+        return format!("{failures} — all known flakes, nothing new");
+    }
+    let parts: Vec<String> = [
+        (counts.known_flakes, "known flake", "known flakes"),
+        (counts.failing_since, "regression", "regressions"),
+        (counts.quarantined, "quarantined", "quarantined"),
+        (counts.new, "new", "new"),
+    ]
+    .iter()
+    .filter(|(amount, _, _)| *amount > 0)
+    .map(|(amount, singular, plural)| {
+        let noun = if *amount == 1 { singular } else { plural };
+        format!("{amount} {noun}")
+    })
+    .collect();
+    format!("{failures} — {}", parts.join(", "))
+}
+
+/// The short form of a commit, as git itself abbreviates it.
+fn short_commit(commit: &str) -> &str {
+    &commit[..commit.len().min(7)]
+}
+
+/// The note that keeps a bare "new" honest: with no history there is no
+/// evidence, and absence of evidence is not evidence of novelty. `None`
+/// observations means the history was not consulted at all.
+fn print_history_gap(observations: Option<usize>, style: Style) {
+    let note = match observations {
+        None => {
+            "the run history was not consulted: failures are labeled from the \
+             quarantine list alone"
+        }
+        Some(0) => {
+            "the run history is empty: every failure reads as new until observations \
+             accumulate"
+        }
+        Some(_) => return,
+    };
+    println!("{}", style.dim(&format!("note: {note}")));
+}
+
 /// The failures `--fail-on-flaky` pardoned via the quarantine file.
 pub fn print_pardoned(pardoned: Option<&[String]>, style: Style) {
     let Some(pardoned) = pardoned else { return };
@@ -358,18 +459,38 @@ fn count(amount: usize, noun: &str) -> String {
     }
 }
 
+/// The passes that ran on top of the plain run report, travelling as one
+/// value: every one of them is optional, and the printer and the serializer
+/// must agree on which ran.
+#[derive(Default)]
+pub struct Analyses<'a> {
+    /// The active pass (`--runs N`).
+    pub flaky: Option<&'a flaky::Analysis>,
+    /// The passive pass (the accumulated history).
+    pub history: Option<&'a history::Analysis>,
+    /// How many observations backed the history pass; `None` when it did not
+    /// run at all, which is not the same as an empty history.
+    pub history_observations: Option<usize>,
+    pub verify: Option<&'a verify::Verdict>,
+    pub pardoned: Option<&'a [String]>,
+    /// This run's failures, labeled against the accumulated evidence.
+    pub explanation: Option<&'a [explain::Explanation]>,
+}
+
 /// Hand-rolled JSON: the run outcomes plus the junit summary, versioned via
 /// `schema_version`. Revisited when this story landed and deliberately kept
 /// hand-rolled: the shape is still small and fixed, so `serde_json` is still
 /// not worth a second dependency — see `DECISIONS.md`.
-pub fn to_json(
-    outcomes: &[RunOutcome],
-    summary: &JunitSummary,
-    flaky: Option<&flaky::Analysis>,
-    history: Option<&history::Analysis>,
-    verify: Option<&verify::Verdict>,
-    pardoned: Option<&[String]>,
-) -> String {
+pub fn to_json(outcomes: &[RunOutcome], summary: &JunitSummary, analyses: &Analyses<'_>) -> String {
+    let Analyses {
+        flaky,
+        history,
+        verify,
+        pardoned,
+        explanation,
+        // Context for the human note only; the JSON carries the counts.
+        history_observations: _,
+    } = *analyses;
     let runs: Vec<String> = outcomes
         .iter()
         .map(|outcome| {
@@ -398,39 +519,17 @@ pub fn to_json(
 
     // Additive within schema_version 1: the flaky/broken fields appear only
     // when a multi-run analysis ran.
-    let analysis = flaky.map_or(String::new(), |analysis| {
-        let entry = |test: &flaky::TestOutcomes| {
-            format!(
-                r#"{{"name":"{}","failed_runs":{},"observed_runs":{}}}"#,
-                json_escape(&test.id),
-                test.failed,
-                test.observed()
-            )
-        };
-        let flaky_entries: Vec<String> = analysis.flaky.iter().map(entry).collect();
-        let broken_entries: Vec<String> = analysis.broken.iter().map(entry).collect();
+    let active = flaky.map_or(String::new(), |pass| {
         format!(
             r#","flaky":[{}],"broken":[{}]"#,
-            flaky_entries.join(","),
-            broken_entries.join(",")
+            outcome_entries(&pass.flaky),
+            outcome_entries(&pass.broken)
         )
     });
 
     // Additive within schema_version 1: present whenever the history pass ran.
-    let history = history.map_or(String::new(), |analysis| {
-        let flaky_entries: Vec<String> = analysis
-            .flaky
-            .iter()
-            .map(|test| {
-                format!(
-                    r#"{{"name":"{}","failed_runs":{},"observed_runs":{}}}"#,
-                    json_escape(&test.id),
-                    test.failed,
-                    test.observed()
-                )
-            })
-            .collect();
-        let since_entries: Vec<String> = analysis
+    let history = history.map_or(String::new(), |pass| {
+        let since_entries: Vec<String> = pass
             .failing_since
             .iter()
             .map(|test| {
@@ -444,7 +543,7 @@ pub fn to_json(
             .collect();
         format!(
             r#","history":{{"flaky":[{}],"failing_since":[{}]}}"#,
-            flaky_entries.join(","),
+            outcome_entries(&pass.flaky),
             since_entries.join(",")
         )
     });
@@ -462,8 +561,12 @@ pub fn to_json(
         format!(r#","quarantine":{{"pardoned":[{}]}}"#, json_ids(ids))
     });
 
+    let explanation = explanation.map_or(String::new(), |explanations| {
+        format!(r#","explanation":{}"#, explanation_object(explanations))
+    });
+
     format!(
-        r#"{{"schema_version":{JSON_SCHEMA_VERSION},"sooth_version":"{}","runs":[{}],"junit":{{"total":{},"passed":{},"failed":{},"errors":{},"skipped":{},"slowest":[{}]}}{analysis}{history}{verification}{quarantine}}}"#,
+        r#"{{"schema_version":{JSON_SCHEMA_VERSION},"sooth_version":"{}","runs":[{}],"junit":{{"total":{},"passed":{},"failed":{},"errors":{},"skipped":{},"slowest":[{}]}}{active}{history}{verification}{quarantine}{explanation}}}"#,
         env!("CARGO_PKG_VERSION"),
         runs.join(","),
         summary.total,
@@ -473,6 +576,82 @@ pub fn to_json(
         summary.skipped,
         slowest.join(","),
     )
+}
+
+/// The whole machine output of `sooth explain`: no runs and no totals, since
+/// explain observes no run — just the report it read and what it made of the
+/// failures in it.
+pub fn explanation_json(
+    report_path: &std::path::Path,
+    explanations: &[explain::Explanation],
+) -> String {
+    format!(
+        r#"{{"schema_version":{JSON_SCHEMA_VERSION},"sooth_version":"{}","report":"{}","explanation":{}}}"#,
+        env!("CARGO_PKG_VERSION"),
+        json_escape(&report_path.display().to_string()),
+        explanation_object(explanations)
+    )
+}
+
+/// The explanation object both output shapes share. `verdict` names the
+/// category the failure was counted in; `quarantined` is the separate fact
+/// that the team already listed it.
+fn explanation_object(explanations: &[explain::Explanation]) -> String {
+    let entries: Vec<String> = explanations
+        .iter()
+        .map(|explanation| {
+            let name = json_escape(&explanation.id);
+            let quarantined = explanation.quarantined;
+            match &explanation.verdict {
+                explain::Verdict::KnownFlake {
+                    failed_runs,
+                    observed_runs,
+                } => format!(
+                    r#"{{"name":"{name}","verdict":"known_flake","quarantined":{quarantined},"failed_runs":{failed_runs},"observed_runs":{observed_runs}}}"#
+                ),
+                explain::Verdict::FailingSince {
+                    commit,
+                    failed_runs,
+                } => format!(
+                    r#"{{"name":"{name}","verdict":"failing_since","quarantined":{quarantined},"commit":"{}","failed_runs":{failed_runs}}}"#,
+                    json_escape(commit)
+                ),
+                explain::Verdict::Unknown => {
+                    let verdict = if quarantined { "quarantined" } else { "new" };
+                    format!(
+                        r#"{{"name":"{name}","verdict":"{verdict}","quarantined":{quarantined}}}"#
+                    )
+                }
+            }
+        })
+        .collect();
+    let counts = explain::Counts::of(explanations);
+    format!(
+        r#"{{"failures":[{}],"counts":{{"known_flakes":{},"failing_since":{},"quarantined":{},"new":{}}},"only_known_flakes":{}}}"#,
+        entries.join(","),
+        counts.known_flakes,
+        counts.failing_since,
+        counts.quarantined,
+        counts.new,
+        counts.only_known_flakes()
+    )
+}
+
+/// A comma-joined JSON array body of per-test outcome counts — the shape
+/// both the active and the passive flaky ranking serialize to.
+fn outcome_entries(tests: &[flaky::TestOutcomes]) -> String {
+    tests
+        .iter()
+        .map(|test| {
+            format!(
+                r#"{{"name":"{}","failed_runs":{},"observed_runs":{}}}"#,
+                json_escape(&test.id),
+                test.failed,
+                test.observed()
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(",")
 }
 
 /// A comma-joined JSON array body of escaped id strings.
@@ -505,7 +684,8 @@ pub(crate) fn json_escape(value: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{json_escape, to_json, verdict_line, JunitSummary, Style};
+    use super::{json_escape, to_json, verdict_line, Analyses, JunitSummary, Style};
+    use crate::analyzers::explain;
     use crate::cli::ColorChoice;
     use crate::junit::{JunitReport, TestCase, TestStatus};
     use crate::runner::RunOutcome;
@@ -593,7 +773,7 @@ mod tests {
 
         // The qualified name deliberately rides into the frozen JSON
         // `name` field.
-        let json = to_json(&[outcome(true)], &summary, None, None, None, None);
+        let json = to_json(&[outcome(true)], &summary, &Analyses::default());
         assert!(json.contains(r#""name":"Modules.Order.OrderTest::test_create""#));
     }
 
@@ -635,7 +815,7 @@ mod tests {
             },
             10,
         );
-        let json = to_json(&[outcome(true)], &summary, None, None, None, None);
+        let json = to_json(&[outcome(true)], &summary, &Analyses::default());
 
         assert!(json.starts_with(r#"{"schema_version":1,"#));
         assert!(json.contains(&format!(
@@ -648,6 +828,110 @@ mod tests {
         // count is plural and the human output says "errors".
         assert!(json.contains(r#""errors":0"#));
         assert!(json.contains(r#""name":"a""#));
+    }
+
+    #[test]
+    fn the_explanation_headline_names_every_non_empty_category() {
+        let counts = explain::Counts {
+            known_flakes: 2,
+            failing_since: 1,
+            quarantined: 0,
+            new: 1,
+        };
+        assert_eq!(
+            super::explanation_headline(&counts),
+            "4 failures — 2 known flakes, 1 regression, 1 new"
+        );
+    }
+
+    #[test]
+    fn a_run_with_nothing_new_says_so_in_one_sentence() {
+        let counts = explain::Counts {
+            known_flakes: 1,
+            failing_since: 0,
+            quarantined: 1,
+            new: 0,
+        };
+        assert_eq!(
+            super::explanation_headline(&counts),
+            "2 failures — all known flakes, nothing new"
+        );
+    }
+
+    #[test]
+    fn a_regression_is_never_folded_into_nothing_new() {
+        let counts = explain::Counts {
+            known_flakes: 0,
+            failing_since: 1,
+            quarantined: 0,
+            new: 0,
+        };
+        assert_eq!(
+            super::explanation_headline(&counts),
+            "1 failure — 1 regression"
+        );
+    }
+
+    #[test]
+    fn the_explanation_json_carries_the_verdict_the_counts_and_the_report() {
+        let explanations = [
+            explain::Explanation {
+                id: "c::wobbly".to_owned(),
+                verdict: explain::Verdict::KnownFlake {
+                    failed_runs: 4,
+                    observed_runs: 50,
+                },
+                quarantined: true,
+            },
+            explain::Explanation {
+                id: "c::fresh".to_owned(),
+                verdict: explain::Verdict::Unknown,
+                quarantined: false,
+            },
+        ];
+        let json = super::explanation_json(std::path::Path::new("out/report.xml"), &explanations);
+
+        assert!(json.starts_with(r#"{"schema_version":1,"#));
+        assert!(json.contains(r#""report":"out/report.xml""#));
+        assert!(json.contains(
+            r#"{"name":"c::wobbly","verdict":"known_flake","quarantined":true,"failed_runs":4,"observed_runs":50}"#
+        ));
+        assert!(json.contains(r#"{"name":"c::fresh","verdict":"new","quarantined":false}"#));
+        assert!(json
+            .contains(r#""counts":{"known_flakes":1,"failing_since":0,"quarantined":0,"new":1}"#));
+        assert!(json.contains(r#""only_known_flakes":false"#));
+    }
+
+    #[test]
+    fn the_run_json_gains_the_explanation_only_when_the_pass_ran() {
+        let summary = JunitSummary::from_report(
+            &JunitReport {
+                test_cases: vec![test_case("a", TestStatus::Failed, 0.25)],
+            },
+            0,
+        );
+        assert!(!to_json(&[outcome(false)], &summary, &Analyses::default())
+            .contains(r#""explanation""#));
+
+        let explanations = [explain::Explanation {
+            id: "a".to_owned(),
+            verdict: explain::Verdict::FailingSince {
+                commit: "abc1234".to_owned(),
+                failed_runs: 3,
+            },
+            quarantined: false,
+        }];
+        let json = to_json(
+            &[outcome(false)],
+            &summary,
+            &Analyses {
+                explanation: Some(&explanations),
+                ..Analyses::default()
+            },
+        );
+        assert!(json.contains(
+            r#""explanation":{"failures":[{"name":"a","verdict":"failing_since","quarantined":false,"commit":"abc1234","failed_runs":3}]"#
+        ));
     }
 
     #[test]

@@ -60,6 +60,34 @@ whenever you like, it is yours. In CI, cache `.sooth/` between runs (or pass
 it as an artifact) and twenty pipeline runs a day become twenty observations
 a day.
 
+## Explain a red run
+
+The daily pain is not finding flakes, it is being blocked by them. Every
+failing run therefore closes with each failure labeled against what sooth
+already knows:
+
+```
+2 failures — all known flakes, nothing new
+  - App.OrderTest::test_ships — known flake (failed 3 of 10 observed runs, 30%)
+  - App.MailTest::test_send — quarantined (listed in .sooth-quarantine)
+```
+
+The labels are `known flake` (proven by the history), `failing since
+<commit>` (a regression — known, but real, so it never counts as "nothing
+new"), `quarantined`, and `new`. The verdict and exit code do not change:
+sooth explains failures, it never absorbs them.
+
+For a report you already have — a CI artifact, a run someone else made —
+`sooth explain` does the same thing without running anything:
+
+```bash
+sooth explain --junit report.xml
+sooth explain --junit report.xml --json | jq .explanation.counts
+```
+
+It reads the history and the quarantine list, writes nothing, and exits 0
+whenever it could read the report (2 when it could not).
+
 ## Verify failures
 
 `--verify` removes the `--runs N` cost from daily use. When a run fails,
@@ -95,7 +123,8 @@ The run exits 0 only when *every* failure is on the list — the pardoned
 failures are still printed, and the verdict says exactly what happened
 (`result: PASSED — only quarantined flakes failed (2 tests pardoned)`).
 Any new failure, new flakiness, or a failed run the report cannot explain
-still fails the build. Without the flag the file changes nothing.
+still fails the build. Without the flag the list still labels its entries as
+known (see above), but it pardons nothing and steers no exit code.
 
 ## Status
 
