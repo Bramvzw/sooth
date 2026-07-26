@@ -248,18 +248,39 @@ pub fn verdict_line(
 
 /// The history pass's findings: proven flakes over the accumulated
 /// observations, then regression pointers. Prints nothing when there is
-/// nothing to say.
-pub fn print_history(analysis: Option<&history::Analysis>, style: Style) {
-    let Some(analysis) = analysis else { return };
-    if analysis.is_empty() {
+/// nothing to say. Tests that failed this run are left out — the explanation
+/// below carries their history verdict, and printing the same counts twice
+/// buries the run's own news.
+pub fn print_history(analyses: &Analyses<'_>, style: Style) {
+    let Some(pass) = analyses.history else { return };
+    if pass.is_empty() {
         return;
     }
-    if !analysis.flaky.is_empty() {
-        println!(
-            "{}",
-            style.bold_red("flaky per history (mixed outcomes on one commit):")
-        );
-        for (index, test) in analysis.flaky.iter().enumerate() {
+    let explained: std::collections::BTreeSet<&str> = analyses
+        .explanation
+        .unwrap_or_default()
+        .iter()
+        .map(|explanation| explanation.id.as_str())
+        .collect();
+    let flaky: Vec<&flaky::TestOutcomes> = pass
+        .flaky
+        .iter()
+        .filter(|test| !explained.contains(test.id.as_str()))
+        .collect();
+    let failing_since: Vec<&history::FailingSince> = pass
+        .failing_since
+        .iter()
+        .filter(|test| !explained.contains(test.id.as_str()))
+        .collect();
+
+    if !flaky.is_empty() {
+        let heading = if explained.is_empty() {
+            "flaky per history (mixed outcomes on one commit):"
+        } else {
+            "also flaky per history (these did not fail this run):"
+        };
+        println!("{}", style.bold_red(heading));
+        for (index, test) in flaky.iter().enumerate() {
             println!(
                 "  {}. {} {}",
                 index + 1,
@@ -273,9 +294,9 @@ pub fn print_history(analysis: Option<&history::Analysis>, style: Style) {
             );
         }
     }
-    if !analysis.failing_since.is_empty() {
+    if !failing_since.is_empty() {
         println!("{}", style.red("failing since a commit boundary:"));
-        for test in &analysis.failing_since {
+        for test in failing_since {
             let short = short_commit(&test.commit);
             println!(
                 "  - {} {}",
@@ -419,6 +440,19 @@ fn print_history_gap(observations: Option<usize>, style: Style) {
         Some(_) => return,
     };
     println!("{}", style.dim(&format!("note: {note}")));
+}
+
+/// Why a run whose failures are all known still exits 1: the pardon rests on
+/// the committed list, never on sooth's own evidence (see `DECISIONS.md`).
+pub fn print_pardon_gap(style: Style) {
+    println!(
+        "{}",
+        style.yellow(&format!(
+            "note: not every failure above is in {}, so --fail-on-flaky pardoned nothing — \
+             add the ids to pardon them",
+            crate::quarantine::FILE_NAME
+        ))
+    );
 }
 
 /// The failures `--fail-on-flaky` pardoned via the quarantine file.

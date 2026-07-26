@@ -424,6 +424,38 @@ fn explain(args: &cli::ExplainArgs) -> ExitCode {
     ExitCode::SUCCESS
 }
 
+/// The human report's sections, in the one order both output modes use.
+fn print_sections(
+    args: &cli::RunArgs,
+    outcomes: &[runner::RunOutcome],
+    summary: &JunitSummary,
+    analyses: &Analyses<'_>,
+    style: report::Style,
+) {
+    report::print_runs(outcomes, style);
+    report::print_summary(summary, style);
+    report::print_flaky(analyses.flaky, style);
+    report::print_history(analyses, style);
+    report::print_explanation(analyses, style);
+    if pardon_gap(args, analyses) {
+        report::print_pardon_gap(style);
+    }
+    report::print_verification(analyses.verify, style);
+    report::print_pardoned(analyses.pardoned, style);
+}
+
+/// Whether the run failed on nothing but known flakes while the quarantine
+/// pardoned none of them: "nothing new" and exit 1 would otherwise read as a
+/// contradiction.
+fn pardon_gap(args: &cli::RunArgs, analyses: &Analyses<'_>) -> bool {
+    args.fail_on_flaky
+        && analyses.pardoned.is_none()
+        && analyses.explanation.is_some_and(|explanations| {
+            analyzers::explain::Counts::of(explanations).only_known_flakes()
+                && explanations.iter().any(|test| !test.quarantined)
+        })
+}
+
 /// Print the run's output in the shape the flags ask for. Returns an exit
 /// code only when emitting itself failed (the JSON file could not be
 /// written).
@@ -446,13 +478,7 @@ fn emit_output(
         // --json=PATH: the machine output goes to a file, the human report
         // stays on stdout.
         (Some(summary), Some(Some(path))) => {
-            report::print_runs(outcomes, style);
-            report::print_summary(summary, style);
-            report::print_flaky(analyses.flaky, style);
-            report::print_history(analyses.history, style);
-            report::print_explanation(analyses, style);
-            report::print_verification(analyses.verify, style);
-            report::print_pardoned(analyses.pardoned, style);
+            print_sections(args, outcomes, summary, analyses, style);
             let json = report::to_json(outcomes, summary, analyses);
             if let Err(err) = std::fs::write(path, json + "\n") {
                 eprintln!(
@@ -474,13 +500,7 @@ fn emit_output(
             );
         }
         (Some(summary), None) => {
-            report::print_runs(outcomes, style);
-            report::print_summary(summary, style);
-            report::print_flaky(analyses.flaky, style);
-            report::print_history(analyses.history, style);
-            report::print_explanation(analyses, style);
-            report::print_verification(analyses.verify, style);
-            report::print_pardoned(analyses.pardoned, style);
+            print_sections(args, outcomes, summary, analyses, style);
             println!(
                 "{}",
                 verdict(
@@ -695,7 +715,8 @@ fn cleanup_preset_report(path: &std::path::Path) {
 
 #[cfg(test)]
 mod tests {
-    use super::{quarantine_pardon, rejected_flag, suite_failed};
+    use super::{pardon_gap, quarantine_pardon, rejected_flag, suite_failed};
+    use crate::analyzers::explain::{Explanation, Verdict};
     use crate::cli::{Cli, Command};
     use crate::junit::{JunitReport, TestCase, TestStatus};
     use crate::runner::RunOutcome;
@@ -936,6 +957,80 @@ mod tests {
     fn a_pardon_needs_a_report_for_every_run() {
         let quarantine = BTreeSet::from(["case".to_owned()]);
         assert_eq!(quarantine_pardon(&quarantine, &[outcome(false)], &[]), None);
+    }
+
+    fn known_flake(id: &str, quarantined: bool) -> Explanation {
+        Explanation {
+            id: id.to_owned(),
+            verdict: Verdict::KnownFlake {
+                failed_runs: 1,
+                observed_runs: 4,
+            },
+            quarantined,
+        }
+    }
+
+    fn gap_for(cmdline: &[&str], explanations: &[Explanation]) -> bool {
+        pardon_gap(
+            &parse_run_args(cmdline),
+            &crate::report::Analyses {
+                explanation: Some(explanations),
+                ..crate::report::Analyses::default()
+            },
+        )
+    }
+
+    #[test]
+    fn nothing_new_yet_no_pardon_is_explained_not_left_contradictory() {
+        let flagged = [
+            "sooth",
+            "run",
+            "--fail-on-flaky",
+            "--junit",
+            "r.xml",
+            "--",
+            "true",
+        ];
+        assert!(
+            gap_for(&flagged, &[known_flake("c::a", false)]),
+            "an unlisted known flake under --fail-on-flaky needs the note"
+        );
+        assert!(
+            !gap_for(&flagged, &[known_flake("c::a", true)]),
+            "a listed flake was pardoned; there is no gap to explain"
+        );
+        assert!(
+            !gap_for(
+                &["sooth", "run", "--junit", "r.xml", "--", "true"],
+                &[known_flake("c::a", false)]
+            ),
+            "without --fail-on-flaky no pardon was ever asked for"
+        );
+    }
+
+    #[test]
+    fn a_new_failure_needs_no_pardon_note() {
+        // The verdict speaks for itself: something new failed.
+        let explanations = [
+            known_flake("c::a", false),
+            Explanation {
+                id: "c::fresh".to_owned(),
+                verdict: Verdict::Unknown,
+                quarantined: false,
+            },
+        ];
+        assert!(!gap_for(
+            &[
+                "sooth",
+                "run",
+                "--fail-on-flaky",
+                "--junit",
+                "r.xml",
+                "--",
+                "true"
+            ],
+            &explanations
+        ));
     }
 
     #[test]

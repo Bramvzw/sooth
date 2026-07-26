@@ -463,6 +463,16 @@ Consequences that keep it honest:
   absence of evidence read as evidence of novelty.
 - The exit code and the verdict are untouched, as with verification: sooth
   classifies failures, it never absorbs them.
+- Nothing is said twice. A failure carries its history verdict on its own
+  line, so the history section drops it and reports only the flakes that
+  stayed quiet this run. Two sections printing the same counts buries the
+  run's own news under background.
+- "Nothing new" plus exit 1 is a contradiction on its face, and it happens
+  whenever `--fail-on-flaky` meets known flakes that are not on the list.
+  The report resolves it in place — the pardon rests on the committed list,
+  never on sooth's own evidence — and names the file to add the ids to.
+  Letting history evidence pardon instead would turn a build green on a
+  judgement no human reviewed, which is precisely why the list is committed.
 
 `sooth explain --junit <PATH>` is the same pass over a report you already
 have — a CI artifact, a colleague's run, a preset run whose temp report you

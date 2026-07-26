@@ -559,21 +559,36 @@ fn history_accumulates_across_invocations_and_reports_proven_flakes() {
         "an all-green history reported flakes: {stdout:?}"
     );
 
+    // The run this test failed in gets its verdict from the explanation; the
+    // history section would only repeat those counts.
     let second = run(r#"<testcase classname="c" name="wob"><failure/></testcase>"#);
     let stdout = String::from_utf8(second.stdout).expect("stdout should be UTF-8");
     assert_eq!(second.status.code(), Some(1));
+    assert!(
+        !stdout.contains("flaky per history"),
+        "the history section repeated a failure the explanation already covers: {stdout:?}"
+    );
+    assert!(
+        stdout.contains("- c::wob — known flake (failed 1 of 2 observed runs, 50%)"),
+        "got: {stdout:?}"
+    );
+
+    // Green again: nothing failed, so the accumulated verdict is the news.
+    let third = run(r#"<testcase classname="c" name="wob"/>"#);
+    let stdout = String::from_utf8(third.stdout).expect("stdout should be UTF-8");
+    assert_eq!(third.status.code(), Some(0));
     assert!(
         stdout.contains("flaky per history (mixed outcomes on one commit):"),
         "got: {stdout:?}"
     );
     assert!(
-        stdout.contains("c::wob failed 1 of 2 observed runs (50%)"),
+        stdout.contains("c::wob failed 1 of 3 observed runs (33%)"),
         "got: {stdout:?}"
     );
 
     let history = std::fs::read_to_string(dir.join(".sooth/history.jsonl"))
         .expect("history should have been written");
-    assert_eq!(history.lines().count(), 2);
+    assert_eq!(history.lines().count(), 3);
     let _ = std::fs::remove_file(&report);
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -609,8 +624,13 @@ fn a_red_run_labels_its_failures_against_the_accumulated_history() {
             .expect("sooth should run")
     };
 
-    run(r#"<testcase classname="c" name="wob"/>"#);
-    let red = run(r#"<testcase classname="c" name="wob"><failure/></testcase>"#);
+    // Both tests end up proven flaky; only `wob` fails in the second run.
+    run(
+        r#"<testcase classname="c" name="wob"/><testcase classname="c" name="other"><failure/></testcase>"#,
+    );
+    let red = run(
+        r#"<testcase classname="c" name="wob"><failure/></testcase><testcase classname="c" name="other"/>"#,
+    );
     let stdout = String::from_utf8(red.stdout).expect("stdout should be UTF-8");
 
     assert_eq!(
@@ -626,6 +646,12 @@ fn a_red_run_labels_its_failures_against_the_accumulated_history() {
         stdout.contains("- c::wob — known flake (failed 1 of 2 observed runs, 50%)"),
         "got: {stdout:?}"
     );
+    // The other flake did not fail here, so it stays in the history section.
+    assert!(
+        stdout.contains("also flaky per history (these did not fail this run):"),
+        "got: {stdout:?}"
+    );
+    assert!(stdout.contains("c::other"), "got: {stdout:?}");
     let _ = std::fs::remove_file(&report);
     let _ = std::fs::remove_dir_all(&dir);
 }

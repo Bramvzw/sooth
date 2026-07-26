@@ -75,7 +75,9 @@ already knows:
 The labels are `known flake` (proven by the history), `failing since
 <commit>` (a regression — known, but real, so it never counts as "nothing
 new"), `quarantined`, and `new`. The verdict and exit code do not change:
-sooth explains failures, it never absorbs them.
+sooth explains failures, it never absorbs them. If nothing new failed and
+`--fail-on-flaky` still exits 1, the report says why: pardoning needs the
+committed list below, not sooth's own evidence.
 
 For a report you already have — a CI artifact, a run someone else made —
 `sooth explain` does the same thing without running anything:

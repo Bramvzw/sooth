@@ -15,6 +15,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   question a red build asks — `2 failures — all known flakes, nothing new`.
   The `--json` shape gains an additive `explanation` object. The verdict and
   exit code are untouched: sooth explains failures, it never absorbs them.
+  When nothing new failed and `--fail-on-flaky` still exits 1, the report
+  says why — the pardon rests on the committed list, not on sooth's own
+  evidence — and names the file to add the ids to.
 - `sooth explain --junit <PATH>`: the same classification for a report you
   already have, without running anything. It records nothing, always exits 0
   when it could read the report (2 when it could not), and `--json` makes its
@@ -56,6 +59,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The quarantine file is now read on every failing run, not only under
   `--fail-on-flaky`: its entries label failures as known. Exit steering is
   unchanged — without the flag the list still pardons nothing.
+- The history section no longer repeats tests that failed the run being
+  reported: their history verdict rides along with the failure itself. What
+  is left over is headed "also flaky per history (these did not fail this
+  run)" — the flakes that stayed quiet this time.
 - With `--runs N`, the suite verdict now considers every run's report: a
   failure in run 1 is not forgiven by a green run 2.
 - `--junit` freshness is now an observed fact instead of a clock comparison:
