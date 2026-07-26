@@ -325,8 +325,6 @@ pub fn print_verification(verdict: Option<&verify::Verdict>, style: Style) {
 }
 
 /// The run's failures, each labeled with what sooth already knew about it.
-/// The headline answers the question a red build actually asks — is any of
-/// this new? — and the per-failure lines carry the evidence behind it.
 pub fn print_explanation(analyses: &Analyses<'_>, style: Style) {
     let Some(explanations) = analyses.explanation else {
         return;
@@ -366,8 +364,7 @@ pub fn print_explanation(analyses: &Analyses<'_>, style: Style) {
             )),
             explain::Verdict::Unknown => style.bold_red("new (the history holds no evidence)"),
         };
-        // Only where the label adds something: a quarantined-only failure
-        // already says so in its verdict.
+        // A quarantined-only failure already says so in its verdict.
         let listed = if explanation.quarantined && explanation.verdict != explain::Verdict::Unknown
         {
             style.dim(", quarantined")
@@ -379,8 +376,8 @@ pub fn print_explanation(analyses: &Analyses<'_>, style: Style) {
     print_history_gap(analyses.history_observations, style);
 }
 
-/// `3 failures — 1 known flake, 2 new`, or the sentence a red build hopes
-/// for when nothing in it is new.
+/// `3 failures — 1 known flake, 2 new`; the all-clear sentence when nothing
+/// in the run is new.
 fn explanation_headline(counts: &explain::Counts) -> String {
     let failures = count(counts.total(), "failure");
     if counts.only_known_flakes() {
@@ -407,9 +404,8 @@ fn short_commit(commit: &str) -> &str {
     &commit[..commit.len().min(7)]
 }
 
-/// The note that keeps a bare "new" honest: with no history there is no
-/// evidence, and absence of evidence is not evidence of novelty. `None`
-/// observations means the history was not consulted at all.
+/// What a "new" label rests on, when it rests on nothing: `None` is a
+/// history that was not consulted, `Some(0)` an empty one.
 fn print_history_gap(observations: Option<usize>, style: Style) {
     let note = match observations {
         None => {
@@ -459,21 +455,18 @@ fn count(amount: usize, noun: &str) -> String {
     }
 }
 
-/// The passes that ran on top of the plain run report, travelling as one
-/// value: every one of them is optional, and the printer and the serializer
-/// must agree on which ran.
+/// The passes that ran on top of the plain run report. `None` is "this pass
+/// did not run"; the printer and the serializer must agree on that.
 #[derive(Default)]
 pub struct Analyses<'a> {
     /// The active pass (`--runs N`).
     pub flaky: Option<&'a flaky::Analysis>,
     /// The passive pass (the accumulated history).
     pub history: Option<&'a history::Analysis>,
-    /// How many observations backed the history pass; `None` when it did not
-    /// run at all, which is not the same as an empty history.
+    /// How many observations backed the history pass.
     pub history_observations: Option<usize>,
     pub verify: Option<&'a verify::Verdict>,
     pub pardoned: Option<&'a [String]>,
-    /// This run's failures, labeled against the accumulated evidence.
     pub explanation: Option<&'a [explain::Explanation]>,
 }
 
@@ -579,8 +572,7 @@ pub fn to_json(outcomes: &[RunOutcome], summary: &JunitSummary, analyses: &Analy
 }
 
 /// The whole machine output of `sooth explain`: no runs and no totals, since
-/// explain observes no run — just the report it read and what it made of the
-/// failures in it.
+/// explain observes no run.
 pub fn explanation_json(
     report_path: &std::path::Path,
     explanations: &[explain::Explanation],
@@ -594,8 +586,7 @@ pub fn explanation_json(
 }
 
 /// The explanation object both output shapes share. `verdict` names the
-/// category the failure was counted in; `quarantined` is the separate fact
-/// that the team already listed it.
+/// category the failure was counted in, `quarantined` the label beside it.
 fn explanation_object(explanations: &[explain::Explanation]) -> String {
     let entries: Vec<String> = explanations
         .iter()
@@ -637,8 +628,8 @@ fn explanation_object(explanations: &[explain::Explanation]) -> String {
     )
 }
 
-/// A comma-joined JSON array body of per-test outcome counts — the shape
-/// both the active and the passive flaky ranking serialize to.
+/// A comma-joined JSON array body of per-test outcome counts: the shape both
+/// flaky rankings serialize to.
 fn outcome_entries(tests: &[flaky::TestOutcomes]) -> String {
     tests
         .iter()

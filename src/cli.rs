@@ -27,13 +27,12 @@ pub enum Command {
 #[derive(Debug, Args)]
 pub struct ExplainArgs {
     /// Path to the JUnit-XML report to explain — the one your failing run
-    /// wrote. Unlike `sooth run --junit`, an older file is fine here: explain
-    /// reads a report, it does not observe a run.
+    /// wrote. An older file is fine here, unlike `sooth run --junit`.
     #[arg(long, value_name = "PATH", required = true)]
     pub junit: PathBuf,
 
-    /// Emit machine-readable JSON instead of the human report (no wrapped
-    /// command shares this stdout, so the whole output is the JSON).
+    /// Emit machine-readable JSON instead of the human report (the whole
+    /// output, since no wrapped command shares this stdout).
     #[arg(long)]
     pub json: bool,
 

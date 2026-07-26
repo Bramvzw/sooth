@@ -635,8 +635,8 @@ fn explain_classifies_a_report_without_running_or_recording_anything() {
     let Some(dir) = scratch_repo("explain-cmd") else {
         return;
     };
-    // Outside the repo: an untracked report would make every run dirty, and
-    // a dirty run is never evidence.
+    // Outside the repo: an untracked report makes every run dirty, and a
+    // dirty run is never evidence.
     let report = std::env::temp_dir().join(format!(
         "sooth-contract-explain-cmd-{}.xml",
         std::process::id()

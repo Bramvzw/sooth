@@ -111,8 +111,8 @@ fn run(args: &cli::RunArgs) -> ExitCode {
     let verify_verdict = verify_failures(args, &args.command, reports.last());
 
     let suite_red = suite_failed(&outcomes, &reports);
-    // Read once, used twice, and only when something failed: the list labels
-    // known flakes always, but steers the exit only behind --fail-on-flaky.
+    // The list labels known flakes on any red run; only --fail-on-flaky
+    // lets it steer the exit.
     let quarantine = if suite_red {
         quarantine::load_or_empty(std::path::Path::new(quarantine::FILE_NAME))
     } else {
@@ -201,9 +201,8 @@ fn pardoned_failures(
 }
 
 /// Label a failing run's failures with what sooth already knew about them.
-/// Every red run gets it: "is any of this new" is the question a red build
-/// actually asks, and answering it costs no extra run. A red run without a
-/// report leaves nothing to label — sooth does not guess which test failed.
+/// A red run without a report leaves nothing to label: sooth does not guess
+/// which test failed.
 fn explain_failures(
     suite_red: bool,
     reports: &[junit::JunitReport],
@@ -213,8 +212,7 @@ fn explain_failures(
     if !suite_red {
         return None;
     }
-    // Every run's failures, not just the last: a failure in run 1 is not
-    // forgiven by a green run 2, so it must not vanish from the diagnosis.
+    // Every run's failures: run 1's are not forgiven by a green run 2.
     let failed: Vec<String> = reports
         .iter()
         .flat_map(verify::failed_ids)
@@ -331,8 +329,7 @@ fn verify_failures(
 }
 
 /// What the passive layer produced for this run: the classification, plus
-/// how many observations backed it — an empty history is why every failure
-/// would read as new.
+/// how many observations backed it.
 struct HistoryPass {
     analysis: analyzers::history::Analysis,
     observations: usize,
@@ -387,10 +384,9 @@ fn load_history(path: &std::path::Path) -> history::Loaded {
     loaded
 }
 
-/// Handle `sooth explain`: read a JUnit-XML report and label every failure
-/// in it against the accumulated evidence. It runs nothing, records nothing,
-/// and never steers an exit code — the diagnosis is the whole product. Exit
-/// 0 when the report could be read, 2 when it could not.
+/// Handle `sooth explain`: label every failure in a JUnit-XML report against
+/// the accumulated evidence. Runs nothing, records nothing (see
+/// `DECISIONS.md`); exits 0 when the report could be read, 2 when it could not.
 fn explain(args: &cli::ExplainArgs) -> ExitCode {
     let style = report::Style::resolved(args.color);
     let report = match load_report(&args.junit, None) {

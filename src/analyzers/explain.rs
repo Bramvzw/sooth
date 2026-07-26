@@ -1,7 +1,5 @@
-//! Classification of a red run's failures against what sooth already knows:
-//! the accumulated history and the committed quarantine list (see
-//! `DECISIONS.md`). This pass runs no tests and draws no new conclusions —
-//! it only looks up each failure in the evidence that already exists.
+//! Classification of a red run's failures against the evidence sooth already
+//! has: the accumulated history and the quarantine list (see `DECISIONS.md`).
 
 use std::collections::BTreeSet;
 
@@ -10,14 +8,14 @@ use crate::analyzers::history::Analysis as HistoryAnalysis;
 /// What the accumulated evidence says about one failure.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Verdict {
-    /// Proven flaky by the history: mixed outcomes on one clean commit.
     KnownFlake {
         failed_runs: usize,
         observed_runs: usize,
     },
-    /// A regression pointer from the history — known, but never a flake.
-    FailingSince { commit: String, failed_runs: usize },
-    /// The history holds no proof either way about this failure.
+    FailingSince {
+        commit: String,
+        failed_runs: usize,
+    },
     Unknown,
 }
 
@@ -27,13 +25,11 @@ pub struct Explanation {
     /// The test's identity (`classname::name`, see `TestCase::qualified_name`).
     pub id: String,
     pub verdict: Verdict,
-    /// Listed in the quarantine file — the team already knows this one.
     pub quarantined: bool,
 }
 
-/// How the failures divide over the verdicts. The categories partition the
-/// failures: a quarantined test the history could classify is counted by its
-/// history verdict, so the four counts sum to the failure count.
+/// How the failures divide over the verdicts — a partition, so the four
+/// counts sum to the failure count.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct Counts {
     pub known_flakes: usize,
@@ -61,18 +57,15 @@ impl Counts {
         self.known_flakes + self.failing_since + self.quarantined + self.new
     }
 
-    /// Every failure is a flake sooth or the team already knew about — the
-    /// answer that unblocks a red build. A regression pointer is known too,
-    /// but it is a real failure and must never read as "nothing new".
+    /// Nothing failed that sooth or the team did not already know as a flake.
+    /// A regression is known too, but it is a real failure and never counts.
     pub fn only_known_flakes(&self) -> bool {
         self.total() > 0 && self.failing_since == 0 && self.new == 0
     }
 }
 
-/// Look up each failed id in the evidence. `history` is `None` when the
-/// history was not consulted (`--no-history`), which is not the same as an
-/// empty history: the caller says so in the report instead of letting every
-/// failure read as new.
+/// Look up each failed id in the evidence. A `None` history means it was not
+/// consulted, which is not an empty one — the caller reports the difference.
 pub fn explain(
     failed_ids: &[String],
     history: Option<&HistoryAnalysis>,
@@ -88,8 +81,7 @@ pub fn explain(
         .collect()
 }
 
-/// The history's verdict for one id. Flaky proof wins over a regression
-/// pointer, matching the history pass's own precedence.
+/// Flaky proof wins over a regression pointer, as in the history pass itself.
 fn verdict_for(id: &str, history: &HistoryAnalysis) -> Verdict {
     if let Some(test) = history.flaky.iter().find(|test| test.id == id) {
         return Verdict::KnownFlake {
@@ -128,13 +120,15 @@ mod tests {
         }
     }
 
-    fn ids(ids: &[&str]) -> Vec<String> {
-        ids.iter().map(|id| (*id).to_owned()).collect()
+    fn explained(ids: &[&str], quarantine: &[&str]) -> Vec<super::Explanation> {
+        let ids: Vec<String> = ids.iter().map(|id| (*id).to_owned()).collect();
+        let quarantine: BTreeSet<String> = quarantine.iter().map(|id| (*id).to_owned()).collect();
+        explain(&ids, Some(&history()), &quarantine)
     }
 
     #[test]
-    fn a_proven_flake_carries_its_rate_from_the_history() {
-        let explained = explain(&ids(&["c::wobbly"]), Some(&history()), &BTreeSet::new());
+    fn a_proven_flake_carries_its_counts_from_the_history() {
+        let explained = explained(&["c::wobbly"], &[]);
         assert_eq!(
             explained[0].verdict,
             Verdict::KnownFlake {
@@ -142,13 +136,12 @@ mod tests {
                 observed_runs: 50,
             }
         );
-        assert_eq!(crate::analyzers::flaky::failure_rate_percent(4, 50), 8);
-        assert_eq!(Counts::of(&explained).known_flakes, 1);
+        assert!(Counts::of(&explained).only_known_flakes());
     }
 
     #[test]
-    fn a_regression_pointer_is_reported_as_such_never_as_a_flake() {
-        let explained = explain(&ids(&["c::regressed"]), Some(&history()), &BTreeSet::new());
+    fn a_regression_is_reported_as_such_and_never_reads_as_clean() {
+        let explained = explained(&["c::regressed"], &[]);
         assert_eq!(
             explained[0].verdict,
             Verdict::FailingSince {
@@ -156,7 +149,6 @@ mod tests {
                 failed_runs: 6,
             }
         );
-        // Known, but a real failure: it must not make the run read as clean.
         let counts = Counts::of(&explained);
         assert_eq!(counts.failing_since, 1);
         assert!(!counts.only_known_flakes());
@@ -164,15 +156,16 @@ mod tests {
 
     #[test]
     fn a_failure_the_history_cannot_explain_is_new() {
-        let explained = explain(&ids(&["c::fresh"]), Some(&history()), &BTreeSet::new());
-        assert_eq!(explained[0].verdict, Verdict::Unknown);
-        assert_eq!(Counts::of(&explained).new, 1);
+        let explained = explained(&["c::wobbly", "c::fresh"], &[]);
+        assert_eq!(explained[1].verdict, Verdict::Unknown);
+        let counts = Counts::of(&explained);
+        assert_eq!((counts.known_flakes, counts.new), (1, 1));
+        assert!(!counts.only_known_flakes());
     }
 
     #[test]
-    fn a_quarantined_failure_is_known_even_without_history_evidence() {
-        let quarantine = BTreeSet::from(["c::listed".to_owned()]);
-        let explained = explain(&ids(&["c::listed"]), Some(&history()), &quarantine);
+    fn a_quarantined_failure_is_known_without_history_evidence() {
+        let explained = explained(&["c::listed"], &["c::listed"]);
         assert!(explained[0].quarantined);
         let counts = Counts::of(&explained);
         assert_eq!(counts.quarantined, 1);
@@ -181,34 +174,18 @@ mod tests {
 
     #[test]
     fn history_evidence_wins_the_count_over_the_quarantine_label() {
-        // The categories partition the failures: a quarantined proven flake
-        // is counted once, as the flake the history proved it is.
-        let quarantine = BTreeSet::from(["c::wobbly".to_owned()]);
-        let explained = explain(&ids(&["c::wobbly"]), Some(&history()), &quarantine);
+        let explained = explained(&["c::wobbly"], &["c::wobbly"]);
         assert!(explained[0].quarantined);
         let counts = Counts::of(&explained);
-        assert_eq!(counts.known_flakes, 1);
-        assert_eq!(counts.quarantined, 0);
+        assert_eq!((counts.known_flakes, counts.quarantined), (1, 0));
         assert_eq!(counts.total(), 1);
     }
 
     #[test]
-    fn a_mixed_run_is_not_only_known_flakes() {
-        let explained = explain(
-            &ids(&["c::wobbly", "c::fresh"]),
-            Some(&history()),
-            &BTreeSet::new(),
-        );
-        let counts = Counts::of(&explained);
-        assert_eq!(counts.known_flakes, 1);
-        assert_eq!(counts.new, 1);
-        assert!(!counts.only_known_flakes());
-    }
-
-    #[test]
     fn without_a_history_only_the_quarantine_can_speak() {
+        let ids = ["c::wobbly".to_owned(), "c::listed".to_owned()];
         let quarantine = BTreeSet::from(["c::listed".to_owned()]);
-        let explained = explain(&ids(&["c::wobbly", "c::listed"]), None, &quarantine);
+        let explained = explain(&ids, None, &quarantine);
         assert_eq!(explained[0].verdict, Verdict::Unknown);
         assert_eq!(Counts::of(&explained).new, 1);
         assert!(explained[1].quarantined);
@@ -216,7 +193,7 @@ mod tests {
 
     #[test]
     fn a_green_run_explains_nothing() {
-        let explained = explain(&[], Some(&history()), &BTreeSet::new());
+        let explained = explained(&[], &[]);
         assert!(explained.is_empty());
         assert!(!Counts::of(&explained).only_known_flakes());
     }
