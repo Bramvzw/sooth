@@ -657,6 +657,47 @@ fn a_red_run_labels_its_failures_against_the_accumulated_history() {
 }
 
 #[test]
+fn the_very_first_run_says_its_failures_read_as_new_for_lack_of_history() {
+    let Some(dir) = scratch_repo("explain-first") else {
+        return;
+    };
+    let report = std::env::temp_dir().join(format!(
+        "sooth-contract-explain-first-{}.xml",
+        std::process::id()
+    ));
+    let script = format!(
+        "printf '<testsuite><testcase classname=\"c\" name=\"t\"><failure/></testcase></testsuite>' > '{}'",
+        report.display()
+    );
+    let output = Command::new(env!("CARGO_BIN_EXE_sooth"))
+        .current_dir(&dir)
+        .args([
+            "run",
+            "--junit",
+            &report.display().to_string(),
+            "--color",
+            "never",
+            "--",
+            "sh",
+            "-c",
+            &script,
+        ])
+        .output()
+        .expect("sooth should run");
+    let stdout = String::from_utf8(output.stdout).expect("stdout should be UTF-8");
+
+    // This run's own observations are in the file by now; only earlier ones
+    // could have made the failure read as anything but new.
+    assert!(
+        stdout.contains("no observations from earlier runs yet"),
+        "a first run let \"new\" stand without saying there was nothing to compare against: \
+         {stdout:?}"
+    );
+    let _ = std::fs::remove_file(&report);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn explain_classifies_a_report_without_running_or_recording_anything() {
     let Some(dir) = scratch_repo("explain-cmd") else {
         return;

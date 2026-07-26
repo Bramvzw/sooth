@@ -434,8 +434,8 @@ fn print_history_gap(observations: Option<usize>, style: Style) {
              quarantine list alone"
         }
         Some(0) => {
-            "the run history is empty: every failure reads as new until observations \
-             accumulate"
+            "no observations from earlier runs yet: every failure reads as new until \
+             they accumulate"
         }
         Some(_) => return,
     };
@@ -497,7 +497,7 @@ pub struct Analyses<'a> {
     pub flaky: Option<&'a flaky::Analysis>,
     /// The passive pass (the accumulated history).
     pub history: Option<&'a history::Analysis>,
-    /// How many observations backed the history pass.
+    /// How many observations from earlier runs backed the history pass.
     pub history_observations: Option<usize>,
     pub verify: Option<&'a verify::Verdict>,
     pub pardoned: Option<&'a [String]>,

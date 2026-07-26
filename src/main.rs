@@ -124,7 +124,7 @@ fn run(args: &cli::RunArgs) -> ExitCode {
     let analyses = Analyses {
         flaky: flaky_analysis.as_ref(),
         history: history_analysis,
-        history_observations: history_pass.as_ref().map(|pass| pass.observations),
+        history_observations: history_pass.as_ref().map(|pass| pass.prior_observations),
         verify: verify_verdict.as_ref(),
         pardoned: pardoned.as_deref(),
         explanation: explanation.as_deref(),
@@ -329,10 +329,10 @@ fn verify_failures(
 }
 
 /// What the passive layer produced for this run: the classification, plus
-/// how many observations backed it.
+/// how many observations from *earlier* runs stood behind it.
 struct HistoryPass {
     analysis: analyzers::history::Analysis,
-    observations: usize,
+    prior_observations: usize,
 }
 
 /// Record this invocation's runs into the local history and classify the
@@ -367,7 +367,9 @@ fn record_history(args: &cli::RunArgs, reports: &[junit::JunitReport]) -> Option
     let loaded = load_history(path);
     Some(HistoryPass {
         analysis: analyzers::history::analyze(&loaded.observations),
-        observations: loaded.observations.len(),
+        // This run's own observations are already in the file; only earlier
+        // ones can make a failure read as anything but new.
+        prior_observations: loaded.observations.len().saturating_sub(observations.len()),
     })
 }
 
