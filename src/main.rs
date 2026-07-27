@@ -20,7 +20,7 @@ use std::process::ExitCode;
 use clap::Parser;
 
 use crate::cli::{Cli, Command};
-use crate::report::JunitSummary;
+use crate::report::{Analyses, JunitSummary};
 
 /// Exit code for "sooth itself failed", as opposed to "the tests failed" (1).
 const EXIT_SOOTH_ERROR: u8 = 2;
@@ -33,6 +33,7 @@ fn main() -> ExitCode {
     let parsed = Cli::parse();
     match parsed.command {
         Command::Run(args) => run(&args),
+        Command::Explain(args) => explain(&args),
     }
 }
 
@@ -104,18 +105,29 @@ fn run(args: &cli::RunArgs) -> ExitCode {
     } else {
         None
     };
-    let history_analysis = record_history(args, &reports);
+    let history_pass = record_history(args, &reports);
+    let history_analysis = history_pass.as_ref().map(|pass| &pass.analysis);
     // The raw command: inject_selected re-injects the report flags itself.
     let verify_verdict = verify_failures(args, &args.command, reports.last());
 
     let suite_red = suite_failed(&outcomes, &reports);
-    let pardoned = pardoned_failures(args, suite_red, &outcomes, &reports);
+    // The list labels known flakes on any red run; only --fail-on-flaky
+    // lets it steer the exit.
+    let quarantine = if suite_red {
+        quarantine::load_or_empty(std::path::Path::new(quarantine::FILE_NAME))
+    } else {
+        std::collections::BTreeSet::new()
+    };
+    let explanation = explain_failures(suite_red, &reports, history_analysis, &quarantine);
+    let pardoned = pardoned_failures(args, suite_red, &quarantine, &outcomes, &reports);
     let failed = suite_red && pardoned.is_none();
     let analyses = Analyses {
         flaky: flaky_analysis.as_ref(),
-        history: history_analysis.as_ref(),
+        history: history_analysis,
+        history_observations: history_pass.as_ref().map(|pass| pass.prior_observations),
         verify: verify_verdict.as_ref(),
         pardoned: pardoned.as_deref(),
+        explanation: explanation.as_deref(),
     };
     // The worst run's count, over all reports: the mismatch note and the
     // verdict must not claim "0 failing" because the *last* run was green.
@@ -171,15 +183,6 @@ fn prepared_command(
     }
 }
 
-/// The cross-run analyses, when they ran: the active pass (`--runs N`) and
-/// the passive one (the accumulated history).
-struct Analyses<'a> {
-    flaky: Option<&'a analyzers::flaky::Analysis>,
-    history: Option<&'a analyzers::history::Analysis>,
-    verify: Option<&'a verify::Verdict>,
-    pardoned: Option<&'a [String]>,
-}
-
 /// The failures pardoned by the quarantine file: `Some` — and the run exits
 /// 0 — only when `--fail-on-flaky` is set, the suite failed, and every
 /// failure in every run's report is quarantined. A failed run its report
@@ -187,14 +190,39 @@ struct Analyses<'a> {
 fn pardoned_failures(
     args: &cli::RunArgs,
     suite_red: bool,
+    quarantine: &std::collections::BTreeSet<String>,
     outcomes: &[runner::RunOutcome],
     reports: &[junit::JunitReport],
 ) -> Option<Vec<String>> {
     if !args.fail_on_flaky || !suite_red {
         return None;
     }
-    let quarantine = quarantine::load_or_empty(std::path::Path::new(quarantine::FILE_NAME));
-    quarantine_pardon(&quarantine, outcomes, reports)
+    quarantine_pardon(quarantine, outcomes, reports)
+}
+
+/// Label a failing run's failures with what sooth already knew about them.
+/// A red run without a report leaves nothing to label: sooth does not guess
+/// which test failed.
+fn explain_failures(
+    suite_red: bool,
+    reports: &[junit::JunitReport],
+    history: Option<&analyzers::history::Analysis>,
+    quarantine: &std::collections::BTreeSet<String>,
+) -> Option<Vec<analyzers::explain::Explanation>> {
+    if !suite_red {
+        return None;
+    }
+    // Every run's failures: run 1's are not forgiven by a green run 2.
+    let failed: Vec<String> = reports
+        .iter()
+        .flat_map(verify::failed_ids)
+        .collect::<std::collections::BTreeSet<String>>()
+        .into_iter()
+        .collect();
+    if failed.is_empty() {
+        return None;
+    }
+    Some(analyzers::explain::explain(&failed, history, quarantine))
 }
 
 /// The pardon decision itself: all-or-nothing over every run.
@@ -255,10 +283,12 @@ fn verify_failures(
     }
     let preset = args.preset?;
     let report = final_report?;
-    let failed = verify::failed_ids(report);
+    let failed = verify::failed_tests(report);
     if failed.is_empty() {
         return None;
     }
+    // Selection gets the raw name half; the joined id is never re-split.
+    let names: Vec<String> = failed.iter().map(|test| test.name.clone()).collect();
     let mut verify_reports = Vec::with_capacity(verify::VERIFY_RUNS as usize);
     for attempt in 1..=verify::VERIFY_RUNS {
         let path = match preset::report_path() {
@@ -268,7 +298,7 @@ fn verify_failures(
                 return None;
             }
         };
-        let Some((cmd, envs)) = preset::inject_selected(command, preset, &path, &failed) else {
+        let Some((cmd, envs)) = preset::inject_selected(command, preset, &path, &names) else {
             eprintln!(
                 "sooth: verification is not supported for this preset yet — \
                  sooth cannot restrict its runner to a subset of tests"
@@ -294,16 +324,21 @@ fn verify_failures(
         }
         cleanup_preset_report(&path);
     }
-    Some(verify::classify(&failed, &verify_reports))
+    let ids: Vec<String> = failed.into_iter().map(|test| test.id).collect();
+    Some(verify::classify(&ids, &verify_reports))
+}
+
+/// What the passive layer produced for this run: the classification, plus
+/// how many observations from *earlier* runs stood behind it.
+struct HistoryPass {
+    analysis: analyzers::history::Analysis,
+    prior_observations: usize,
 }
 
 /// Record this invocation's runs into the local history and classify the
 /// accumulated observations. Every failure degrades to a stderr warning:
 /// the passive layer must never change the run's outcome.
-fn record_history(
-    args: &cli::RunArgs,
-    reports: &[junit::JunitReport],
-) -> Option<analyzers::history::Analysis> {
+fn record_history(args: &cli::RunArgs, reports: &[junit::JunitReport]) -> Option<HistoryPass> {
     if args.no_history || reports.is_empty() {
         return None;
     }
@@ -329,6 +364,17 @@ fn record_history(
         );
         return None;
     }
+    let loaded = load_history(path);
+    Some(HistoryPass {
+        analysis: analyzers::history::analyze(&loaded.observations),
+        // This run's own observations are already in the file; only earlier
+        // ones can make a failure read as anything but new.
+        prior_observations: loaded.observations.len().saturating_sub(observations.len()),
+    })
+}
+
+/// Load the history file, warning once about lines it could not read.
+fn load_history(path: &std::path::Path) -> history::Loaded {
     let loaded = history::load(path);
     if loaded.skipped_lines > 0 {
         eprintln!(
@@ -337,7 +383,79 @@ fn record_history(
             path.display()
         );
     }
-    Some(analyzers::history::analyze(&loaded.observations))
+    loaded
+}
+
+/// Handle `sooth explain`: label every failure in a JUnit-XML report against
+/// the accumulated evidence. Runs nothing, records nothing (see
+/// `DECISIONS.md`); exits 0 when the report could be read, 2 when it could not.
+fn explain(args: &cli::ExplainArgs) -> ExitCode {
+    let style = report::Style::resolved(args.color);
+    let report = match load_report(&args.junit, None) {
+        Ok(report) => report,
+        Err(message) => {
+            eprintln!("sooth: {message}");
+            return ExitCode::from(EXIT_SOOTH_ERROR);
+        }
+    };
+    let loaded = load_history(std::path::Path::new(history::HISTORY_PATH));
+    let analysis = analyzers::history::analyze(&loaded.observations);
+    let quarantine = quarantine::load_or_empty(std::path::Path::new(quarantine::FILE_NAME));
+    let explanations =
+        analyzers::explain::explain(&verify::failed_ids(&report), Some(&analysis), &quarantine);
+
+    if args.json {
+        println!("{}", report::explanation_json(&args.junit, &explanations));
+        return ExitCode::SUCCESS;
+    }
+    if explanations.is_empty() {
+        println!(
+            "no failures in `{}` — nothing to explain",
+            args.junit.display()
+        );
+        return ExitCode::SUCCESS;
+    }
+    report::print_explanation(
+        &Analyses {
+            explanation: Some(&explanations),
+            history_observations: Some(loaded.observations.len()),
+            ..Analyses::default()
+        },
+        style,
+    );
+    ExitCode::SUCCESS
+}
+
+/// The human report's sections, in the one order both output modes use.
+fn print_sections(
+    args: &cli::RunArgs,
+    outcomes: &[runner::RunOutcome],
+    summary: &JunitSummary,
+    analyses: &Analyses<'_>,
+    style: report::Style,
+) {
+    report::print_runs(outcomes, style);
+    report::print_summary(summary, style);
+    report::print_flaky(analyses.flaky, style);
+    report::print_history(analyses, style);
+    report::print_explanation(analyses, style);
+    if pardon_gap(args, analyses) {
+        report::print_pardon_gap(style);
+    }
+    report::print_verification(analyses.verify, style);
+    report::print_pardoned(analyses.pardoned, style);
+}
+
+/// Whether the run failed on nothing but known flakes while the quarantine
+/// pardoned none of them: "nothing new" and exit 1 would otherwise read as a
+/// contradiction.
+fn pardon_gap(args: &cli::RunArgs, analyses: &Analyses<'_>) -> bool {
+    args.fail_on_flaky
+        && analyses.pardoned.is_none()
+        && analyses.explanation.is_some_and(|explanations| {
+            analyzers::explain::Counts::of(explanations).only_known_flakes()
+                && explanations.iter().any(|test| !test.quarantined)
+        })
 }
 
 /// Print the run's output in the shape the flags ask for. Returns an exit
@@ -356,34 +474,14 @@ fn emit_output(
         // Bare --json: sooth's own stdout output is exactly one line of
         // JSON, printed after the wrapped command finished (last-line
         // contract — the child's output still shares the stream).
-        (Some(summary), Some(None)) => println!(
-            "{}",
-            report::to_json(
-                outcomes,
-                summary,
-                analyses.flaky,
-                analyses.history,
-                analyses.verify,
-                analyses.pardoned
-            )
-        ),
+        (Some(summary), Some(None)) => {
+            println!("{}", report::to_json(outcomes, summary, analyses));
+        }
         // --json=PATH: the machine output goes to a file, the human report
         // stays on stdout.
         (Some(summary), Some(Some(path))) => {
-            report::print_runs(outcomes, style);
-            report::print_summary(summary, style);
-            report::print_flaky(analyses.flaky, style);
-            report::print_history(analyses.history, style);
-            report::print_verification(analyses.verify, style);
-            report::print_pardoned(analyses.pardoned, style);
-            let json = report::to_json(
-                outcomes,
-                summary,
-                analyses.flaky,
-                analyses.history,
-                analyses.verify,
-                analyses.pardoned,
-            );
+            print_sections(args, outcomes, summary, analyses, style);
+            let json = report::to_json(outcomes, summary, analyses);
             if let Err(err) = std::fs::write(path, json + "\n") {
                 eprintln!(
                     "sooth: failed to write JSON report `{}`: {err}",
@@ -404,12 +502,7 @@ fn emit_output(
             );
         }
         (Some(summary), None) => {
-            report::print_runs(outcomes, style);
-            report::print_summary(summary, style);
-            report::print_flaky(analyses.flaky, style);
-            report::print_history(analyses.history, style);
-            report::print_verification(analyses.verify, style);
-            report::print_pardoned(analyses.pardoned, style);
+            print_sections(args, outcomes, summary, analyses, style);
             println!(
                 "{}",
                 verdict(
@@ -624,7 +717,8 @@ fn cleanup_preset_report(path: &std::path::Path) {
 
 #[cfg(test)]
 mod tests {
-    use super::{quarantine_pardon, rejected_flag, suite_failed};
+    use super::{pardon_gap, quarantine_pardon, rejected_flag, suite_failed};
+    use crate::analyzers::explain::{Explanation, Verdict};
     use crate::cli::{Cli, Command};
     use crate::junit::{JunitReport, TestCase, TestStatus};
     use crate::runner::RunOutcome;
@@ -643,7 +737,9 @@ mod tests {
 
     fn parse_run_args(cmdline: &[&str]) -> crate::cli::RunArgs {
         let parsed = Cli::try_parse_from(cmdline).unwrap();
-        let Command::Run(args) = parsed.command;
+        let Command::Run(args) = parsed.command else {
+            panic!("expected `run`, got `explain`");
+        };
         args
     }
 
@@ -863,6 +959,80 @@ mod tests {
     fn a_pardon_needs_a_report_for_every_run() {
         let quarantine = BTreeSet::from(["case".to_owned()]);
         assert_eq!(quarantine_pardon(&quarantine, &[outcome(false)], &[]), None);
+    }
+
+    fn known_flake(id: &str, quarantined: bool) -> Explanation {
+        Explanation {
+            id: id.to_owned(),
+            verdict: Verdict::KnownFlake {
+                failed_runs: 1,
+                observed_runs: 4,
+            },
+            quarantined,
+        }
+    }
+
+    fn gap_for(cmdline: &[&str], explanations: &[Explanation]) -> bool {
+        pardon_gap(
+            &parse_run_args(cmdline),
+            &crate::report::Analyses {
+                explanation: Some(explanations),
+                ..crate::report::Analyses::default()
+            },
+        )
+    }
+
+    #[test]
+    fn nothing_new_yet_no_pardon_is_explained_not_left_contradictory() {
+        let flagged = [
+            "sooth",
+            "run",
+            "--fail-on-flaky",
+            "--junit",
+            "r.xml",
+            "--",
+            "true",
+        ];
+        assert!(
+            gap_for(&flagged, &[known_flake("c::a", false)]),
+            "an unlisted known flake under --fail-on-flaky needs the note"
+        );
+        assert!(
+            !gap_for(&flagged, &[known_flake("c::a", true)]),
+            "a listed flake was pardoned; there is no gap to explain"
+        );
+        assert!(
+            !gap_for(
+                &["sooth", "run", "--junit", "r.xml", "--", "true"],
+                &[known_flake("c::a", false)]
+            ),
+            "without --fail-on-flaky no pardon was ever asked for"
+        );
+    }
+
+    #[test]
+    fn a_new_failure_needs_no_pardon_note() {
+        // The verdict speaks for itself: something new failed.
+        let explanations = [
+            known_flake("c::a", false),
+            Explanation {
+                id: "c::fresh".to_owned(),
+                verdict: Verdict::Unknown,
+                quarantined: false,
+            },
+        ];
+        assert!(!gap_for(
+            &[
+                "sooth",
+                "run",
+                "--fail-on-flaky",
+                "--junit",
+                "r.xml",
+                "--",
+                "true"
+            ],
+            &explanations
+        ));
     }
 
     #[test]
