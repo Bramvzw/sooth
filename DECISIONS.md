@@ -434,3 +434,57 @@ backslashed lesson). A missing file is the normal day-one state (empty
 list); an unreadable file warns and pardons nothing — failing the run is
 the safe direction. History records pardoned failures as failures: the
 record keeps the truth, the pardon only steers the exit.
+
+Amended when explain landed (below): the list is read on every failing run,
+not only under `--fail-on-flaky`, so its entries can *label* a failure as
+known. "The file alone changes nothing" was about exit steering, and that
+half stands unchanged — a label is knowledge, not a pardon.
+
+## Explaining a red run: a lookup, never a new conclusion
+
+Finding flakes is not the daily pain; being blocked by them is. So every red
+run ends by labeling each of its failures against the evidence that already
+exists — proven flake (with its rate), `failing since <commit>`, quarantined,
+or new — under a headline that answers the only question a red build asks:
+is any of this new? It costs nothing: the history pass and the quarantine
+list are already loaded, and the pass is a lookup, never a second analysis.
+Reusing the history analyzer verbatim is the point — one definition of
+"proven flaky", one of "regression", applied wherever sooth speaks.
+
+Consequences that keep it honest:
+
+- A regression is *known* but never "nothing new": it is a real failure, so
+  it is counted and colored apart, and it disqualifies the all-clear
+  sentence. Folding it in would be the flaky/broken sin on the time axis.
+- The categories partition the failures (a quarantined proven flake counts
+  once, as a flake), so the counts always sum to the failure count.
+- "New" is only meaningful against evidence. An empty history, or one that
+  was not consulted (`--no-history`), says so in a note instead of letting
+  absence of evidence read as evidence of novelty.
+- The exit code and the verdict are untouched, as with verification: sooth
+  classifies failures, it never absorbs them.
+- Nothing is said twice. A failure carries its history verdict on its own
+  line, so the history section drops it and reports only the flakes that
+  stayed quiet this run. Two sections printing the same counts buries the
+  run's own news under background.
+- "Nothing new" plus exit 1 is a contradiction on its face, and it happens
+  whenever `--fail-on-flaky` meets known flakes that are not on the list.
+  The report resolves it in place — the pardon rests on the committed list,
+  never on sooth's own evidence — and names the file to add the ids to.
+  Letting history evidence pardon instead would turn a build green on a
+  judgement no human reviewed, which is precisely why the list is committed.
+
+`sooth explain --junit <PATH>` is the same pass over a report you already
+have — a CI artifact, a colleague's run, a preset run whose temp report you
+kept. It exists because a preset's report is deleted after the run, so
+without it the beachhead user (PHPUnit, `--preset`) could never ask the
+question twice. It runs nothing and *records* nothing: the report it reads
+was very likely already observed by the run that produced it, and recording
+it again would mint duplicate observations — evidence out of thin air. Its
+exit is 0 whenever the report could be read (2 when it could not); a
+diagnosis that changed CI's verdict would be a second, hidden gate. Freshness
+is not checked either — pointing explain at an old report is the use case,
+not the error `sooth run --junit` guards against. Its `--json` is a plain
+flag rather than run's `--json[=PATH]`: no wrapped command shares this
+stdout, so there is no last-line contract to honor and the whole output can
+simply be the JSON.

@@ -10,14 +10,16 @@ use std::path::Path;
 pub const FILE_NAME: &str = ".sooth-quarantine";
 
 /// The quarantined ids, degrading to an empty set: a missing file is the
-/// normal day-one state; an unreadable one warns and pardons nothing.
+/// normal day-one state; an unreadable one warns and leaves every failure
+/// unrecognized (and, with `--fail-on-flaky`, unpardoned).
 pub fn load_or_empty(path: &Path) -> BTreeSet<String> {
     match std::fs::read_to_string(path) {
         Ok(content) => parse(&content),
         Err(err) if err.kind() == io::ErrorKind::NotFound => BTreeSet::new(),
         Err(err) => {
             eprintln!(
-                "sooth: could not read `{}`: {err} — no failures will be pardoned",
+                "sooth: could not read `{}`: {err} — no failure will be recognized as a \
+                 known flake",
                 path.display()
             );
             BTreeSet::new()
