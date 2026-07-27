@@ -22,7 +22,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       # A bare `rustup toolchain install` reads rust-toolchain.toml (version
       # AND components). Deliberately not a toolchain action: those export
@@ -49,7 +49,7 @@ jobs:
     name: Build on MSRV (1.80)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       # The action exports RUSTUP_TOOLCHAIN=1.80.0, which overrides the
       # rust-toolchain.toml pin — exactly what this job needs.
       - uses: dtolnay/rust-toolchain@02615d347998f2a395863137815cac5be587e500 # 1.80.0
