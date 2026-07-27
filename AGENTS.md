@@ -15,7 +15,7 @@ Everything below exists except `analyzers/slow.rs` and `analyzers/order.rs`; one
 
 ```
 src/
-├── cli.rs        # EXISTS — clap definitions: subcommands, --preset, --runs, --json[=PATH], --slowest, --junit, --color, --verify
+├── cli.rs        # EXISTS — clap definitions: `run` and `explain`, --preset, --runs, --json[=PATH], --slowest, --junit, --color, --verify
 ├── runner.rs      # EXISTS — spawns the test subprocess (with env injection), captures exit status + wall time
 ├── junit.rs       # EXISTS — tolerant JUnit-XML union schema (parse_str/parse_file)
 ├── preset.rs      # EXISTS — presets inject reporter flags/env and manage the temp report
@@ -23,14 +23,15 @@ src/
 ├── verify.rs      # EXISTS — failure re-verification: classify failed tests after re-running only them
 ├── quarantine.rs  # EXISTS — committed .sooth-quarantine list that --fail-on-flaky pardons
 ├── report.rs      # EXISTS — colored human report + versioned machine JSON
-└── analyzers/     # EXISTS — flaky.rs (mixed outcomes over runs), history.rs (classify the accumulated history); slow.rs, order.rs to come (strictly separate passes)
+└── analyzers/     # EXISTS — flaky.rs (mixed outcomes over runs), history.rs (classify the accumulated history), explain.rs (label a red run's failures against that evidence); slow.rs, order.rs to come (strictly separate passes)
 ```
 
 Flags sooth cannot honor are rejected loudly, never silently ignored: `--json`/`--slowest`
 require a report source (`--junit` or `--preset`), `--preset` conflicts with `--junit`,
 `--verify` needs `--preset` and a single run, and `--fail-on-flaky` requires a report source. Exit
 codes are a contract: `0` every run passed, `1` at least one run failed, `2` sooth itself failed
-(see `DECISIONS.md`).
+(see `DECISIONS.md`). `sooth explain` is diagnosis only: it runs nothing, records nothing, and
+uses just `0` and `2`.
 
 `egress` (network-egress detection) is a later, separate module tied to the spike in
 `DECISIONS.md` — do not start it as part of the core.

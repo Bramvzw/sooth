@@ -559,23 +559,272 @@ fn history_accumulates_across_invocations_and_reports_proven_flakes() {
         "an all-green history reported flakes: {stdout:?}"
     );
 
+    // The run this test failed in gets its verdict from the explanation; the
+    // history section would only repeat those counts.
     let second = run(r#"<testcase classname="c" name="wob"><failure/></testcase>"#);
     let stdout = String::from_utf8(second.stdout).expect("stdout should be UTF-8");
     assert_eq!(second.status.code(), Some(1));
+    assert!(
+        !stdout.contains("flaky per history"),
+        "the history section repeated a failure the explanation already covers: {stdout:?}"
+    );
+    assert!(
+        stdout.contains("- c::wob — known flake (failed 1 of 2 observed runs, 50%)"),
+        "got: {stdout:?}"
+    );
+
+    // Green again: nothing failed, so the accumulated verdict is the news.
+    let third = run(r#"<testcase classname="c" name="wob"/>"#);
+    let stdout = String::from_utf8(third.stdout).expect("stdout should be UTF-8");
+    assert_eq!(third.status.code(), Some(0));
     assert!(
         stdout.contains("flaky per history (mixed outcomes on one commit):"),
         "got: {stdout:?}"
     );
     assert!(
-        stdout.contains("c::wob failed 1 of 2 observed runs (50%)"),
+        stdout.contains("c::wob failed 1 of 3 observed runs (33%)"),
         "got: {stdout:?}"
     );
 
     let history = std::fs::read_to_string(dir.join(".sooth/history.jsonl"))
         .expect("history should have been written");
-    assert_eq!(history.lines().count(), 2);
+    assert_eq!(history.lines().count(), 3);
     let _ = std::fs::remove_file(&report);
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_red_run_labels_its_failures_against_the_accumulated_history() {
+    let Some(dir) = scratch_repo("explain-run") else {
+        return; // no git: identity degrades to unknown, covered by unit tests
+    };
+    let report = std::env::temp_dir().join(format!(
+        "sooth-contract-explain-run-{}.xml",
+        std::process::id()
+    ));
+    let run = |cases: &str| {
+        let script = format!(
+            "printf '<testsuite>{cases}</testsuite>' > '{}'",
+            report.display()
+        );
+        Command::new(env!("CARGO_BIN_EXE_sooth"))
+            .current_dir(&dir)
+            .args([
+                "run",
+                "--junit",
+                &report.display().to_string(),
+                "--color",
+                "never",
+                "--",
+                "sh",
+                "-c",
+                &script,
+            ])
+            .output()
+            .expect("sooth should run")
+    };
+
+    // Both tests end up proven flaky; only `wob` fails in the second run.
+    run(
+        r#"<testcase classname="c" name="wob"/><testcase classname="c" name="other"><failure/></testcase>"#,
+    );
+    let red = run(
+        r#"<testcase classname="c" name="wob"><failure/></testcase><testcase classname="c" name="other"/>"#,
+    );
+    let stdout = String::from_utf8(red.stdout).expect("stdout should be UTF-8");
+
+    assert_eq!(
+        red.status.code(),
+        Some(1),
+        "the diagnosis must not absorb the failure"
+    );
+    assert!(
+        stdout.contains("1 failure — all known flakes, nothing new"),
+        "got: {stdout:?}"
+    );
+    assert!(
+        stdout.contains("- c::wob — known flake (failed 1 of 2 observed runs, 50%)"),
+        "got: {stdout:?}"
+    );
+    // The other flake did not fail here, so it stays in the history section.
+    assert!(
+        stdout.contains("also flaky per history (these did not fail this run):"),
+        "got: {stdout:?}"
+    );
+    assert!(stdout.contains("c::other"), "got: {stdout:?}");
+    let _ = std::fs::remove_file(&report);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn the_very_first_run_says_its_failures_read_as_new_for_lack_of_history() {
+    let Some(dir) = scratch_repo("explain-first") else {
+        return;
+    };
+    let report = std::env::temp_dir().join(format!(
+        "sooth-contract-explain-first-{}.xml",
+        std::process::id()
+    ));
+    let script = format!(
+        "printf '<testsuite><testcase classname=\"c\" name=\"t\"><failure/></testcase></testsuite>' > '{}'",
+        report.display()
+    );
+    let output = Command::new(env!("CARGO_BIN_EXE_sooth"))
+        .current_dir(&dir)
+        .args([
+            "run",
+            "--junit",
+            &report.display().to_string(),
+            "--color",
+            "never",
+            "--",
+            "sh",
+            "-c",
+            &script,
+        ])
+        .output()
+        .expect("sooth should run");
+    let stdout = String::from_utf8(output.stdout).expect("stdout should be UTF-8");
+
+    // This run's own observations are in the file by now; only earlier ones
+    // could have made the failure read as anything but new.
+    assert!(
+        stdout.contains("no observations from earlier runs yet"),
+        "a first run let \"new\" stand without saying there was nothing to compare against: \
+         {stdout:?}"
+    );
+    let _ = std::fs::remove_file(&report);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn explain_classifies_a_report_without_running_or_recording_anything() {
+    let Some(dir) = scratch_repo("explain-cmd") else {
+        return;
+    };
+    // Outside the repo: an untracked report makes every run dirty, and a
+    // dirty run is never evidence.
+    let report = std::env::temp_dir().join(format!(
+        "sooth-contract-explain-cmd-{}.xml",
+        std::process::id()
+    ));
+    let run = |cases: &str| {
+        let script = format!(
+            "printf '<testsuite>{cases}</testsuite>' > '{}'",
+            report.display()
+        );
+        Command::new(env!("CARGO_BIN_EXE_sooth"))
+            .current_dir(&dir)
+            .args([
+                "run",
+                "--junit",
+                &report.display().to_string(),
+                "--color",
+                "never",
+                "--",
+                "sh",
+                "-c",
+                &script,
+            ])
+            .output()
+            .expect("sooth should run")
+    };
+    run(r#"<testcase classname="c" name="wob"/>"#);
+    run(r#"<testcase classname="c" name="wob"><failure/></testcase>"#);
+    let history = dir.join(".sooth/history.jsonl");
+    let before = std::fs::read_to_string(&history).expect("history should exist");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_sooth"))
+        .current_dir(&dir)
+        .args([
+            "explain",
+            "--junit",
+            &report.display().to_string(),
+            "--color",
+            "never",
+        ])
+        .output()
+        .expect("sooth should run");
+    let stdout = String::from_utf8(output.stdout).expect("stdout should be UTF-8");
+
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "explain diagnoses, it never steers an exit: {stdout:?}"
+    );
+    assert!(
+        stdout.contains("- c::wob — known flake (failed 1 of 2 observed runs, 50%)"),
+        "got: {stdout:?}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&history).expect("history should still exist"),
+        before,
+        "explain recorded observations for a run it never made"
+    );
+    let _ = std::fs::remove_file(&report);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn explain_on_a_green_report_has_nothing_to_explain() {
+    let (cwd, mut command) = sooth_in("explain-green");
+    let report = cwd.join("green.xml");
+    std::fs::write(
+        &report,
+        r#"<testsuite><testcase classname="c" name="ok"/></testsuite>"#,
+    )
+    .expect("report should write");
+    let output = command
+        .args(["explain", "--junit", &report.display().to_string()])
+        .output()
+        .expect("sooth should run");
+    let stdout = String::from_utf8(output.stdout).expect("stdout should be UTF-8");
+
+    assert_eq!(output.status.code(), Some(0));
+    assert!(stdout.contains("nothing to explain"), "got: {stdout:?}");
+    let _ = std::fs::remove_file(&report);
+}
+
+#[test]
+fn the_quarantine_labels_a_failure_without_the_flag_but_never_steers_the_exit() {
+    let (cwd, mut command) = sooth_in("quarantine-label");
+    std::fs::write(
+        cwd.join(".sooth-quarantine"),
+        "tests.test_math::test_subtraction\n",
+    )
+    .expect("quarantine file should write");
+    let (report, write_report) = fresh_report("quarantine-label");
+    let output = command
+        .args([
+            "run",
+            "--no-history",
+            "--junit",
+            &report.display().to_string(),
+            "--color",
+            "never",
+            "--",
+            "sh",
+            "-c",
+            &write_report,
+        ])
+        .output()
+        .expect("sooth should run");
+    let _ = std::fs::remove_file(&report);
+    let stdout = String::from_utf8(output.stdout).expect("stdout should be UTF-8");
+
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "the list alone must not pardon anything: {stdout:?}"
+    );
+    assert!(
+        stdout.contains("- tests.test_math::test_subtraction — quarantined"),
+        "got: {stdout:?}"
+    );
+    assert!(
+        stdout.contains("the run history was not consulted"),
+        "a --no-history run must not let \"new\" imply there is no evidence: {stdout:?}"
+    );
 }
 
 #[test]
