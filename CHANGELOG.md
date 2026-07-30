@@ -56,6 +56,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- The report is organised per test instead of per analysis pass. A failing
+  test gets one line carrying both answers — what this run saw and whether
+  sooth knew it already — so `flaky tests`, `real failures (reproduced on
+  re-run)` and `quarantined failures (pardoned by …)` no longer open sections
+  of their own:
+
+  ```
+  3 failures — 1 known flake, 1 quarantined, 1 new
+    - App.MailTest::test_send — broken (2 of 2 runs now), quarantined (listed in .sooth-quarantine)
+    - App.NewTest::test_thing — broken (2 of 2 runs now), new (nothing in history)
+    - App.OrderTest::test_ships — flaky (1 of 2 runs now), known flake (2 of 6 in history, 33%)
+  ```
+
+  Nothing is reported twice, and a test can no longer appear under two labels
+  that seem to contradict each other. The `--json` shape is unchanged: it stays
+  organised per pass, and machines are not bothered by repetition.
+
 - The quarantine file is now read on every failing run, not only under
   `--fail-on-flaky`: its entries label failures as known. Exit steering is
   unchanged — without the flag the list still pardons nothing.

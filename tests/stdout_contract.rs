@@ -439,12 +439,8 @@ fn repeated_runs_report_mixed_outcomes_as_flaky() {
     assert_eq!(output.status.code(), Some(1), "a flaky run failed run 1");
     let stdout = String::from_utf8(output.stdout).expect("stdout should be UTF-8");
     assert!(
-        stdout.contains("flaky tests (mixed outcomes):"),
-        "got: {stdout:?}"
-    );
-    assert!(
-        stdout.contains("c::wobbly failed 1 of 2 observed runs (50%)"),
-        "got: {stdout:?}"
+        stdout.contains("- c::wobbly — flaky (1 of 2 runs now), new (nothing in history)"),
+        "the repeat pass and the history must share one line per test: {stdout:?}"
     );
 }
 
@@ -569,7 +565,7 @@ fn history_accumulates_across_invocations_and_reports_proven_flakes() {
         "the history section repeated a failure the explanation already covers: {stdout:?}"
     );
     assert!(
-        stdout.contains("- c::wob — known flake (failed 1 of 2 observed runs, 50%)"),
+        stdout.contains("- c::wob — known flake (1 of 2 in history, 50%)"),
         "got: {stdout:?}"
     );
 
@@ -643,7 +639,7 @@ fn a_red_run_labels_its_failures_against_the_accumulated_history() {
         "got: {stdout:?}"
     );
     assert!(
-        stdout.contains("- c::wob — known flake (failed 1 of 2 observed runs, 50%)"),
+        stdout.contains("- c::wob — known flake (1 of 2 in history, 50%)"),
         "got: {stdout:?}"
     );
     // The other flake did not fail here, so it stays in the history section.
@@ -753,7 +749,7 @@ fn explain_classifies_a_report_without_running_or_recording_anything() {
         "explain diagnoses, it never steers an exit: {stdout:?}"
     );
     assert!(
-        stdout.contains("- c::wob — known flake (failed 1 of 2 observed runs, 50%)"),
+        stdout.contains("- c::wob — known flake (1 of 2 in history, 50%)"),
         "got: {stdout:?}"
     );
     assert_eq!(
