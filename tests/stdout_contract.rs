@@ -487,6 +487,51 @@ fn a_preset_runner_that_stops_writing_reports_fails_loudly() {
     );
 }
 
+#[test]
+fn runs_in_a_different_order_weaken_the_flaky_label() {
+    // The wrapped script lists the same two tests in opposite order per run,
+    // with one of them mixed — what --order-by=defects does to a repeat.
+    let report =
+        std::env::temp_dir().join(format!("sooth-contract-reorder-{}.xml", std::process::id()));
+    let marker = std::env::temp_dir().join(format!("sooth-reorder-{}", std::process::id()));
+    let _ = std::fs::remove_file(&marker);
+    let script = format!(
+        "if [ -f '{m}' ]; then rm '{m}'; \
+         printf '<testsuite><testcase classname=\"c\" name=\"steady\"/><testcase classname=\"c\" name=\"wobbly\"/></testsuite>' > '{r}'; \
+         else touch '{m}'; \
+         printf '<testsuite><testcase classname=\"c\" name=\"wobbly\"><failure/></testcase><testcase classname=\"c\" name=\"steady\"/></testsuite>' > '{r}'; fi",
+        m = marker.display(),
+        r = report.display()
+    );
+    let output = sooth()
+        .args([
+            "run",
+            "--runs",
+            "2",
+            "--junit",
+            &report.display().to_string(),
+            "--color",
+            "never",
+            "--",
+            "sh",
+            "-c",
+            &script,
+        ])
+        .output()
+        .expect("sooth should run");
+    let _ = std::fs::remove_file(&report);
+    let _ = std::fs::remove_file(&marker);
+    let stdout = String::from_utf8(output.stdout).expect("stdout should be UTF-8");
+
+    assert_eq!(output.status.code(), Some(1), "run 1 failed: {stdout:?}");
+    assert!(
+        stdout.contains(
+            "flaky or order-dependent (1 of 2 runs now; run 2 did not share run 1's order)"
+        ),
+        "a reordered repeat must not claim plain flakiness: {stdout:?}"
+    );
+}
+
 /// A scratch git repo (one commit, `.sooth/` ignored) for history tests;
 /// returns `None` when git is unavailable.
 fn scratch_repo(tag: &str) -> Option<PathBuf> {
