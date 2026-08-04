@@ -54,6 +54,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Gitignore `.sooth/`. The `--json` shape gains an additive `history` object
   when the pass ran.
 
+### Added
+
+- Flaky detection checks its own precondition. It assumes a fixed order
+  repeated N times, but the runner picks the order — and `--order-by=defects`,
+  `--random-order` and pytest-randomly all reorder between runs. When two runs
+  did not share an order, a mixed outcome is reported as `flaky or
+  order-dependent` instead of `flaky`, since order-dependence would look
+  identical:
+
+  ```
+    - App.OrderTest::test_ships — flaky or order-dependent (1 of 2 runs now;
+      run 2 did not share run 1's order), new (nothing in history)
+  ```
+
+  Only the tests two runs share are compared, so a run cut short by
+  `--stop-on-failure` is not mistaken for a reordering. The `--json` shape
+  gains an additive `reordered_runs` array alongside `flaky`/`broken`.
 ### Changed
 
 - The report is organised per test instead of per analysis pass. A failing
