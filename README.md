@@ -75,7 +75,9 @@ already knows:
 
 Every failing test gets one line with two answers. **What this run saw** —
 `flaky`, `broken`, or, after `--verify`, `real` / `flaky or order-dependent` /
-`unverified`. And **whether sooth knew it already** — `known flake` (proven by
+`unverified`. (With `--runs N`, `flaky` weakens to `flaky or order-dependent`
+when the runs did not share one order — `--order-by=defects` and
+`--random-order` do that, and then order-dependence looks exactly like a flake.) And **whether sooth knew it already** — `known flake` (proven by
 the history), `failing since <commit>` (a regression: known, but real, so it
 never counts as "nothing new"), `quarantined`, or `new`. Those two are
 independent: a test can be broken *and* never seen before.

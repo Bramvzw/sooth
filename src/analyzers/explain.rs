@@ -276,6 +276,7 @@ mod tests {
                 passed: 0,
                 failed: 3,
             }],
+            reordered_runs: Vec::new(),
         };
         let history = history();
         let passes = super::Passes {

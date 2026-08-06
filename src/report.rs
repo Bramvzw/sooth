@@ -289,12 +289,15 @@ pub fn print_explanation(analyses: &Analyses<'_>, style: Style) {
             style.bold_red(&headline)
         }
     );
+    let reordered = analyses
+        .flaky
+        .map_or(&[][..], |pass| pass.reordered_runs.as_slice());
     for explanation in explanations {
         // Two independent answers on one line: what this invocation saw, and
         // whether sooth or the team had seen it before.
         let mut parts = Vec::with_capacity(2);
         if let Some(observed) = &explanation.observed {
-            parts.push(observed_phrase(observed, style));
+            parts.push(observed_phrase(observed, reordered, style));
         }
         parts.push(familiarity_phrase(explanation, style));
         println!("  - {} — {}", explanation.id, parts.join(", "));
@@ -303,8 +306,18 @@ pub fn print_explanation(analyses: &Analyses<'_>, style: Style) {
 }
 
 /// What this invocation's own runs saw — never the history's opinion.
-fn observed_phrase(observed: &explain::Observed, style: Style) -> String {
+/// `reordered` names the runs that did not share run 1's order: without a
+/// fixed order a mixed outcome is no longer proof of nondeterminism, so the
+/// claim is weakened rather than repeated with a disclaimer (`DECISIONS.md`).
+fn observed_phrase(observed: &explain::Observed, reordered: &[usize], style: Style) -> String {
     match observed {
+        explain::Observed::Flaky {
+            failed_runs,
+            observed_runs,
+        } if !reordered.is_empty() => style.yellow(&format!(
+            "flaky or order-dependent ({failed_runs} of {observed_runs} runs now; {} did not share run 1's order)",
+            runs_phrase(reordered)
+        )),
         explain::Observed::Flaky {
             failed_runs,
             observed_runs,
@@ -319,6 +332,16 @@ fn observed_phrase(observed: &explain::Observed, style: Style) -> String {
             style.yellow("flaky or order-dependent (passed on re-run in isolation)")
         }
         explain::Observed::Unverified => style.dim("unverified (the re-run did not cover it)"),
+    }
+}
+
+/// `run 2` / `runs 2 and 3` / `runs 2, 3 and 5`.
+fn runs_phrase(runs: &[usize]) -> String {
+    let numbers: Vec<String> = runs.iter().map(usize::to_string).collect();
+    match numbers.split_last() {
+        None => String::new(),
+        Some((last, [])) => format!("run {last}"),
+        Some((last, rest)) => format!("runs {} and {last}", rest.join(", ")),
     }
 }
 
@@ -487,10 +510,12 @@ pub fn to_json(outcomes: &[RunOutcome], summary: &JunitSummary, analyses: &Analy
     // Additive within schema_version 1: the flaky/broken fields appear only
     // when a multi-run analysis ran.
     let active = flaky.map_or(String::new(), |pass| {
+        let reordered: Vec<String> = pass.reordered_runs.iter().map(usize::to_string).collect();
         format!(
-            r#","flaky":[{}],"broken":[{}]"#,
+            r#","flaky":[{}],"broken":[{}],"reordered_runs":[{}]"#,
             outcome_entries(&pass.flaky),
-            outcome_entries(&pass.broken)
+            outcome_entries(&pass.broken),
+            reordered.join(",")
         )
     });
 
@@ -650,7 +675,7 @@ pub(crate) fn json_escape(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{json_escape, to_json, verdict_line, Analyses, JunitSummary, Style};
-    use crate::analyzers::explain;
+    use crate::analyzers::{explain, flaky};
     use crate::cli::ColorChoice;
     use crate::junit::{JunitReport, TestCase, TestStatus};
     use crate::runner::RunOutcome;
@@ -820,8 +845,37 @@ mod tests {
                 "unverified (the re-run did not cover it)",
             ),
         ] {
-            assert_eq!(super::observed_phrase(&observed, plain()), expected);
+            assert_eq!(super::observed_phrase(&observed, &[], plain()), expected);
         }
+    }
+
+    #[test]
+    fn a_reordered_run_weakens_the_flaky_claim_instead_of_disclaiming_it() {
+        let mixed = explain::Observed::Flaky {
+            failed_runs: 2,
+            observed_runs: 4,
+        };
+        assert_eq!(
+            super::observed_phrase(&mixed, &[], plain()),
+            "flaky (2 of 4 runs now)"
+        );
+        assert_eq!(
+            super::observed_phrase(&mixed, &[2], plain()),
+            "flaky or order-dependent (2 of 4 runs now; run 2 did not share run 1's order)"
+        );
+        assert_eq!(
+            super::observed_phrase(&mixed, &[2, 3, 5], plain()),
+            "flaky or order-dependent (2 of 4 runs now; runs 2, 3 and 5 did not share run 1's order)"
+        );
+        // Failing every run is broken whatever the order was.
+        assert_eq!(
+            super::observed_phrase(
+                &explain::Observed::Broken { observed_runs: 4 },
+                &[2],
+                plain()
+            ),
+            "broken (4 of 4 runs now)"
+        );
     }
 
     #[test]
@@ -928,6 +982,42 @@ mod tests {
         assert!(json
             .contains(r#""counts":{"known_flakes":1,"failing_since":0,"quarantined":0,"new":1}"#));
         assert!(json.contains(r#""only_known_flakes":false"#));
+    }
+
+    #[test]
+    fn the_json_carries_which_runs_were_reordered() {
+        let summary = JunitSummary::from_report(
+            &JunitReport {
+                test_cases: vec![test_case("a", TestStatus::Failed, 0.1)],
+            },
+            0,
+        );
+        let pass = flaky::Analysis {
+            reordered_runs: vec![2, 3],
+            ..flaky::Analysis::default()
+        };
+        let json = to_json(
+            &[outcome(false)],
+            &summary,
+            &Analyses {
+                flaky: Some(&pass),
+                ..Analyses::default()
+            },
+        );
+        // A consumer must be able to see that the ranking rests on runs that
+        // did not share one order.
+        assert!(json.contains(r#""reordered_runs":[2,3]"#), "got: {json}");
+
+        let stable = flaky::Analysis::default();
+        let json = to_json(
+            &[outcome(false)],
+            &summary,
+            &Analyses {
+                flaky: Some(&stable),
+                ..Analyses::default()
+            },
+        );
+        assert!(json.contains(r#""reordered_runs":[]"#), "got: {json}");
     }
 
     #[test]

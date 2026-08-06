@@ -46,6 +46,35 @@ pass. Flaky detection uses a fixed order repeated N times; order-dependence
 detection uses shuffled orders compared against each other, with no
 repetition. See `ROADMAP.md` for how this maps to versions.
 
+Sooth only ever guaranteed that *it* does not shuffle — it does not choose the
+order at all, the runner does. And runners reorder by default: PHPUnit's
+`--order-by=defects` promotes tests that just failed, so run 2 differs from run
+1 exactly when `--runs 2` is used to investigate a failure. So the pass now
+checks its own precondition by comparing report order across runs, and when it
+did not hold it makes a **weaker claim** rather than the same claim with a
+disclaimer: `flaky` becomes `flaky or order-dependent`, the vocabulary
+`--verify` already uses for this ambiguity. The finding keeps its place in the
+ranking — a test that is only green in one order is worth reporting either way,
+and telling users to change their flags to suit the tool is the wrong direction.
+
+Only the tests two runs share are compared, so a run cut short by
+`--stop-on-failure` is not mistaken for a reordering, and duplicate ids count at
+their first appearance. Runner-agnostic by construction: no runner name, no flag
+inspection, no threshold on how much difference is too much.
+
+Measured before choosing this: paratest (Laravel `--parallel`) merges its
+per-worker reports in a stable order, so parallelism alone does not trip it, and
+PHPUnit `--random-order` does change report order across seeds. pytest-xdist,
+jest and `go test -parallel` are unmeasured, so the design leans on neither. No
+suppression flag until a runner proves noisy — the cost of being wrong here is a
+weaker true statement, not a false one (same reasoning that deferred
+`--verify-runs`).
+
+Enforcing a fixed order instead of checking for one was rejected: presets inject
+reporter flags, not behaviour changes; it would silently override a deliberate
+`--order-by=defects`; jest has no clean equivalent; and with `--junit` sooth
+controls nothing. Checking works everywhere, enforcing works in some places.
+
 ## Network egress as a separate spike, decoupled from the launch
 
 Per-test attribution of network calls is the hardest part of the whole
