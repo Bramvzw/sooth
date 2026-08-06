@@ -13,6 +13,9 @@ pub enum Verdict {
     KnownFlake {
         failed_runs: usize,
         observed_runs: usize,
+        /// The one environment every failure came from, when the history saw
+        /// this test in more than one.
+        failures_confined_to: Option<String>,
     },
     FailingSince {
         commit: String,
@@ -149,10 +152,11 @@ fn observed_for(id: &str, passes: &Passes<'_>) -> Option<Observed> {
 
 /// Flaky proof wins over a regression pointer, as in the history pass itself.
 fn verdict_for(id: &str, history: &HistoryAnalysis) -> Verdict {
-    if let Some(test) = history.flaky.iter().find(|test| test.id == id) {
+    if let Some(test) = history.flaky.iter().find(|test| test.outcomes.id == id) {
         return Verdict::KnownFlake {
-            failed_runs: test.failed,
-            observed_runs: test.observed(),
+            failed_runs: test.outcomes.failed,
+            observed_runs: test.outcomes.observed(),
+            failures_confined_to: test.failures_confined_to.clone(),
         };
     }
     if let Some(test) = history.failing_since.iter().find(|test| test.id == id) {
@@ -173,10 +177,13 @@ mod tests {
 
     fn history() -> HistoryAnalysis {
         HistoryAnalysis {
-            flaky: vec![TestOutcomes {
-                id: "c::wobbly".to_owned(),
-                passed: 46,
-                failed: 4,
+            flaky: vec![crate::analyzers::history::HistoricFlake {
+                outcomes: TestOutcomes {
+                    id: "c::wobbly".to_owned(),
+                    passed: 46,
+                    failed: 4,
+                },
+                failures_confined_to: None,
             }],
             failing_since: vec![FailingSince {
                 id: "c::regressed".to_owned(),
@@ -205,6 +212,7 @@ mod tests {
             Verdict::KnownFlake {
                 failed_runs: 4,
                 observed_runs: 50,
+                failures_confined_to: None,
             }
         );
         assert!(Counts::of(&explained).only_known_flakes());

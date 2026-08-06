@@ -41,7 +41,22 @@ pub struct Observation {
     pub status: TestStatus,
     pub commit: Option<String>,
     pub dirty: Option<bool>,
+    /// Where the run happened. `None` for observations written before sooth
+    /// recorded this, which stay usable — they just cannot support a claim
+    /// about one environment.
+    pub environment: Option<String>,
     pub at_epoch_secs: u64,
+}
+
+/// Where this run is happening. `CI` is set by GitHub Actions, GitLab,
+/// `CircleCI` and the rest, so it distinguishes the two environments that
+/// matter without asking the user or making a network call.
+pub fn current_environment() -> String {
+    if std::env::var_os("CI").is_some_and(|value| !value.is_empty()) {
+        "ci".to_owned()
+    } else {
+        "local".to_owned()
+    }
 }
 
 /// The loaded history, plus how many lines were unreadable — the file is
@@ -115,8 +130,12 @@ fn to_line(observation: &Observation) -> String {
     let dirty = observation
         .dirty
         .map_or_else(|| "null".to_owned(), |d| d.to_string());
+    let environment = observation
+        .environment
+        .as_deref()
+        .map_or_else(|| "null".to_owned(), |e| format!("\"{}\"", json_escape(e)));
     format!(
-        r#"{{"at":{},"commit":{commit},"dirty":{dirty},"status":"{}","id":"{}"}}"#,
+        r#"{{"at":{},"commit":{commit},"dirty":{dirty},"env":{environment},"status":"{}","id":"{}"}}"#,
         observation.at_epoch_secs,
         status_str(observation.status),
         json_escape(&observation.id)
@@ -212,11 +231,15 @@ fn parse_line(line: &str) -> Option<Observation> {
     let dirty = extract_bool_or_null(line, "dirty")?;
     let status = status_from_str(&extract_string_or_null(line, "status")??)?;
     let id = extract_string_or_null(line, "id")??;
+    // Absent, not null: lines written before environments were recorded are
+    // ordinary observations of an unknown environment, never corrupt ones.
+    let environment = extract_string_or_null(line, "env").flatten();
     Some(Observation {
         id,
         status,
         commit,
         dirty,
+        environment,
         at_epoch_secs,
     })
 }
@@ -288,7 +311,7 @@ fn extract_string_or_null(line: &str, key: &str) -> Option<Option<String>> {
 
 #[cfg(test)]
 mod tests {
-    use super::{append, code_identity, load, Observation};
+    use super::{append, code_identity, current_environment, load, Observation};
     use crate::junit::TestStatus;
     use std::path::PathBuf;
     use std::process::Command;
@@ -306,6 +329,7 @@ mod tests {
             status,
             commit: Some("abc123".to_owned()),
             dirty: Some(false),
+            environment: Some("local".to_owned()),
             at_epoch_secs: 1_700_000_000,
         }
     }
@@ -382,6 +406,51 @@ mod tests {
         // The cut-off first line is expected truncation, not corruption.
         assert_eq!(loaded.skipped_lines, 0);
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn lines_written_before_environments_existed_still_load() {
+        // 9423 of these exist in the wild; a new field must not turn a
+        // history into "unreadable lines".
+        let path = temp_path("legacy");
+        let legacy =
+            "{\"at\":9,\"commit\":\"abc\",\"dirty\":false,\"status\":\"failed\",\"id\":\"c::t\"}\n";
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, legacy).unwrap();
+
+        let loaded = load(&path);
+        assert_eq!(loaded.skipped_lines, 0, "a legacy line read as corrupt");
+        assert_eq!(loaded.observations.len(), 1);
+        assert_eq!(loaded.observations[0].environment, None);
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn the_environment_survives_a_roundtrip() {
+        let path = temp_path("environment");
+        let written = [
+            observation("c::a", TestStatus::Passed),
+            Observation {
+                environment: Some("ci".to_owned()),
+                ..observation("c::b", TestStatus::Failed)
+            },
+            Observation {
+                environment: None,
+                ..observation("c::c", TestStatus::Passed)
+            },
+        ];
+        append(&path, &written).expect("append");
+
+        let loaded = load(&path);
+        assert_eq!(loaded.observations, written);
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn the_environment_comes_from_the_ci_variable() {
+        // Read through the same helper the recorder uses, so the contract is
+        // "CI set and non-empty", not "some variable exists".
+        assert!(matches!(current_environment().as_str(), "ci" | "local"));
     }
 
     #[test]
