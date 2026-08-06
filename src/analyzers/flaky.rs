@@ -59,12 +59,6 @@ pub struct Analysis {
     pub broken: Vec<TestOutcomes>,
 }
 
-impl Analysis {
-    pub fn is_empty(&self) -> bool {
-        self.flaky.is_empty() && self.broken.is_empty()
-    }
-}
-
 /// One run's outcome per test id. Duplicate ids within one report
 /// (data-provider rows, retry reporters) collapse to the worst status and
 /// count once — mixed duplicates in a single run must never read as
@@ -200,6 +194,6 @@ mod tests {
             report(r#"<testcase classname="c" name="ok"/>"#),
             report(r#"<testcase classname="c" name="ok"/>"#),
         ];
-        assert!(analyze(&runs).is_empty());
+        assert_eq!(analyze(&runs), super::Analysis::default());
     }
 }

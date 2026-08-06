@@ -118,7 +118,12 @@ fn run(args: &cli::RunArgs) -> ExitCode {
     } else {
         std::collections::BTreeSet::new()
     };
-    let explanation = explain_failures(suite_red, &reports, history_analysis, &quarantine);
+    let passes = analyzers::explain::Passes {
+        active: flaky_analysis.as_ref(),
+        verify: verify_verdict.as_ref(),
+        history: history_analysis,
+    };
+    let explanation = explain_failures(suite_red, &reports, passes, &quarantine);
     let pardoned = pardoned_failures(args, suite_red, &quarantine, &outcomes, &reports);
     let failed = suite_red && pardoned.is_none();
     let analyses = Analyses {
@@ -206,7 +211,7 @@ fn pardoned_failures(
 fn explain_failures(
     suite_red: bool,
     reports: &[junit::JunitReport],
-    history: Option<&analyzers::history::Analysis>,
+    passes: analyzers::explain::Passes<'_>,
     quarantine: &std::collections::BTreeSet<String>,
 ) -> Option<Vec<analyzers::explain::Explanation>> {
     if !suite_red {
@@ -222,7 +227,7 @@ fn explain_failures(
     if failed.is_empty() {
         return None;
     }
-    Some(analyzers::explain::explain(&failed, history, quarantine))
+    Some(analyzers::explain::explain(&failed, passes, quarantine))
 }
 
 /// The pardon decision itself: all-or-nothing over every run.
@@ -401,8 +406,13 @@ fn explain(args: &cli::ExplainArgs) -> ExitCode {
     let loaded = load_history(std::path::Path::new(history::HISTORY_PATH));
     let analysis = analyzers::history::analyze(&loaded.observations);
     let quarantine = quarantine::load_or_empty(std::path::Path::new(quarantine::FILE_NAME));
+    // Explain runs nothing, so only the history has anything to contribute.
+    let passes = analyzers::explain::Passes {
+        history: Some(&analysis),
+        ..analyzers::explain::Passes::default()
+    };
     let explanations =
-        analyzers::explain::explain(&verify::failed_ids(&report), Some(&analysis), &quarantine);
+        analyzers::explain::explain(&verify::failed_ids(&report), passes, &quarantine);
 
     if args.json {
         println!("{}", report::explanation_json(&args.junit, &explanations));
@@ -436,14 +446,13 @@ fn print_sections(
 ) {
     report::print_runs(outcomes, style);
     report::print_summary(summary, style);
-    report::print_flaky(analyses.flaky, style);
-    report::print_history(analyses, style);
+    // One line per failing test, then what is known but did not fail: every
+    // pass's findings are folded into those two sections (see `DECISIONS.md`).
     report::print_explanation(analyses, style);
     if pardon_gap(args, analyses) {
         report::print_pardon_gap(style);
     }
-    report::print_verification(analyses.verify, style);
-    report::print_pardoned(analyses.pardoned, style);
+    report::print_history(analyses, style);
 }
 
 /// Whether the run failed on nothing but known flakes while the quarantine
@@ -963,6 +972,7 @@ mod tests {
 
     fn known_flake(id: &str, quarantined: bool) -> Explanation {
         Explanation {
+            observed: None,
             id: id.to_owned(),
             verdict: Verdict::KnownFlake {
                 failed_runs: 1,
@@ -1017,6 +1027,7 @@ mod tests {
             known_flake("c::a", false),
             Explanation {
                 id: "c::fresh".to_owned(),
+                observed: None,
                 verdict: Verdict::Unknown,
                 quarantined: false,
             },

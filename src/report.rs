@@ -176,43 +176,6 @@ pub fn print_summary(summary: &JunitSummary, style: Style) {
     }
 }
 
-/// The flaky pass, when one ran: mixed outcomes ranked by failure rate,
-/// then the always-failing tests — labeled broken, never flaky (see
-/// `DECISIONS.md`). Prints nothing when there is nothing to say: the healthy
-/// majority is not news.
-pub fn print_flaky(analysis: Option<&flaky::Analysis>, style: Style) {
-    let Some(analysis) = analysis else { return };
-    if analysis.is_empty() {
-        return;
-    }
-    if !analysis.flaky.is_empty() {
-        println!("{}", style.bold_red("flaky tests (mixed outcomes):"));
-        for (index, test) in analysis.flaky.iter().enumerate() {
-            println!(
-                "  {}. {} {}",
-                index + 1,
-                test.id,
-                style.red(&format!(
-                    "failed {} of {} observed runs ({}%)",
-                    test.failed,
-                    test.observed(),
-                    test.failure_rate_percent()
-                ))
-            );
-        }
-    }
-    if !analysis.broken.is_empty() {
-        println!("{}", style.red("consistently failing (broken, not flaky):"));
-        for test in &analysis.broken {
-            println!(
-                "  - {} {}",
-                test.id,
-                style.dim(&format!("(failed all {} observed runs)", test.observed()))
-            );
-        }
-    }
-}
-
 /// The closing verdict line: sooth's suite-level judgement at a glance.
 pub fn verdict_line(
     outcomes: &[RunOutcome],
@@ -246,11 +209,9 @@ pub fn verdict_line(
     }
 }
 
-/// The history pass's findings: proven flakes over the accumulated
-/// observations, then regression pointers. Prints nothing when there is
-/// nothing to say. Tests that failed this run are left out — the explanation
-/// below carries their history verdict, and printing the same counts twice
-/// buries the run's own news.
+/// What the history knows about tests that did *not* fail this run. The ones
+/// that did carry their history verdict on their own line above; repeating
+/// them here would print the same counts twice.
 pub fn print_history(analyses: &Analyses<'_>, style: Style) {
     let Some(pass) = analyses.history else { return };
     if pass.is_empty() {
@@ -310,41 +271,6 @@ pub fn print_history(analyses: &Analyses<'_>, style: Style) {
     }
 }
 
-/// Verification's verdict, when it ran. The suite verdict is unchanged.
-pub fn print_verification(verdict: Option<&verify::Verdict>, style: Style) {
-    let Some(verdict) = verdict else { return };
-    if verdict.is_empty() {
-        return;
-    }
-    if !verdict.real.is_empty() {
-        println!(
-            "{}",
-            style.bold_red("real failures (reproduced on re-run):")
-        );
-        for id in &verdict.real {
-            println!("  - {id}");
-        }
-    }
-    if !verdict.flaky_or_order.is_empty() {
-        println!(
-            "{}",
-            style.yellow("flaky or order-dependent (passed on re-run in isolation):")
-        );
-        for id in &verdict.flaky_or_order {
-            println!("  - {id}");
-        }
-    }
-    if !verdict.unverified.is_empty() {
-        println!(
-            "{}",
-            style.dim("unverified (the re-run did not cover these):")
-        );
-        for id in &verdict.unverified {
-            println!("  - {id}");
-        }
-    }
-}
-
 /// The run's failures, each labeled with what sooth already knew about it.
 pub fn print_explanation(analyses: &Analyses<'_>, style: Style) {
     let Some(explanations) = analyses.explanation else {
@@ -364,37 +290,66 @@ pub fn print_explanation(analyses: &Analyses<'_>, style: Style) {
         }
     );
     for explanation in explanations {
-        let detail = match &explanation.verdict {
-            explain::Verdict::KnownFlake {
-                failed_runs,
-                observed_runs,
-            } => style.yellow(&format!(
-                "known flake (failed {failed_runs} of {observed_runs} observed runs, {}%)",
-                flaky::failure_rate_percent(*failed_runs, *observed_runs)
-            )),
-            explain::Verdict::FailingSince {
-                commit,
-                failed_runs,
-            } => style.red(&format!(
-                "failing since {} (the last {failed_runs} observed runs)",
-                short_commit(commit)
-            )),
-            explain::Verdict::Unknown if explanation.quarantined => style.yellow(&format!(
-                "quarantined (listed in {})",
-                crate::quarantine::FILE_NAME
-            )),
-            explain::Verdict::Unknown => style.bold_red("new (the history holds no evidence)"),
-        };
-        // A quarantined-only failure already says so in its verdict.
-        let listed = if explanation.quarantined && explanation.verdict != explain::Verdict::Unknown
-        {
-            style.dim(", quarantined")
-        } else {
-            String::new()
-        };
-        println!("  - {} — {detail}{listed}", explanation.id);
+        // Two independent answers on one line: what this invocation saw, and
+        // whether sooth or the team had seen it before.
+        let mut parts = Vec::with_capacity(2);
+        if let Some(observed) = &explanation.observed {
+            parts.push(observed_phrase(observed, style));
+        }
+        parts.push(familiarity_phrase(explanation, style));
+        println!("  - {} — {}", explanation.id, parts.join(", "));
     }
     print_history_gap(analyses.history_observations, style);
+}
+
+/// What this invocation's own runs saw — never the history's opinion.
+fn observed_phrase(observed: &explain::Observed, style: Style) -> String {
+    match observed {
+        explain::Observed::Flaky {
+            failed_runs,
+            observed_runs,
+        } => style.red(&format!(
+            "flaky ({failed_runs} of {observed_runs} runs now)"
+        )),
+        explain::Observed::Broken { observed_runs } => style.red(&format!(
+            "broken ({observed_runs} of {observed_runs} runs now)"
+        )),
+        explain::Observed::Real => style.bold_red("real (reproduced on re-run)"),
+        explain::Observed::FlakyOrOrder => {
+            style.yellow("flaky or order-dependent (passed on re-run in isolation)")
+        }
+        explain::Observed::Unverified => style.dim("unverified (the re-run did not cover it)"),
+    }
+}
+
+/// Whether this failure was already known, and on whose authority.
+fn familiarity_phrase(explanation: &explain::Explanation, style: Style) -> String {
+    let listed = if explanation.quarantined {
+        format!(", quarantined in {}", crate::quarantine::FILE_NAME)
+    } else {
+        String::new()
+    };
+    match &explanation.verdict {
+        explain::Verdict::KnownFlake {
+            failed_runs,
+            observed_runs,
+        } => style.yellow(&format!(
+            "known flake ({failed_runs} of {observed_runs} in history, {}%){listed}",
+            flaky::failure_rate_percent(*failed_runs, *observed_runs)
+        )),
+        explain::Verdict::FailingSince {
+            commit,
+            failed_runs,
+        } => style.red(&format!(
+            "failing since {} (the last {failed_runs} observed runs){listed}",
+            short_commit(commit)
+        )),
+        explain::Verdict::Unknown if explanation.quarantined => style.yellow(&format!(
+            "quarantined (listed in {})",
+            crate::quarantine::FILE_NAME
+        )),
+        explain::Verdict::Unknown => style.bold_red("new (nothing in history)"),
+    }
 }
 
 /// `3 failures — 1 known flake, 2 new`; the all-clear sentence when nothing
@@ -453,21 +408,6 @@ pub fn print_pardon_gap(style: Style) {
             crate::quarantine::FILE_NAME
         ))
     );
-}
-
-/// The failures `--fail-on-flaky` pardoned via the quarantine file.
-pub fn print_pardoned(pardoned: Option<&[String]>, style: Style) {
-    let Some(pardoned) = pardoned else { return };
-    println!(
-        "{}",
-        style.yellow(&format!(
-            "quarantined failures (pardoned by {}):",
-            crate::quarantine::FILE_NAME
-        ))
-    );
-    for id in pardoned {
-        println!("  - {id}");
-    }
 }
 
 /// The verdict when `--fail-on-flaky` pardoned every failure: honest about
@@ -856,6 +796,67 @@ mod tests {
     }
 
     #[test]
+    fn each_pass_contributes_its_own_phrase_to_the_test_line() {
+        // What this invocation saw, whichever pass saw it.
+        for (observed, expected) in [
+            (
+                explain::Observed::Flaky {
+                    failed_runs: 1,
+                    observed_runs: 3,
+                },
+                "flaky (1 of 3 runs now)",
+            ),
+            (
+                explain::Observed::Broken { observed_runs: 3 },
+                "broken (3 of 3 runs now)",
+            ),
+            (explain::Observed::Real, "real (reproduced on re-run)"),
+            (
+                explain::Observed::FlakyOrOrder,
+                "flaky or order-dependent (passed on re-run in isolation)",
+            ),
+            (
+                explain::Observed::Unverified,
+                "unverified (the re-run did not cover it)",
+            ),
+        ] {
+            assert_eq!(super::observed_phrase(&observed, plain()), expected);
+        }
+    }
+
+    #[test]
+    fn the_two_answers_stay_independent_on_one_line() {
+        // Broken *and* never seen before is a coherent pair, not a conflict.
+        let broken_and_new = explain::Explanation {
+            id: "c::fresh".to_owned(),
+            observed: Some(explain::Observed::Broken { observed_runs: 2 }),
+            verdict: explain::Verdict::Unknown,
+            quarantined: false,
+        };
+        assert_eq!(
+            super::familiarity_phrase(&broken_and_new, plain()),
+            "new (nothing in history)"
+        );
+
+        let known_and_listed = explain::Explanation {
+            id: "c::wob".to_owned(),
+            observed: Some(explain::Observed::Flaky {
+                failed_runs: 1,
+                observed_runs: 2,
+            }),
+            verdict: explain::Verdict::KnownFlake {
+                failed_runs: 2,
+                observed_runs: 6,
+            },
+            quarantined: true,
+        };
+        assert_eq!(
+            super::familiarity_phrase(&known_and_listed, plain()),
+            "known flake (2 of 6 in history, 33%), quarantined in .sooth-quarantine"
+        );
+    }
+
+    #[test]
     fn the_explanation_headline_names_every_non_empty_category() {
         let counts = explain::Counts {
             known_flakes: 2,
@@ -901,6 +902,7 @@ mod tests {
     fn the_explanation_json_carries_the_verdict_the_counts_and_the_report() {
         let explanations = [
             explain::Explanation {
+                observed: None,
                 id: "c::wobbly".to_owned(),
                 verdict: explain::Verdict::KnownFlake {
                     failed_runs: 4,
@@ -909,6 +911,7 @@ mod tests {
                 quarantined: true,
             },
             explain::Explanation {
+                observed: None,
                 id: "c::fresh".to_owned(),
                 verdict: explain::Verdict::Unknown,
                 quarantined: false,
@@ -939,6 +942,7 @@ mod tests {
             .contains(r#""explanation""#));
 
         let explanations = [explain::Explanation {
+            observed: None,
             id: "a".to_owned(),
             verdict: explain::Verdict::FailingSince {
                 commit: "abc1234".to_owned(),

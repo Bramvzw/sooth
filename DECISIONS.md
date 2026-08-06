@@ -440,6 +440,35 @@ not only under `--fail-on-flaky`, so its entries can *label* a failure as
 known. "The file alone changes nothing" was about exit steering, and that
 half stands unchanged — a label is knowledge, not a pardon.
 
+## The report is organised per test, not per pass
+
+Each pass used to print its own section, so a test several passes had an
+opinion about appeared several times, each time with a different word attached
+— and two independent questions got presented as competing labels:
+
+- *what kind of problem is this* — flaky, broken, failing since a commit
+- *did I know about it already* — new, known from history, quarantined
+
+A test can be broken **and** never seen before. Printing those answers in
+separate sections produced lines that read as contradictions ("failed all 3
+runs" in one section, "new (the history holds no evidence)" in another), and
+made a report grow with the number of passes rather than the number of
+problems.
+
+So a failing test gets one line carrying both answers, and the sections that
+used to hold them — the repeat pass's ranking, verification's verdict, the
+pardon list — are gone. What the history knows about tests that did *not* fail
+this run keeps its own short section: that is genuinely other news.
+
+This subsumes three fixes that were made by hand while the sections still
+existed: the history section skipping this run's failures, the pardon note, and
+the duplicate pardon list. Each was a patch on a layout that kept producing
+them.
+
+The `--json` shape stays organised per pass and is unaffected: it is frozen at
+`schema_version` 1, machines are not bothered by repetition, and a consumer
+that wants one view per test can build it from the `explanation` object.
+
 ## Explaining a red run: a lookup, never a new conclusion
 
 Finding flakes is not the daily pain; being blocked by them is. So every red

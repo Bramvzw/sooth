@@ -20,12 +20,6 @@ pub struct Verdict {
     pub unverified: Vec<String>,
 }
 
-impl Verdict {
-    pub fn is_empty(&self) -> bool {
-        self.real.is_empty() && self.flaky_or_order.is_empty() && self.unverified.is_empty()
-    }
-}
-
 /// Classify each originally-failed id against the verification reports;
 /// order is preserved within each bucket.
 pub fn classify(failed_ids: &[String], verify_reports: &[JunitReport]) -> Verdict {

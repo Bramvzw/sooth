@@ -67,17 +67,23 @@ failing run therefore closes with each failure labeled against what sooth
 already knows:
 
 ```
-2 failures — all known flakes, nothing new
-  - App.OrderTest::test_ships — known flake (failed 3 of 10 observed runs, 30%)
-  - App.MailTest::test_send — quarantined (listed in .sooth-quarantine)
+3 failures — 1 known flake, 1 quarantined, 1 new
+  - App.MailTest::test_send — broken (2 of 2 runs now), quarantined (listed in .sooth-quarantine)
+  - App.NewTest::test_thing — broken (2 of 2 runs now), new (nothing in history)
+  - App.OrderTest::test_ships — flaky (1 of 2 runs now), known flake (2 of 6 in history, 33%)
 ```
 
-The labels are `known flake` (proven by the history), `failing since
-<commit>` (a regression — known, but real, so it never counts as "nothing
-new"), `quarantined`, and `new`. The verdict and exit code do not change:
-sooth explains failures, it never absorbs them. If nothing new failed and
-`--fail-on-flaky` still exits 1, the report says why: pardoning needs the
-committed list below, not sooth's own evidence.
+Every failing test gets one line with two answers. **What this run saw** —
+`flaky`, `broken`, or, after `--verify`, `real` / `flaky or order-dependent` /
+`unverified`. And **whether sooth knew it already** — `known flake` (proven by
+the history), `failing since <commit>` (a regression: known, but real, so it
+never counts as "nothing new"), `quarantined`, or `new`. Those two are
+independent: a test can be broken *and* never seen before.
+
+The verdict and exit code do not change: sooth explains failures, it never
+absorbs them. If nothing new failed and `--fail-on-flaky` still exits 1, the
+report says why — pardoning needs the committed list below, not sooth's own
+evidence.
 
 For a report you already have — a CI artifact, a run someone else made —
 `sooth explain` does the same thing without running anything:
@@ -94,11 +100,11 @@ whenever it could read the report (2 when it could not).
 
 `--verify` removes the `--runs N` cost from daily use. When a run fails,
 sooth re-runs *only the failed tests* twice — seconds instead of N× the
-suite — and splits the failures:
+suite — and each failure's line above says what came of it:
 
 - **real** — reproduced on every re-run: fix the test or the code.
 - **flaky or order-dependent** — passed on re-run in isolation.
-- **unverified** — the re-run did not cover them; sooth does not guess.
+- **unverified** — the re-run did not cover it; sooth does not guess.
 
 The suite verdict and exit code are unchanged: sooth classifies failures, it
 never absorbs them the way retry plugins do. Requires `--preset` (sooth must
