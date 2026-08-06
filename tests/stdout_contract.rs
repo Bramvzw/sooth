@@ -869,6 +869,60 @@ fn the_quarantine_labels_a_failure_without_the_flag_but_never_steers_the_exit() 
 }
 
 #[test]
+fn a_flake_that_only_breaks_in_ci_says_so() {
+    let Some(dir) = scratch_repo("environment") else {
+        return; // no git: identity degrades to unknown, covered by unit tests
+    };
+    let report = std::env::temp_dir().join(format!(
+        "sooth-contract-environment-{}.xml",
+        std::process::id()
+    ));
+    // Same commit, same order; only the environment and the outcome differ.
+    let run = |cases: &str, ci: bool| {
+        let script = format!(
+            "printf '<testsuite>{cases}</testsuite>' > '{}'",
+            report.display()
+        );
+        let mut command = Command::new(env!("CARGO_BIN_EXE_sooth"));
+        command.current_dir(&dir);
+        if ci {
+            command.env("CI", "true");
+        } else {
+            command.env_remove("CI");
+        }
+        command
+            .args([
+                "run",
+                "--junit",
+                &report.display().to_string(),
+                "--color",
+                "never",
+                "--",
+                "sh",
+                "-c",
+                &script,
+            ])
+            .output()
+            .expect("sooth should run")
+    };
+
+    let green = r#"<testcase classname="c" name="wob"/>"#;
+    let red = r#"<testcase classname="c" name="wob"><failure/></testcase>"#;
+    run(green, false);
+    run(green, false);
+    run(green, true);
+    let output = run(red, true);
+    let stdout = String::from_utf8(output.stdout).expect("stdout should be UTF-8");
+
+    assert!(
+        stdout.contains("known flake (1 of 4 in history, 25%; every failure in ci)"),
+        "the environment is the first thing to check, so it belongs on the line: {stdout:?}"
+    );
+    let _ = std::fs::remove_file(&report);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn no_history_neither_writes_nor_reports() {
     let Some(dir) = scratch_repo("nohistory") else {
         return;

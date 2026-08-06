@@ -498,6 +498,41 @@ The `--json` shape stays organised per pass and is unaffected: it is frozen at
 `schema_version` 1, machines are not bothered by repetition, and a consumer
 that wants one view per test can build it from the `explanation` object.
 
+## An observation records where it was made
+
+The failure that hurts most is the one that passes locally and fails on
+release. Sooth could not see it: `.sooth/history.jsonl` lives in the directory
+you run from, so a laptop and a CI runner accumulate separate files, and an
+observation carried `commit` and `dirty` but nothing about its surroundings.
+Concatenating a CI history into a local one — trivial, it is JSON lines —
+produced an undifferentiated pile in which "passed 40, failed 6" hid the only
+fact worth knowing.
+
+So an observation carries an environment, derived rather than configured: `ci`
+when `CI` is set and non-empty, `local` otherwise. That variable is the
+de-facto standard across GitHub Actions, GitLab and CircleCI, reading it makes
+no network call, and it needs nothing from the user on day one. A `--env`
+override for teams with several meaningful environments stays available
+additively; adding it before anyone asks would be guessing at their taxonomy.
+
+The claim it enables is deliberately narrow: **every failure came from one
+environment, and another environment observed the test too**. Both halves
+matter. Without a second environment "all failures were local" says no more
+than "all runs were local", and a report that draws attention to a
+distinction that does not exist is worse than silence. Where the split is
+even, nothing is said — an evenly flaky test is just flaky.
+
+Observations written before this carry no environment, and they are read as an
+*unknown* environment rather than folded into a labelled one. That keeps two
+promises at once: old histories load unchanged (an absent field is not a
+corrupt line), and a history that predates the feature cannot produce a
+confident claim about environments it never recorded. Same shape as `commit`
+and `dirty`: unknown counts in the totals, never as evidence.
+
+What this does not do is find the cause. Resources, parallelism, timezone,
+seeding, a service that exists in one place only — sooth points at the
+difference worth investigating and stops there.
+
 ## Explaining a red run: a lookup, never a new conclusion
 
 Finding flakes is not the daily pain; being blocked by them is. So every red

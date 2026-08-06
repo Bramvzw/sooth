@@ -223,10 +223,10 @@ pub fn print_history(analyses: &Analyses<'_>, style: Style) {
         .iter()
         .map(|explanation| explanation.id.as_str())
         .collect();
-    let flaky: Vec<&flaky::TestOutcomes> = pass
+    let flaky: Vec<&history::HistoricFlake> = pass
         .flaky
         .iter()
-        .filter(|test| !explained.contains(test.id.as_str()))
+        .filter(|test| !explained.contains(test.outcomes.id.as_str()))
         .collect();
     let failing_since: Vec<&history::FailingSince> = pass
         .failing_since
@@ -242,15 +242,21 @@ pub fn print_history(analyses: &Analyses<'_>, style: Style) {
         };
         println!("{}", style.bold_red(heading));
         for (index, test) in flaky.iter().enumerate() {
+            let confined = test
+                .failures_confined_to
+                .as_deref()
+                .map_or_else(String::new, |environment| {
+                    format!("; every failure in {environment}")
+                });
             println!(
                 "  {}. {} {}",
                 index + 1,
-                test.id,
+                test.outcomes.id,
                 style.red(&format!(
-                    "failed {} of {} observed runs ({}%)",
-                    test.failed,
-                    test.observed(),
-                    test.failure_rate_percent()
+                    "failed {} of {} observed runs ({}%{confined})",
+                    test.outcomes.failed,
+                    test.outcomes.observed(),
+                    test.outcomes.failure_rate_percent()
                 ))
             );
         }
@@ -356,10 +362,20 @@ fn familiarity_phrase(explanation: &explain::Explanation, style: Style) -> Strin
         explain::Verdict::KnownFlake {
             failed_runs,
             observed_runs,
-        } => style.yellow(&format!(
-            "known flake ({failed_runs} of {observed_runs} in history, {}%){listed}",
-            flaky::failure_rate_percent(*failed_runs, *observed_runs)
-        )),
+            failures_confined_to,
+        } => {
+            // Where it breaks is the first thing to check, so it rides along
+            // with the rate rather than waiting in a section below.
+            let confined = failures_confined_to
+                .as_deref()
+                .map_or_else(String::new, |environment| {
+                    format!("; every failure in {environment}")
+                });
+            style.yellow(&format!(
+                "known flake ({failed_runs} of {observed_runs} in history, {}%{confined}){listed}",
+                flaky::failure_rate_percent(*failed_runs, *observed_runs)
+            ))
+        }
         explain::Verdict::FailingSince {
             commit,
             failed_runs,
@@ -520,25 +536,7 @@ pub fn to_json(outcomes: &[RunOutcome], summary: &JunitSummary, analyses: &Analy
     });
 
     // Additive within schema_version 1: present whenever the history pass ran.
-    let history = history.map_or(String::new(), |pass| {
-        let since_entries: Vec<String> = pass
-            .failing_since
-            .iter()
-            .map(|test| {
-                format!(
-                    r#"{{"name":"{}","commit":"{}","failed_runs":{}}}"#,
-                    json_escape(&test.id),
-                    json_escape(&test.commit),
-                    test.failed_runs
-                )
-            })
-            .collect();
-        format!(
-            r#","history":{{"flaky":[{}],"failing_since":[{}]}}"#,
-            outcome_entries(&pass.flaky),
-            since_entries.join(",")
-        )
-    });
+    let history = history.map_or(String::new(), history_object);
 
     let verification = verify.map_or(String::new(), |verdict| {
         format!(
@@ -596,6 +594,9 @@ fn explanation_object(explanations: &[explain::Explanation]) -> String {
                 explain::Verdict::KnownFlake {
                     failed_runs,
                     observed_runs,
+                    // The environment belongs to the human line; the JSON
+                    // carries it under `history`, where the pass owns it.
+                    failures_confined_to: _,
                 } => format!(
                     r#"{{"name":"{name}","verdict":"known_flake","quarantined":{quarantined},"failed_runs":{failed_runs},"observed_runs":{observed_runs}}}"#
                 ),
@@ -624,6 +625,45 @@ fn explanation_object(explanations: &[explain::Explanation]) -> String {
         counts.quarantined,
         counts.new,
         counts.only_known_flakes()
+    )
+}
+
+/// The history pass as JSON. `failures_confined_to` is the environment
+/// half: `null` unless every failure came from one environment and another
+/// environment observed the test too.
+fn history_object(pass: &history::Analysis) -> String {
+    let flaky_entries: Vec<String> = pass
+        .flaky
+        .iter()
+        .map(|test| {
+            let confined = test.failures_confined_to.as_deref().map_or_else(
+                || "null".to_owned(),
+                |environment| format!(r#""{}""#, json_escape(environment)),
+            );
+            format!(
+                r#"{{"name":"{}","failed_runs":{},"observed_runs":{},"failures_confined_to":{confined}}}"#,
+                json_escape(&test.outcomes.id),
+                test.outcomes.failed,
+                test.outcomes.observed()
+            )
+        })
+        .collect();
+    let since_entries: Vec<String> = pass
+        .failing_since
+        .iter()
+        .map(|test| {
+            format!(
+                r#"{{"name":"{}","commit":"{}","failed_runs":{}}}"#,
+                json_escape(&test.id),
+                json_escape(&test.commit),
+                test.failed_runs
+            )
+        })
+        .collect();
+    format!(
+        r#","history":{{"flaky":[{}],"failing_since":[{}]}}"#,
+        flaky_entries.join(","),
+        since_entries.join(",")
     )
 }
 
@@ -901,6 +941,7 @@ mod tests {
             verdict: explain::Verdict::KnownFlake {
                 failed_runs: 2,
                 observed_runs: 6,
+                failures_confined_to: None,
             },
             quarantined: true,
         };
@@ -961,6 +1002,7 @@ mod tests {
                 verdict: explain::Verdict::KnownFlake {
                     failed_runs: 4,
                     observed_runs: 50,
+                    failures_confined_to: None,
                 },
                 quarantined: true,
             },
