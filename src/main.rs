@@ -129,7 +129,7 @@ fn run(args: &cli::RunArgs) -> ExitCode {
     let analyses = Analyses {
         flaky: flaky_analysis.as_ref(),
         history: history_analysis,
-        history_observations: history_pass.as_ref().map(|pass| pass.prior_observations),
+        history_observations: history_pass.as_ref().map(HistoryPass::prior_evidence),
         verify: verify_verdict.as_ref(),
         pardoned: pardoned.as_deref(),
         explanation: explanation.as_deref(),
@@ -334,10 +334,24 @@ fn verify_failures(
 }
 
 /// What the passive layer produced for this run: the classification, plus
-/// how many observations from *earlier* runs stood behind it.
+/// what stood behind it — how many observations from *earlier* runs, and how
+/// many of those could never be evidence.
 struct HistoryPass {
     analysis: analyzers::history::Analysis,
     prior_observations: usize,
+    /// Prior observations made on a dirty or unknown tree. They count in the
+    /// totals but prove nothing, so a history that is mostly these looks
+    /// broken when it is only blind.
+    prior_unusable: usize,
+}
+
+impl HistoryPass {
+    fn prior_evidence(&self) -> report::PriorEvidence {
+        report::PriorEvidence {
+            observations: self.prior_observations,
+            unusable: self.prior_unusable,
+        }
+    }
 }
 
 /// Record this invocation's runs into the local history and classify the
@@ -372,11 +386,19 @@ fn record_history(args: &cli::RunArgs, reports: &[junit::JunitReport]) -> Option
         return None;
     }
     let loaded = load_history(path);
+    // This run's own observations are already in the file; only earlier ones
+    // can make a failure read as anything but new.
+    let prior = loaded.observations.len().saturating_sub(observations.len());
+    let prior_unusable = loaded
+        .observations
+        .iter()
+        .take(prior)
+        .filter(|observation| observation.dirty != Some(false))
+        .count();
     Some(HistoryPass {
         analysis: analyzers::history::analyze(&loaded.observations),
-        // This run's own observations are already in the file; only earlier
-        // ones can make a failure read as anything but new.
-        prior_observations: loaded.observations.len().saturating_sub(observations.len()),
+        prior_observations: prior,
+        prior_unusable,
     })
 }
 
@@ -430,7 +452,14 @@ fn explain(args: &cli::ExplainArgs) -> ExitCode {
     report::print_explanation(
         &Analyses {
             explanation: Some(&explanations),
-            history_observations: Some(loaded.observations.len()),
+            history_observations: Some(report::PriorEvidence {
+                observations: loaded.observations.len(),
+                unusable: loaded
+                    .observations
+                    .iter()
+                    .filter(|observation| observation.dirty != Some(false))
+                    .count(),
+            }),
             ..Analyses::default()
         },
         style,

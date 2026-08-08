@@ -421,19 +421,47 @@ fn short_commit(commit: &str) -> &str {
 
 /// What a "new" label rests on, when it rests on nothing: `None` is a
 /// history that was not consulted, `Some(0)` an empty one.
-fn print_history_gap(observations: Option<usize>, style: Style) {
-    let note = match observations {
-        None => {
+fn print_history_gap(evidence: Option<PriorEvidence>, style: Style) {
+    if let Some(note) = history_gap_note(evidence) {
+        println!("{}", style.dim(&format!("note: {note}")));
+    }
+}
+
+/// Why a "new" label may rest on nothing. Three ways that happens, and each
+/// is fixed differently — an empty history fills up on its own, a dirty one
+/// never will.
+fn history_gap_note(evidence: Option<PriorEvidence>) -> Option<String> {
+    let Some(prior) = evidence else {
+        return Some(
             "the run history was not consulted: failures are labeled from the \
              quarantine list alone"
-        }
-        Some(0) => {
+                .to_owned(),
+        );
+    };
+    if prior.observations == 0 {
+        return Some(
             "no observations from earlier runs yet: every failure reads as new until \
              they accumulate"
-        }
-        Some(_) => return,
-    };
-    println!("{}", style.dim(&format!("note: {note}")));
+                .to_owned(),
+        );
+    }
+    // Not empty but unusable, which reads the same to anyone looking at the
+    // output and is why this says so explicitly.
+    (prior.unusable == prior.observations).then(|| {
+        format!(
+            "all {} earlier observations were made on a dirty tree and cannot be \
+             evidence — commit or stash to let sooth prove flakiness",
+            prior.observations
+        )
+    })
+}
+
+/// What earlier runs left behind: how many observations, and how many of them
+/// a dirty or unknown tree made unusable as evidence.
+#[derive(Debug, Clone, Copy)]
+pub struct PriorEvidence {
+    pub observations: usize,
+    pub unusable: usize,
 }
 
 /// Why a run whose failures are all known still exits 1: the pardon rests on
@@ -476,8 +504,9 @@ pub struct Analyses<'a> {
     pub flaky: Option<&'a flaky::Analysis>,
     /// The passive pass (the accumulated history).
     pub history: Option<&'a history::Analysis>,
-    /// How many observations from earlier runs backed the history pass.
-    pub history_observations: Option<usize>,
+    /// What earlier runs left behind; `None` when the history pass did not
+    /// run at all, which is not the same as an empty history.
+    pub history_observations: Option<PriorEvidence>,
     pub verify: Option<&'a verify::Verdict>,
     pub pardoned: Option<&'a [String]>,
     pub explanation: Option<&'a [explain::Explanation]>,
@@ -949,6 +978,46 @@ mod tests {
             super::familiarity_phrase(&known_and_listed, plain()),
             "known flake (2 of 6 in history, 33%), quarantined in .sooth-quarantine"
         );
+    }
+
+    #[test]
+    fn a_history_of_nothing_but_dirty_runs_says_so_instead_of_staying_silent() {
+        // Measured on a real repo: 9423 observations, every one of them
+        // dirty, and every failure reading as "new" without a word about why.
+        let all_dirty = super::PriorEvidence {
+            observations: 9423,
+            unusable: 9423,
+        };
+        assert_eq!(
+            super::history_gap_note(Some(all_dirty)).as_deref(),
+            Some(
+                "all 9423 earlier observations were made on a dirty tree and cannot be \
+                 evidence — commit or stash to let sooth prove flakiness"
+            )
+        );
+    }
+
+    #[test]
+    fn some_usable_evidence_is_left_unremarked() {
+        // One clean observation is enough for the history to speak for
+        // itself; a note about the rest would be noise on every run.
+        let mixed = super::PriorEvidence {
+            observations: 10,
+            unusable: 9,
+        };
+        assert_eq!(super::history_gap_note(Some(mixed)), None);
+    }
+
+    #[test]
+    fn an_empty_history_keeps_its_own_note() {
+        let empty = super::PriorEvidence {
+            observations: 0,
+            unusable: 0,
+        };
+        assert!(super::history_gap_note(Some(empty))
+            .is_some_and(|note| note.starts_with("no observations from earlier runs")));
+        assert!(super::history_gap_note(None)
+            .is_some_and(|note| note.starts_with("the run history was not consulted")));
     }
 
     #[test]
