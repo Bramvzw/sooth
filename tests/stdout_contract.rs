@@ -971,6 +971,135 @@ fn a_history_made_entirely_on_a_dirty_tree_says_why_it_proves_nothing() {
 }
 
 #[test]
+fn imported_ci_evidence_completes_the_local_green_ci_red_proof() {
+    let Some(dir) = scratch_repo("import") else {
+        return; // no git: identity degrades to unknown, covered by unit tests
+    };
+    let sha = Command::new("git")
+        .arg("-C")
+        .arg(&dir)
+        .args(["rev-parse", "HEAD"])
+        .output()
+        .expect("git");
+    let sha = String::from_utf8(sha.stdout)
+        .expect("utf8")
+        .trim()
+        .to_owned();
+    let report = std::env::temp_dir().join(format!(
+        "sooth-contract-import-run-{}.xml",
+        std::process::id()
+    ));
+
+    // Two clean local greens; CI removed so they record env "local" even on
+    // a CI runner.
+    for _ in 0..2 {
+        let script = format!(
+            "printf '<testsuite><testcase classname=\"c\" name=\"wob\"/></testsuite>' > '{}'",
+            report.display()
+        );
+        let output = Command::new(env!("CARGO_BIN_EXE_sooth"))
+            .current_dir(&dir)
+            .env_remove("CI")
+            .args([
+                "run",
+                "--junit",
+                &report.display().to_string(),
+                "--color",
+                "never",
+                "--",
+                "sh",
+                "-c",
+                &script,
+            ])
+            .output()
+            .expect("sooth should run");
+        assert_eq!(output.status.code(), Some(0));
+    }
+
+    // The "CI artifact": a red report for the same test, same commit.
+    let artifact = dir.join("ci-report.xml");
+    std::fs::write(
+        &artifact,
+        r#"<testsuite><testcase classname="c" name="wob"><failure/></testcase></testsuite>"#,
+    )
+    .expect("write artifact");
+
+    let import = |tag: &str| {
+        let output = Command::new(env!("CARGO_BIN_EXE_sooth"))
+            .current_dir(&dir)
+            .env_remove("CI")
+            .args([
+                "import",
+                "--env",
+                "ci",
+                "--commit",
+                &sha,
+                "--color",
+                "never",
+                "ci-report.xml",
+            ])
+            .output()
+            .unwrap_or_else(|err| panic!("{tag}: {err}"));
+        (
+            output.status.code(),
+            String::from_utf8(output.stdout).expect("stdout should be UTF-8"),
+        )
+    };
+
+    let (code, stdout) = import("first import");
+    assert_eq!(code, Some(0), "import judges nothing: {stdout:?}");
+    assert!(
+        stdout.contains("ci-report.xml: 1 observation"),
+        "got: {stdout:?}"
+    );
+    // Local greens + an imported ci red on one clean commit: the proof the
+    // two environments could never produce separately.
+    assert!(stdout.contains("every failure in ci"), "got: {stdout:?}");
+    assert!(
+        stdout.contains("history now holds 3 observations"),
+        "got: {stdout:?}"
+    );
+
+    // The same file again is bookkeeping, not evidence.
+    let (code, stdout) = import("second import");
+    assert_eq!(code, Some(0));
+    assert!(
+        stdout.contains("skipped (already imported)"),
+        "got: {stdout:?}"
+    );
+    assert!(
+        stdout.contains("history now holds 3 observations"),
+        "a re-import grew the history: {stdout:?}"
+    );
+
+    let _ = std::fs::remove_file(&report);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn an_unreadable_file_fails_the_whole_import_before_anything_is_written() {
+    let (cwd, mut command) = sooth_in("import-atomic");
+    std::fs::write(
+        cwd.join("good.xml"),
+        r#"<testsuite><testcase classname="c" name="ok"/></testsuite>"#,
+    )
+    .expect("write");
+    std::fs::write(cwd.join("bad.xml"), "not xml at all").expect("write");
+
+    let output = command
+        .args(["import", "--env", "ci", "good.xml", "bad.xml"])
+        .output()
+        .expect("sooth should run");
+
+    assert_eq!(output.status.code(), Some(2));
+    assert!(
+        !cwd.join(".sooth/history.jsonl").exists(),
+        "a failed import wrote a partial batch"
+    );
+    let _ = std::fs::remove_dir_all(&cwd);
+}
+
+#[test]
 fn no_history_neither_writes_nor_reports() {
     let Some(dir) = scratch_repo("nohistory") else {
         return;
