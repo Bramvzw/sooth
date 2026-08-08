@@ -243,8 +243,13 @@ dozens of times a day; the observations exist, sooth just has to keep them.
 
 So sooth may append per-test observations (identity = JUnit `classname` +
 `name`) to a local, user-managed history file (e.g. `.sooth/history.jsonl`)
-that never leaves the machine or repo unless the user moves it themselves
-(CI cache or artifact). Flaky detection gets two feeds into the same
+that never leaves the machine or repo unless the user moves it themselves.
+Evidence from elsewhere travels as *report files*, not history files: CI's
+job is to retain the JUnit report it can already write, and `sooth import`
+is the door (see the import entry). Wrapping sooth around the test command
+inside CI remains possible — for `--fail-on-flaky` gating, a different job —
+but it is not the evidence route: it puts sooth in the critical path of
+someone else's build, which the local-first entry above exists to avoid. Flaky detection gets two feeds into the same
 failure-rate ranking: fixed-order repeats (active, answer now) and accumulated
 history (passive, zero marginal wall-time). This turns sooth from an episodic
 lab instrument into a flight recorder — the difference between a tool used
@@ -590,9 +595,12 @@ Consequences that keep it honest:
 have — a CI artifact, a colleague's run, a preset run whose temp report you
 kept. It exists because a preset's report is deleted after the run, so
 without it the beachhead user (PHPUnit, `--preset`) could never ask the
-question twice. It runs nothing and *records* nothing: the report it reads
-was very likely already observed by the run that produced it, and recording
-it again would mint duplicate observations — evidence out of thin air. Its
+question twice. It runs nothing and *records* nothing. The principle behind
+that, stated once so `import` can share it: **every run is recorded at most
+once, by its observer.** Explain never observes a run — whoever executed it
+already recorded it — so writing would mint duplicate observations, evidence
+out of thin air. Import (see its entry) is the sole observer of a foreign
+report, which is exactly why it may write where explain must not. Its
 exit is 0 whenever the report could be read (2 when it could not); a
 diagnosis that changed CI's verdict would be a second, hidden gate. Freshness
 is not checked either — pointing explain at an old report is the use case,
@@ -600,3 +608,41 @@ not the error `sooth run --junit` guards against. Its `--json` is a plain
 flag rather than run's `--json[=PATH]`: no wrapped command shares this
 stdout, so there is no last-line contract to honor and the whole output can
 simply be the JSON.
+
+## Import brings foreign reports in; the observer records
+
+The failure that matters most passes locally and fails on release, and no
+single machine's history can see it. The route that was rejected: run sooth
+inside the pipeline and merge history files. It puts sooth in the critical
+path of someone else's build (against local-first), it needs nothing sooth
+is good at (fetching and merging is plumbing), and merged files silently
+broke the analyzer while append order doubled as the time contract. Instead,
+the transport is the *report*: CI retains the JUnit file it can already
+write, and `sooth import --env <LABEL> [--commit SHA] <reports>` reads it
+into the local history. Downloading is `gh`'s job — sooth makes no network
+calls (`SECURITY.md`).
+
+Import records because it is the first and only observer of these runs (see
+the explain entry for the principle). What keeps it honest:
+
+- `--env` is required. Sooth cannot tell where a downloaded file came from,
+  and a guessed label would poison the environment evidence; the one thing
+  worse than no claim is a confident wrong one.
+- `--commit` is optional but load-bearing: it asserts a clean checkout, so
+  imported observations can combine with local ones into flaky proof.
+  Without it they count in totals and are never evidence — the same rule
+  dirty local runs live under. One commit per invocation; guessing shas from
+  filenames would be magic.
+- A content-hash ledger (`.sooth/imported`, FNV-1a 64 — hand-rolled because
+  `DefaultHasher` is not stable across Rust versions and the input is the
+  user's own files) makes re-importing the same download a no-op instead of
+  double evidence.
+- Validation happens before any write: an invocation imports all of its new
+  files or none of them, so a typo in one path cannot leave a half-recorded
+  batch.
+- `at` comes from the report's own `timestamp` attribute when present
+  (pytest writes one; PHPUnit does not), else the file's mtime, else now —
+  and the analyzer orders by `at`, so arrival order stopped mattering.
+- Exit codes: 0 or 2, never 1. Import judges nothing; failing to write *is*
+  failing at the job, unlike `run`, where history is a side effect that must
+  never change the verdict.

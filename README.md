@@ -64,13 +64,34 @@ evidence — commit or stash to let sooth prove flakiness
 ```
 
 Opt out per run with `--no-history`; delete or trim the file whenever you
-like, it is yours. In CI, cache `.sooth/` between runs (or pass it as an
-artifact) and twenty pipeline runs a day become twenty observations a day —
-and CI trees are clean, so those observations are the ones that prove things.
+like, it is yours. CI evidence travels as report files, not history files —
+see "Bring your CI evidence home" below: twenty pipeline runs a day become
+twenty observations a day, and CI trees are clean, so those observations are
+the ones that prove things.
 
 Each observation also records **where** it was made — `ci` when the `CI`
-variable is set, `local` otherwise. Bring a CI history together with your
-local one (`cat` works, it is JSON lines) and the difference becomes visible:
+variable is set, `local` otherwise.
+
+## Bring your CI evidence home
+
+The failure that hurts most passes locally and fails on release. CI does not
+need sooth for this — it only needs to keep the report it already can write
+(`--log-junit report.xml`, uploaded as an artifact). Download the artifacts
+and import them:
+
+```bash
+sooth import --env ci --commit 8cbf89a report-8cbf89a.xml
+```
+
+`--env` is required — sooth cannot tell where a downloaded file came from,
+and guessing would poison the evidence. `--commit` asserts the reports came
+from a clean checkout of that commit; without it the observations count in
+totals but can never be proof, because flaky proof needs a known clean
+commit. Importing the same file twice is harmless: sooth keeps a ledger and
+skips it.
+
+With local runs and CI reports in one history, the difference becomes
+visible:
 
 ```
   - App.OrderTest::test_ships — known flake (6 of 52 in history, 12%; every failure in ci)

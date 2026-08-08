@@ -234,6 +234,34 @@ pub fn parse_str(xml: &str) -> Result<JunitReport, JunitError> {
     Ok(JunitReport { test_cases })
 }
 
+/// The `timestamp` attribute of the first `<testsuite>` that carries one.
+/// pytest writes it, `PHPUnit` does not; every failure mode degrades to `None`
+/// because the caller has a fallback (the file's mtime) and a missing
+/// timestamp must not fail an otherwise readable report.
+pub fn report_timestamp(xml: &str) -> Option<String> {
+    let mut reader = Reader::from_str(xml);
+    reader.config_mut().trim_text(true);
+    loop {
+        let tag = match reader.read_event() {
+            Ok(Event::Start(tag) | Event::Empty(tag)) => tag,
+            Ok(Event::Eof) | Err(_) => return None,
+            Ok(_) => continue,
+        };
+        if tag.local_name().as_ref() != b"testsuite" {
+            continue;
+        }
+        for attribute in tag.attributes().flatten() {
+            if attribute.key.local_name().as_ref() == b"timestamp" {
+                let value = attribute
+                    .normalized_value(XmlVersion::Implicit1_0)
+                    .ok()?
+                    .into_owned();
+                return Some(value);
+            }
+        }
+    }
+}
+
 /// A `<testcase>` currently being scanned for a `<failure>`/`<error>`/
 /// `<skipped>` child, tracked until the `Event::End` that closes it.
 struct OpenTestCase {
@@ -580,6 +608,21 @@ mod tests {
             assert_eq!(report.test_cases.len(), 1);
             assert_eq!(report.test_cases[0].status, TestStatus::Passed);
         }
+    }
+
+    #[test]
+    fn the_report_timestamp_is_the_first_testsuite_that_carries_one() {
+        let xml = r#"<testsuites><testsuite name="outer"><testsuite name="inner" timestamp="2026-08-08T10:00:00"><testcase name="t"/></testsuite></testsuite></testsuites>"#;
+        assert_eq!(
+            super::report_timestamp(xml).as_deref(),
+            Some("2026-08-08T10:00:00")
+        );
+        // PHPUnit writes none at all; the caller falls back to the mtime.
+        assert_eq!(
+            super::report_timestamp(r#"<testsuite name="x"><testcase name="t"/></testsuite>"#),
+            None
+        );
+        assert_eq!(super::report_timestamp("not xml at all"), None);
     }
 
     #[test]
