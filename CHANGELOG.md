@@ -9,6 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- A history made entirely on a dirty tree says so, instead of letting every
+  failure read as new without explanation:
+
+  ```
+  note: all 9423 earlier observations were made on a dirty tree and cannot be
+  evidence — commit or stash to let sooth prove flakiness
+  ```
+
+  Dirty observations still count in the totals and are still never evidence
+  (unchanged). What changes is that the silence is explained: on a machine
+  someone is working on, the tree is dirty nearly always, so the passive
+  layer looked broken when it was only blind. Printed only when *every*
+  earlier observation is unusable — one clean observation is enough for the
+  history to speak for itself.
 - Observations record **where** the run happened, so a test that passes
   locally and fails on release can finally be seen as such. The environment
   is `ci` when the `CI` variable is set and non-empty (GitHub Actions,

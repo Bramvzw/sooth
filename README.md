@@ -55,10 +55,18 @@ Every run with a report source appends one observation per test to
 
 Runs on a dirty working tree count in the totals but are never used as
 evidence — sooth does not draw conclusions from code it can no longer
-identify. Opt out per run with `--no-history`; delete or trim the file
-whenever you like, it is yours. In CI, cache `.sooth/` between runs (or pass
-it as an artifact) and twenty pipeline runs a day become twenty observations
-a day.
+identify. If that leaves nothing to go on, the report says so rather than
+letting every failure read as new:
+
+```
+note: all 9423 earlier observations were made on a dirty tree and cannot be
+evidence — commit or stash to let sooth prove flakiness
+```
+
+Opt out per run with `--no-history`; delete or trim the file whenever you
+like, it is yours. In CI, cache `.sooth/` between runs (or pass it as an
+artifact) and twenty pipeline runs a day become twenty observations a day —
+and CI trees are clean, so those observations are the ones that prove things.
 
 Each observation also records **where** it was made — `ci` when the `CI`
 variable is set, `local` otherwise. Bring a CI history together with your
