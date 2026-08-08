@@ -142,6 +142,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The history analysis orders observations by their timestamp instead of
+  their position in the file. Appending lines from elsewhere (a CI history,
+  an older backup) used to land old evidence at the tail of the file —
+  exactly where `failing since` reads — so a merge could invent or hide a
+  regression. Ties keep file order; ordinary single-machine histories are
+  unaffected.
+
 - Verify selection carries the test's raw name instead of re-splitting the
   joined `classname::name` identity, so a test whose own name contains `::`
   (a jest title, say) is actually re-run instead of landing in `unverified`
