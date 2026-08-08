@@ -83,8 +83,13 @@ and import them:
 sooth import --env ci --commit 8cbf89a report-8cbf89a.xml
 ```
 
-`--env` is required — sooth cannot tell where a downloaded file came from,
-and guessing would poison the evidence. `--commit` asserts the reports came
+`--env` is required — nothing in a JUnit file says where it was produced
+(PHPUnit's carries no hostname or timestamp at all), and even provenance
+would not name *your* environment taxonomy, so sooth records your assertion
+rather than a guess. Want certainty the file really came from your pipeline?
+Verify it at download time, where the network lives: GitHub's
+`gh attestation verify` checks an artifact's signed provenance before you
+import it. `--commit` asserts the reports came
 from a clean checkout of that commit; without it the observations count in
 totals but can never be proof, because flaky proof needs a known clean
 commit. Importing the same file twice is harmless: sooth keeps a ledger and
