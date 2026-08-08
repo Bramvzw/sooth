@@ -80,15 +80,22 @@ fn failures_confined_to(signal: &[&Observation]) -> Option<String> {
         .map(str::to_owned)
 }
 
-/// Classify the history. Observations must be in append (time) order; the
-/// analysis looks at each test's last [`WINDOW_PER_TEST`] signal-carrying
-/// observations (skips carry none).
+/// Classify the history. Time order comes from `at`, not file position:
+/// evidence brought in from elsewhere lands at the end of the file however
+/// old it is, and failing-since reads the tail. The sort is stable, so
+/// observations sharing one `at` — a single run stamps all of its
+/// observations alike — keep their file order. The analysis looks at each
+/// test's last [`WINDOW_PER_TEST`] signal-carrying observations (skips
+/// carry none).
 pub fn analyze(observations: &[Observation]) -> Analysis {
+    let mut in_time_order: Vec<&Observation> = observations
+        .iter()
+        .filter(|observation| observation.status != TestStatus::Skipped)
+        .collect();
+    in_time_order.sort_by_key(|observation| observation.at_epoch_secs);
+
     let mut by_test: BTreeMap<&str, Vec<&Observation>> = BTreeMap::new();
-    for observation in observations {
-        if observation.status == TestStatus::Skipped {
-            continue;
-        }
+    for observation in in_time_order {
         by_test
             .entry(&observation.id)
             .or_default()
@@ -324,6 +331,32 @@ mod tests {
         assert_eq!(analysis.failing_since[0].commit, "bbb");
         // Dirty reds count in the streak; they only cannot carry the address.
         assert_eq!(analysis.failing_since[0].failed_runs, 3);
+    }
+
+    #[test]
+    fn time_order_comes_from_at_not_from_file_position() {
+        // Imported evidence lands at the end of the file however old it is.
+        // In file order the tail here is green, so nothing would be found;
+        // in `at` order the reds are the tail and the flip is a regression.
+        let stamped = |observation: Observation, secs: u64| Observation {
+            at_epoch_secs: secs,
+            ..observation
+        };
+        let history = [
+            stamped(clean("c::t", TestStatus::Failed, "bbb"), 30),
+            stamped(clean("c::t", TestStatus::Failed, "bbb"), 40),
+            stamped(clean("c::t", TestStatus::Passed, "aaa"), 10),
+            stamped(clean("c::t", TestStatus::Passed, "aaa"), 20),
+        ];
+        let analysis = analyze(&history);
+        assert!(analysis.flaky.is_empty());
+        assert_eq!(
+            analysis.failing_since.len(),
+            1,
+            "the tail was read in file order"
+        );
+        assert_eq!(analysis.failing_since[0].commit, "bbb");
+        assert_eq!(analysis.failing_since[0].failed_runs, 2);
     }
 
     #[test]

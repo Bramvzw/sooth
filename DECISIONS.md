@@ -388,6 +388,14 @@ the file is append-only and never pruned by sooth, so the read must be
 bounded or every run would pay for the entire past. Drift ages out; the
 user prunes (or doesn't) a file they own.
 
+Time order comes from each observation's `at`, not from file position: the
+analysis sorts (stably — one run stamps all its observations alike, so ties
+keep run order) before classifying. File position originally doubled as the
+time contract, which silently broke the moment lines from elsewhere were
+appended — old evidence landed at the tail, exactly where failing-since
+reads. A user merging files owns no ordering obligation; the timestamp
+already in every line does.
+
 ## Verification re-runs only the failures; a missed test is never "real"
 
 `--verify` is the layered flaky model's active classifier: after a failing
