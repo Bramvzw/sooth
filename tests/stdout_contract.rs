@@ -923,6 +923,54 @@ fn a_flake_that_only_breaks_in_ci_says_so() {
 }
 
 #[test]
+fn a_history_made_entirely_on_a_dirty_tree_says_why_it_proves_nothing() {
+    let Some(dir) = scratch_repo("dirty-history") else {
+        return;
+    };
+    // An untracked file makes every run dirty — the ordinary state of a
+    // machine someone is working on.
+    std::fs::write(dir.join("scratch.txt"), "work in progress").expect("write");
+    let report =
+        std::env::temp_dir().join(format!("sooth-contract-dirty-{}.xml", std::process::id()));
+    let run = |cases: &str| {
+        let script = format!(
+            "printf '<testsuite>{cases}</testsuite>' > '{}'",
+            report.display()
+        );
+        Command::new(env!("CARGO_BIN_EXE_sooth"))
+            .current_dir(&dir)
+            .args([
+                "run",
+                "--junit",
+                &report.display().to_string(),
+                "--color",
+                "never",
+                "--",
+                "sh",
+                "-c",
+                &script,
+            ])
+            .output()
+            .expect("sooth should run")
+    };
+
+    run(r#"<testcase classname="c" name="wob"/>"#);
+    let output = run(r#"<testcase classname="c" name="wob"><failure/></testcase>"#);
+    let stdout = String::from_utf8(output.stdout).expect("stdout should be UTF-8");
+
+    assert!(
+        stdout.contains("- c::wob — new (nothing in history)"),
+        "got: {stdout:?}"
+    );
+    assert!(
+        stdout.contains("were made on a dirty tree and cannot be evidence"),
+        "a dirty history reads exactly like an empty one unless sooth says so: {stdout:?}"
+    );
+    let _ = std::fs::remove_file(&report);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn no_history_neither_writes_nor_reports() {
     let Some(dir) = scratch_repo("nohistory") else {
         return;

@@ -529,6 +529,17 @@ corrupt line), and a history that predates the feature cannot produce a
 confident claim about environments it never recorded. Same shape as `commit`
 and `dirty`: unknown counts in the totals, never as evidence.
 
+A rule that discards evidence has to admit when it discarded all of it.
+Measured on a real repo: 9423 observations, every one made on a dirty tree,
+and every failure reporting "new (nothing in history)" without a word about
+why. Correct on both counts and useless — a history that proves nothing reads
+exactly like a history that is empty, and the two are fixed differently (one
+fills up on its own, the other never will). So when *every* prior observation
+is unusable, the report says so and names the remedy. Only then: one clean
+observation is enough for the history to speak for itself, and a note on every
+run would be noise. This is the same honesty as the empty-history note — the
+absence of a claim must never pass for the absence of a problem.
+
 What this does not do is find the cause. Resources, parallelism, timezone,
 seeding, a service that exists in one place only — sooth points at the
 difference worth investigating and stops there.
