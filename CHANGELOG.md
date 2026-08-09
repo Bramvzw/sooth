@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `sooth import --env <LABEL> [--commit SHA] <reports>`: bring JUnit reports
+  produced elsewhere — a CI artifact, a colleague's run — into the local
+  history. `--env` is required (sooth cannot tell where a downloaded file
+  came from); `--commit` asserts a clean checkout so imported observations
+  can combine with local ones into flaky proof. A content-hash ledger makes
+  re-importing the same file a no-op, and a batch is written all-or-nothing.
+  With local greens and CI reds on one commit, the history verdict becomes
+  `every failure in ci`. Exit 0, or 2 when a file is unreadable or the
+  history unwritable; never 1 — import judges nothing.
 - A history made entirely on a dirty tree says so, instead of letting every
   failure read as new without explanation:
 

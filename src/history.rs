@@ -59,6 +59,111 @@ pub fn current_environment() -> String {
     }
 }
 
+/// The ledger of already-imported report files, one line per file:
+/// a content hash plus the file name (informational). Lives beside the
+/// history so `.sooth/` stays the one local-state directory.
+pub const IMPORTED_PATH: &str = ".sooth/imported";
+
+/// FNV-1a, 64-bit. Hand-rolled because the ledger must survive a Rust
+/// upgrade and `DefaultHasher` is documented as unstable across releases;
+/// the input is the user's own report files, so collision resistance
+/// against an adversary is not a requirement.
+pub fn fnv1a64(bytes: &[u8]) -> u64 {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in bytes {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    hash
+}
+
+/// The hashes already recorded at `path`; a missing ledger is day one.
+pub fn imported_hashes(path: &Path) -> std::collections::BTreeSet<u64> {
+    let Ok(content) = fs::read_to_string(path) else {
+        return std::collections::BTreeSet::new();
+    };
+    content
+        .lines()
+        .filter_map(|line| line.split_whitespace().next())
+        .filter_map(|hex| u64::from_str_radix(hex, 16).ok())
+        .collect()
+}
+
+/// Record imported files in the ledger, creating `.sooth/` when missing.
+pub fn record_imported(path: &Path, entries: &[(u64, String)]) -> std::io::Result<()> {
+    if entries.is_empty() {
+        return Ok(());
+    }
+    if let Some(dir) = path.parent() {
+        fs::create_dir_all(dir)?;
+    }
+    let mut file = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)?;
+    let mut buffer = String::new();
+    for (hash, name) in entries {
+        use std::fmt::Write as _;
+        // `buffer` is a plain `String`; `writeln!` never fails for it.
+        let _ = writeln!(buffer, "{hash:016x} {name}");
+    }
+    file.write_all(buffer.as_bytes())
+}
+
+/// `YYYY-MM-DDTHH:MM:SS`, optionally with fractional seconds and a zone
+/// (`Z` or `±HH:MM`), to seconds since the epoch. Hand-rolled via
+/// days-from-civil: one `JUnit` attribute does not justify a date dependency.
+/// Anything unparsable is `None` — the caller falls back to the file mtime.
+pub fn iso8601_to_epoch(text: &str) -> Option<u64> {
+    let text = text.trim();
+    if text.len() < 19 || &text[10..11] != "T" {
+        return None;
+    }
+    let number = |range: std::ops::Range<usize>| text.get(range)?.parse::<i64>().ok();
+    let (year, month, day) = (number(0..4)?, number(5..7)?, number(8..10)?);
+    let (hour, minute, second) = (number(11..13)?, number(14..16)?, number(17..19)?);
+    if !(1..=12).contains(&month) || !(1..=31).contains(&day) {
+        return None;
+    }
+    if !(0..24).contains(&hour) || !(0..60).contains(&minute) || !(0..60).contains(&second) {
+        return None;
+    }
+
+    // days_from_civil (Howard Hinnant): civil date to days since 1970-01-01.
+    let years = if month <= 2 { year - 1 } else { year };
+    let era = if years >= 0 { years } else { years - 399 } / 400;
+    let year_of_era = years - era * 400;
+    let day_of_year = (153 * (if month > 2 { month - 3 } else { month + 9 }) + 2) / 5 + day - 1;
+    let day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
+    let days = era * 146_097 + day_of_era - 719_468;
+
+    let mut epoch = days * 86_400 + hour * 3_600 + minute * 60 + second;
+
+    // Skip fractional seconds, then apply an explicit zone; a bare local
+    // time is taken as written — minutes of skew do not matter to a pass
+    // whose window spans weeks.
+    let mut rest = &text[19..];
+    if let Some(stripped) = rest.strip_prefix('.') {
+        let digits = stripped.len()
+            - stripped
+                .trim_start_matches(|c: char| c.is_ascii_digit())
+                .len();
+        rest = &stripped[digits..];
+    }
+    if let Some(zone) = rest.strip_prefix('+').or_else(|| rest.strip_prefix('-')) {
+        let sign = if rest.starts_with('-') { -1 } else { 1 };
+        let zone_hour = zone.get(0..2)?.parse::<i64>().ok()?;
+        let zone_minute = zone
+            .get(3..5)
+            .unwrap_or("0")
+            .parse::<i64>()
+            .ok()
+            .unwrap_or(0);
+        epoch -= sign * (zone_hour * 3_600 + zone_minute * 60);
+    }
+    u64::try_from(epoch).ok()
+}
+
 /// The loaded history, plus how many lines were unreadable — the file is
 /// user-managed, so a corrupt line loses one observation, never the run.
 pub struct Loaded {
@@ -451,6 +556,48 @@ mod tests {
         // Read through the same helper the recorder uses, so the contract is
         // "CI set and non-empty", not "some variable exists".
         assert!(matches!(current_environment().as_str(), "ci" | "local"));
+    }
+
+    #[test]
+    fn fnv1a64_matches_the_published_vectors() {
+        // The ledger must survive a Rust upgrade, so the hash is pinned to
+        // the algorithm's own vectors, not to whatever std hashes to today.
+        assert_eq!(super::fnv1a64(b""), 0xcbf2_9ce4_8422_2325);
+        assert_eq!(super::fnv1a64(b"a"), 0xaf63_dc4c_8601_ec8c);
+        assert_eq!(super::fnv1a64(b"foobar"), 0x8594_4171_f739_67e8);
+    }
+
+    #[test]
+    fn iso8601_covers_the_shapes_junit_reports_actually_use() {
+        use super::iso8601_to_epoch as epoch;
+        assert_eq!(epoch("1970-01-01T00:00:00"), Some(0));
+        // Leap day: the day the hand-rolled math gets wrong first.
+        assert_eq!(epoch("2024-02-29T12:00:00"), Some(1_709_208_000));
+        // pytest writes fractional seconds and a zone.
+        assert_eq!(epoch("2026-08-08T10:00:00.123456Z"), Some(1_786_183_200));
+        assert_eq!(epoch("2026-08-08T10:00:00+02:00"), Some(1_786_176_000));
+        assert_eq!(epoch("garbage"), None);
+        assert_eq!(epoch("2026-13-01T00:00:00"), None);
+    }
+
+    #[test]
+    fn the_import_ledger_roundtrips_and_tolerates_junk() {
+        let path = temp_path("ledger");
+        super::record_imported(&path, &[(0xdead_beef, "a.xml".to_owned())]).expect("record");
+        super::record_imported(&path, &[(0x1234, "b sp ace.xml".to_owned())]).expect("extend");
+        let mut text = std::fs::read_to_string(&path).unwrap();
+        text.push_str("not a ledger line\n");
+        std::fs::write(&path, text).unwrap();
+
+        let hashes = super::imported_hashes(&path);
+        assert!(hashes.contains(&0xdead_beef));
+        assert!(hashes.contains(&0x1234));
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn a_missing_ledger_is_day_one() {
+        assert!(super::imported_hashes(&temp_path("no-ledger")).is_empty());
     }
 
     #[test]

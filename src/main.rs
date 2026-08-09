@@ -34,6 +34,7 @@ fn main() -> ExitCode {
     match parsed.command {
         Command::Run(args) => run(&args),
         Command::Explain(args) => explain(&args),
+        Command::Import(args) => import(&args),
     }
 }
 
@@ -498,6 +499,125 @@ fn pardon_gap(args: &cli::RunArgs, analyses: &Analyses<'_>) -> bool {
         })
 }
 
+/// Handle `sooth import`: bring reports produced elsewhere into the local
+/// history. Import is the sole observer of these runs, which is why it may
+/// record them where `explain` must not (see `DECISIONS.md`). Validation
+/// happens before any write: an invocation imports all of its new files or
+/// none of them. Exit 0, or 2 when a file is unreadable or the history
+/// cannot be written — writing is the job here, not a side effect.
+/// One report file accepted for import, waiting for the all-or-nothing write.
+struct Incoming {
+    at_epoch_secs: u64,
+    observations: Vec<history::Observation>,
+    hash: u64,
+    name: String,
+}
+
+fn import(args: &cli::ImportArgs) -> ExitCode {
+    let style = report::Style::resolved(args.color);
+    let ledger_path = std::path::Path::new(history::IMPORTED_PATH);
+    let mut seen = history::imported_hashes(ledger_path);
+    let mut incoming: Vec<Incoming> = Vec::new();
+    for path in &args.reports {
+        let content = match std::fs::read_to_string(path) {
+            Ok(content) => content,
+            Err(err) => {
+                eprintln!("sooth: could not read `{}`: {err}", path.display());
+                return ExitCode::from(EXIT_SOOTH_ERROR);
+            }
+        };
+        let hash = history::fnv1a64(content.as_bytes());
+        if !seen.insert(hash) {
+            println!("{}: skipped (already imported)", path.display());
+            continue;
+        }
+        let report = match junit::parse_str(&content) {
+            Ok(report) => report,
+            Err(err) => {
+                eprintln!(
+                    "sooth: failed to parse JUnit-XML report `{}`: {err}",
+                    path.display()
+                );
+                return ExitCode::from(EXIT_SOOTH_ERROR);
+            }
+        };
+        let at_epoch_secs = junit::report_timestamp(&content)
+            .and_then(|stamp| history::iso8601_to_epoch(&stamp))
+            .or_else(|| file_state(path).and_then(|(mtime, _)| epoch_secs(mtime)))
+            .unwrap_or_else(history::now_epoch_secs);
+        let observations: Vec<history::Observation> = analyzers::flaky::run_outcomes(&report)
+            .into_iter()
+            .map(|(id, status)| history::Observation {
+                id,
+                status,
+                commit: args.commit.clone(),
+                // --commit asserts a clean checkout of that commit; without
+                // it the code state is unknowable, not clean.
+                dirty: args.commit.as_ref().map(|_| false),
+                environment: Some(args.env.clone()),
+                at_epoch_secs,
+            })
+            .collect();
+        println!(
+            "{}: {}",
+            path.display(),
+            report::count(observations.len(), "observation")
+        );
+        incoming.push(Incoming {
+            at_epoch_secs,
+            observations,
+            hash,
+            name: path.display().to_string(),
+        });
+    }
+
+    // Ascending time order, so the file stays readable front to back; the
+    // analysis itself no longer depends on it.
+    incoming.sort_by_key(|entry| entry.at_epoch_secs);
+    let observations: Vec<history::Observation> = incoming
+        .iter()
+        .flat_map(|entry| entry.observations.iter().cloned())
+        .collect();
+    let history_path = std::path::Path::new(history::HISTORY_PATH);
+    if let Err(err) = history::append(history_path, &observations) {
+        eprintln!("sooth: could not write {}: {err}", history_path.display());
+        return ExitCode::from(EXIT_SOOTH_ERROR);
+    }
+    let ledger: Vec<(u64, String)> = incoming
+        .iter()
+        .map(|entry| (entry.hash, entry.name.clone()))
+        .collect();
+    if let Err(err) = history::record_imported(ledger_path, &ledger) {
+        // The observations are recorded; only the dedupe bookkeeping failed.
+        eprintln!(
+            "sooth: could not write {}: {err} — re-importing these files will double-count",
+            ledger_path.display()
+        );
+    }
+
+    let loaded = load_history(history_path);
+    let analysis = analyzers::history::analyze(&loaded.observations);
+    report::print_history(
+        &Analyses {
+            history: Some(&analysis),
+            ..Analyses::default()
+        },
+        style,
+    );
+    println!(
+        "history now holds {}",
+        report::count(loaded.observations.len(), "observation")
+    );
+    ExitCode::SUCCESS
+}
+
+/// Seconds since the epoch for a file timestamp; `None` before 1970.
+fn epoch_secs(time: std::time::SystemTime) -> Option<u64> {
+    time.duration_since(std::time::UNIX_EPOCH)
+        .ok()
+        .map(|elapsed| elapsed.as_secs())
+}
+
 /// Print the run's output in the shape the flags ask for. Returns an exit
 /// code only when emitting itself failed (the JSON file could not be
 /// written).
@@ -778,7 +898,7 @@ mod tests {
     fn parse_run_args(cmdline: &[&str]) -> crate::cli::RunArgs {
         let parsed = Cli::try_parse_from(cmdline).unwrap();
         let Command::Run(args) = parsed.command else {
-            panic!("expected `run`, got `explain`");
+            panic!("expected `run`");
         };
         args
     }

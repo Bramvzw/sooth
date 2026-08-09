@@ -21,6 +21,36 @@ pub enum Command {
     /// Classify the failures in a JUnit-XML report against what sooth already
     /// knows: the run history and the quarantine list. Runs no tests.
     Explain(ExplainArgs),
+
+    /// Bring JUnit-XML reports produced elsewhere (a CI artifact, a
+    /// colleague's run) into the local run history. Runs no tests.
+    Import(ImportArgs),
+}
+
+/// Arguments for `sooth import`.
+#[derive(Debug, Args)]
+pub struct ImportArgs {
+    /// Where these reports were produced (e.g. `ci`). Required because sooth
+    /// cannot tell where a downloaded file came from, and guessing would
+    /// poison the environment evidence. Use `ci` to match what `run` records
+    /// when the CI variable is set.
+    #[arg(long, value_name = "LABEL")]
+    pub env: String,
+
+    /// The commit the reports were produced from, asserting a clean checkout
+    /// of it (CI reality). Without it the observations count in totals but
+    /// can never be evidence — flaky proof needs a known clean commit.
+    #[arg(long, value_name = "SHA")]
+    pub commit: Option<String>,
+
+    /// When to color the report: auto respects `NO_COLOR` and whether stdout
+    /// is a terminal.
+    #[arg(long, value_enum, default_value = "auto")]
+    pub color: ColorChoice,
+
+    /// The JUnit-XML report files to import.
+    #[arg(required = true, value_name = "REPORT")]
+    pub reports: Vec<PathBuf>,
 }
 
 /// Arguments for `sooth explain`.
@@ -140,10 +170,10 @@ mod tests {
 
     fn parse_run_args(cmdline: &[&str]) -> super::RunArgs {
         let parsed = Cli::try_parse_from(cmdline).unwrap();
-        match parsed.command {
-            Command::Run(args) => args,
-            Command::Explain(_) => panic!("expected `run`, got `explain`"),
-        }
+        let Command::Run(args) = parsed.command else {
+            panic!("expected `run`");
+        };
+        args
     }
 
     #[test]
@@ -246,6 +276,28 @@ mod tests {
         assert_eq!(args.junit, std::path::PathBuf::from("report.xml"));
         assert!(args.json);
         assert_eq!(args.color, ColorChoice::Auto);
+    }
+
+    #[test]
+    fn import_takes_an_environment_a_commit_and_reports() {
+        let parsed = Cli::try_parse_from([
+            "sooth", "import", "--env", "ci", "--commit", "abc123", "a.xml", "b.xml",
+        ])
+        .unwrap();
+        let Command::Import(args) = parsed.command else {
+            panic!("expected `import`");
+        };
+        assert_eq!(args.env, "ci");
+        assert_eq!(args.commit.as_deref(), Some("abc123"));
+        assert_eq!(args.reports.len(), 2);
+    }
+
+    #[test]
+    fn import_requires_an_environment_and_at_least_one_report() {
+        // Sooth cannot tell where a downloaded file came from; guessing
+        // would poison the environment evidence.
+        assert!(Cli::try_parse_from(["sooth", "import", "a.xml"]).is_err());
+        assert!(Cli::try_parse_from(["sooth", "import", "--env", "ci"]).is_err());
     }
 
     #[test]

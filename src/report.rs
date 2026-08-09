@@ -488,7 +488,7 @@ pub fn pardoned_verdict(outcomes: &[RunOutcome], pardoned: usize, style: Style) 
 }
 
 /// `1 error`, `2 errors` — a count with a correctly pluralized noun.
-fn count(amount: usize, noun: &str) -> String {
+pub(crate) fn count(amount: usize, noun: &str) -> String {
     if amount == 1 {
         format!("{amount} {noun}")
     } else {
