@@ -9,6 +9,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Observations record **where** the run happened, so a test that passes
+  locally and fails on release can finally be seen as such. The environment
+  is `ci` when the `CI` variable is set and non-empty (GitHub Actions,
+  GitLab, CircleCI and the rest set it), `local` otherwise — no flag, no
+  network call. When every failure of a proven flake came from one
+  environment *and* another environment observed the test too, the report
+  says which:
+
+  ```
+    - App.OrderTest::test_ships — known flake (1 of 4 in history, 25%; every failure in ci)
+  ```
+
+  Both halves are required: without a second environment, "every failure was
+  local" says no more than "every run was local". Histories written before
+  this keep loading — a line without the field is an observation of an
+  unknown environment, never a corrupt one — and unknown environments never
+  carry the claim. The `--json` shape gains `failures_confined_to` on each
+  `history.flaky` entry.
 - Every red run is classified against what sooth already knows: each failure
   is labeled a known flake (with its failure rate), a regression (`failing
   since <commit>`), quarantined, or new, under a headline that answers the

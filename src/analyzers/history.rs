@@ -5,7 +5,7 @@
 //! never flaky. Observations on dirty or unknown code count in the totals
 //! but can never be evidence. One new red observation concludes nothing.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::analyzers::flaky::TestOutcomes;
 use crate::history::{Observation, WINDOW_PER_TEST};
@@ -22,12 +22,23 @@ pub struct FailingSince {
     pub failed_runs: usize,
 }
 
+/// A proven flake, plus where its failures came from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HistoricFlake {
+    pub outcomes: TestOutcomes,
+    /// The single environment every failure was observed in, when more than
+    /// one environment observed this test at all. That is the whole claim —
+    /// "it only breaks over there" — and it needs a second environment to
+    /// mean anything.
+    pub failures_confined_to: Option<String>,
+}
+
 /// The outcome of the history pass.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct Analysis {
     /// Proven flaky — at least one clean commit observed both passing and
     /// failing. Counts cover the whole window, sorted like the active pass.
-    pub flaky: Vec<TestOutcomes>,
+    pub flaky: Vec<HistoricFlake>,
     /// Regression pointers, sorted by streak length (longest first), then id.
     pub failing_since: Vec<FailingSince>,
 }
@@ -40,6 +51,33 @@ impl Analysis {
 
 fn failed(observation: &Observation) -> bool {
     matches!(observation.status, TestStatus::Failed | TestStatus::Error)
+}
+
+/// The one environment every failure came from, when a second environment
+/// also observed this test. Both halves are required: without a failure
+/// there is nothing to place, and without a second environment "all failures
+/// were local" says no more than "all observations were local".
+///
+/// Observations from before environments were recorded (`None`) are counted
+/// as their own unknown environment, so a history that predates this cannot
+/// produce a confident claim about one.
+fn failures_confined_to(signal: &[&Observation]) -> Option<String> {
+    let mut environments = BTreeSet::new();
+    let mut failing_environments = BTreeSet::new();
+    for observation in signal {
+        environments.insert(observation.environment.as_deref());
+        if failed(observation) {
+            failing_environments.insert(observation.environment.as_deref());
+        }
+    }
+    if environments.len() < 2 || failing_environments.len() != 1 {
+        return None;
+    }
+    failing_environments
+        .into_iter()
+        .next()
+        .flatten()
+        .map(str::to_owned)
 }
 
 /// Classify the history. Observations must be in append (time) order; the
@@ -86,10 +124,13 @@ pub fn analyze(observations: &[Observation]) -> Analysis {
             }
         }
         if per_clean_commit.values().any(|(pass, fail)| *pass && *fail) {
-            analysis.flaky.push(TestOutcomes {
-                id: id.to_owned(),
-                passed: signal.len() - failed_count,
-                failed: failed_count,
+            analysis.flaky.push(HistoricFlake {
+                outcomes: TestOutcomes {
+                    id: id.to_owned(),
+                    passed: signal.len() - failed_count,
+                    failed: failed_count,
+                },
+                failures_confined_to: failures_confined_to(&signal),
             });
             continue;
         }
@@ -116,9 +157,10 @@ pub fn analyze(observations: &[Observation]) -> Analysis {
     }
 
     analysis.flaky.sort_by(|a, b| {
-        b.failure_rate_percent()
-            .cmp(&a.failure_rate_percent())
-            .then(a.id.cmp(&b.id))
+        b.outcomes
+            .failure_rate_percent()
+            .cmp(&a.outcomes.failure_rate_percent())
+            .then(a.outcomes.id.cmp(&b.outcomes.id))
     });
     analysis
         .failing_since
@@ -138,6 +180,7 @@ mod tests {
             status,
             commit: commit.map(str::to_owned),
             dirty,
+            environment: None,
             at_epoch_secs: 0,
         }
     }
@@ -155,10 +198,67 @@ mod tests {
         ];
         let analysis = analyze(&history);
         assert_eq!(analysis.flaky.len(), 1);
-        assert_eq!(analysis.flaky[0].id, "c::t");
-        assert_eq!(analysis.flaky[0].passed, 2);
-        assert_eq!(analysis.flaky[0].failed, 1);
+        assert_eq!(analysis.flaky[0].outcomes.id, "c::t");
+        assert_eq!(analysis.flaky[0].outcomes.passed, 2);
+        assert_eq!(analysis.flaky[0].outcomes.failed, 1);
         assert!(analysis.failing_since.is_empty());
+    }
+
+    fn in_env(id: &str, status: TestStatus, commit: &str, environment: &str) -> Observation {
+        Observation {
+            environment: Some(environment.to_owned()),
+            ..clean(id, status, commit)
+        }
+    }
+
+    #[test]
+    fn a_flake_that_only_breaks_in_one_environment_says_which() {
+        let history = [
+            in_env("c::t", TestStatus::Passed, "aaa", "local"),
+            in_env("c::t", TestStatus::Passed, "aaa", "local"),
+            in_env("c::t", TestStatus::Passed, "aaa", "ci"),
+            in_env("c::t", TestStatus::Failed, "aaa", "ci"),
+        ];
+        let analysis = analyze(&history);
+        assert_eq!(
+            analysis.flaky[0].failures_confined_to.as_deref(),
+            Some("ci")
+        );
+    }
+
+    #[test]
+    fn failures_spread_over_environments_name_none_of_them() {
+        let history = [
+            in_env("c::t", TestStatus::Passed, "aaa", "local"),
+            in_env("c::t", TestStatus::Failed, "aaa", "local"),
+            in_env("c::t", TestStatus::Failed, "aaa", "ci"),
+        ];
+        assert_eq!(analyze(&history).flaky[0].failures_confined_to, None);
+    }
+
+    #[test]
+    fn one_environment_alone_proves_nothing_about_environments() {
+        // "Every failure was local" says no more than "every run was local".
+        let history = [
+            in_env("c::t", TestStatus::Passed, "aaa", "local"),
+            in_env("c::t", TestStatus::Failed, "aaa", "local"),
+        ];
+        assert_eq!(analyze(&history).flaky[0].failures_confined_to, None);
+    }
+
+    #[test]
+    fn a_history_that_predates_environments_makes_no_claim() {
+        // Unlabelled observations are their own unknown environment, so they
+        // cannot be silently folded into whichever one happens to be labelled.
+        let history = [
+            clean("c::t", TestStatus::Passed, "aaa"),
+            in_env("c::t", TestStatus::Passed, "aaa", "ci"),
+            Observation {
+                environment: None,
+                ..clean("c::t", TestStatus::Failed, "aaa")
+            },
+        ];
+        assert_eq!(analyze(&history).flaky[0].failures_confined_to, None);
     }
 
     #[test]

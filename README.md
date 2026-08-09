@@ -60,6 +60,19 @@ whenever you like, it is yours. In CI, cache `.sooth/` between runs (or pass
 it as an artifact) and twenty pipeline runs a day become twenty observations
 a day.
 
+Each observation also records **where** it was made — `ci` when the `CI`
+variable is set, `local` otherwise. Bring a CI history together with your
+local one (`cat` works, it is JSON lines) and the difference becomes visible:
+
+```
+  - App.OrderTest::test_ships — known flake (6 of 52 in history, 12%; every failure in ci)
+```
+
+That is the line that saves an afternoon: stop reading the test, start
+comparing the two environments. Sooth only says it when a second environment
+actually observed the test — otherwise "every failure was local" would mean
+no more than "every run was local".
+
 ## Explain a red run
 
 The daily pain is not finding flakes, it is being blocked by them. Every

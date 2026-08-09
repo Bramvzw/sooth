@@ -348,6 +348,7 @@ fn record_history(args: &cli::RunArgs, reports: &[junit::JunitReport]) -> Option
         return None;
     }
     let identity = history::code_identity(std::path::Path::new("."));
+    let environment = history::current_environment();
     let at_epoch_secs = history::now_epoch_secs();
     let mut observations = Vec::new();
     for report in reports {
@@ -357,6 +358,7 @@ fn record_history(args: &cli::RunArgs, reports: &[junit::JunitReport]) -> Option
                 status,
                 commit: identity.commit.clone(),
                 dirty: identity.dirty,
+                environment: Some(environment.clone()),
                 at_epoch_secs,
             });
         }
@@ -977,6 +979,7 @@ mod tests {
             verdict: Verdict::KnownFlake {
                 failed_runs: 1,
                 observed_runs: 4,
+                failures_confined_to: None,
             },
             quarantined,
         }
