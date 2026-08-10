@@ -25,6 +25,10 @@ pub enum Command {
     /// Bring JUnit-XML reports produced elsewhere (a CI artifact, a
     /// colleague's run) into the local run history. Runs no tests.
     Import(ImportArgs),
+
+    /// Classify the accumulated run history and print it. Runs no tests,
+    /// records nothing.
+    History(HistoryArgs),
 }
 
 /// Arguments for `sooth import`.
@@ -64,6 +68,15 @@ pub struct ImportArgs {
 pub enum LogFormat {
     /// `PHPUnit` console output, as `php artisan test` prints it too.
     Phpunit,
+}
+
+/// Arguments for `sooth history`.
+#[derive(Debug, Args)]
+pub struct HistoryArgs {
+    /// When to color the report: auto respects `NO_COLOR` and whether stdout
+    /// is a terminal.
+    #[arg(long, value_enum, default_value = "auto")]
+    pub color: ColorChoice,
 }
 
 /// Arguments for `sooth explain`.

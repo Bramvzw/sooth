@@ -421,7 +421,7 @@ fn short_commit(commit: &str) -> &str {
 
 /// What a "new" label rests on, when it rests on nothing: `None` is a
 /// history that was not consulted, `Some(0)` an empty one.
-fn print_history_gap(evidence: Option<PriorEvidence>, style: Style) {
+pub fn print_history_gap(evidence: Option<PriorEvidence>, style: Style) {
     if let Some(note) = history_gap_note(evidence) {
         println!("{}", style.dim(&format!("note: {note}")));
     }

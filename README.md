@@ -72,6 +72,9 @@ the ones that prove things.
 Each observation also records **where** it was made — `ci` when the `CI`
 variable is set, `local` otherwise.
 
+Look at the evidence any time with `sooth history` — the same analysis every
+run ends with, without running or recording anything.
+
 ## Bring your CI evidence home
 
 The failure that hurts most passes locally and fails on release. CI does not

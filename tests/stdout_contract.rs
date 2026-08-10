@@ -1216,6 +1216,56 @@ fn a_green_log_records_nothing_and_a_foreign_log_is_refused() {
 }
 
 #[test]
+fn sooth_history_reads_the_evidence_without_touching_it() {
+    let (cwd, mut command) = sooth_in("history-view");
+    std::fs::create_dir_all(cwd.join(".sooth")).expect("mkdir");
+    std::fs::write(
+        cwd.join(".sooth/history.jsonl"),
+        concat!(
+            r#"{"at":1,"commit":"aaa","dirty":false,"env":"local","status":"passed","id":"c::wob"}"#,
+            "\n",
+            r#"{"at":2,"commit":"aaa","dirty":false,"env":"ci","status":"failed","id":"c::wob"}"#,
+            "\n",
+            r#"{"at":3,"commit":"aaa","dirty":false,"env":"ci","status":"passed","id":"c::wob"}"#,
+            "\n",
+        ),
+    )
+    .expect("write");
+    let before = std::fs::read_to_string(cwd.join(".sooth/history.jsonl")).expect("read");
+
+    let output = command
+        .args(["history", "--color", "never"])
+        .output()
+        .expect("sooth should run");
+    let stdout = String::from_utf8(output.stdout).expect("stdout should be UTF-8");
+
+    assert_eq!(output.status.code(), Some(0));
+    assert!(stdout.contains("flaky per history"), "got: {stdout:?}");
+    assert!(stdout.contains("every failure in ci"), "got: {stdout:?}");
+    assert!(
+        stdout.contains("history now holds 3 observations"),
+        "got: {stdout:?}"
+    );
+    let after = std::fs::read_to_string(cwd.join(".sooth/history.jsonl")).expect("read");
+    assert_eq!(before, after, "a look at the history changed it");
+    let _ = std::fs::remove_dir_all(&cwd);
+}
+
+#[test]
+fn an_empty_history_says_so_instead_of_printing_nothing() {
+    let (cwd, mut command) = sooth_in("history-empty");
+    let _ = std::fs::remove_dir_all(cwd.join(".sooth"));
+    let output = command
+        .args(["history", "--color", "never"])
+        .output()
+        .expect("sooth should run");
+    let stdout = String::from_utf8(output.stdout).expect("stdout should be UTF-8");
+    assert_eq!(output.status.code(), Some(0));
+    assert!(stdout.contains("the history is empty"), "got: {stdout:?}");
+    let _ = std::fs::remove_dir_all(&cwd);
+}
+
+#[test]
 fn no_history_neither_writes_nor_reports() {
     let Some(dir) = scratch_repo("nohistory") else {
         return;

@@ -18,6 +18,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   With local greens and CI reds on one commit, the history verdict becomes
   `every failure in ci`. Exit 0, or 2 when a file is unreadable or the
   history unwritable; never 1 — import judges nothing.
+- `sooth history`: print the history analysis without running or recording
+  anything — the roster of proven flakes and failing-since pointers, the
+  all-dirty note when it applies, and the observation total. Diagnosis-only
+  like `explain`: an empty history says so and exits 0.
 - `sooth import --log phpunit`: import PHPUnit console logs — the failures
   your CI already keeps for 90 days, no project change required. Only the
   named failures are recorded (a log reduces passes to anonymous dots, and
