@@ -114,7 +114,7 @@ no more than "every run was local".
 
 No JUnit artifacts in your pipeline (yet)? The console logs your CI already
 keeps name every failure with full test identity, and GitHub retains them
-for 90 days. `sooth import --log phpunit` reads them — failures only: a log
+for 90 days by default (organisations can shorten that — check yours). `sooth import --log phpunit` reads them — failures only: a log
 reduces passes to anonymous dots, and sooth records witnessed facts, never
 deductions. Backfill months of CI failures without changing a line of your
 project:

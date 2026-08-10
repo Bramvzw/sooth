@@ -23,7 +23,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   all-dirty note when it applies, and the observation total. Diagnosis-only
   like `explain`: an empty history says so and exits 0.
 - `sooth import --log phpunit`: import PHPUnit console logs — the failures
-  your CI already keeps for 90 days, no project change required. Only the
+  your CI already keeps (90 days on GitHub by default), no project change required. Only the
   named failures are recorded (a log reduces passes to anonymous dots, and
   sooth records witnessed facts, never deductions); a file without a
   PHPUnit summary line is refused loudly, and a green log records nothing
