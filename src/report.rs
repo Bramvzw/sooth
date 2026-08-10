@@ -169,8 +169,9 @@ pub fn print_summary(summary: &JunitSummary, style: Style) {
     println!("{}", style.dim("slowest tests:"));
     for (index, (name, duration)) in summary.slowest.iter().enumerate() {
         println!(
-            "  {}. {name} {}",
+            "  {}. {} {}",
             index + 1,
+            identity(name, style),
             style.dim(&format!("({duration:.2?})"))
         );
     }
@@ -198,13 +199,13 @@ pub fn verdict_line(
                 count(report_failures, "failing test")
             )
         };
-        style.bold_red(&format!("result: FAILED — {detail} ({total:.2?} total)"))
+        style.bold_red(&format!("result: ❌ FAILED — {detail} ({total:.2?} total)"))
     } else {
         let tests = summary.map_or_else(String::new, |summary| {
             format!(", {}", count(summary.total, "test"))
         });
         style.bold_green(&format!(
-            "result: PASSED — {runs} of {runs} runs{tests} ({total:.2?} total)"
+            "result: ✅ PASSED — {runs} of {runs} runs{tests} ({total:.2?} total)"
         ))
     }
 }
@@ -249,9 +250,9 @@ pub fn print_history(analyses: &Analyses<'_>, style: Style) {
                     format!("; every failure in {environment}")
                 });
             println!(
-                "  {}. {} {}",
+                "  {}. 🎲 {} {}",
                 index + 1,
-                test.outcomes.id,
+                identity(&test.outcomes.id, style),
                 style.red(&format!(
                     "failed {} of {} observed runs ({}%{confined})",
                     test.outcomes.failed,
@@ -266,8 +267,8 @@ pub fn print_history(analyses: &Analyses<'_>, style: Style) {
         for test in failing_since {
             let short = short_commit(&test.commit);
             println!(
-                "  - {} {}",
-                test.id,
+                "  📉 {} {}",
+                identity(&test.id, style),
                 style.dim(&format!(
                     "(since {short}, failed the last {} observed runs)",
                     test.failed_runs
@@ -275,6 +276,33 @@ pub fn print_history(analyses: &Analyses<'_>, style: Style) {
             );
         }
     }
+}
+
+/// The one-glance glyph opening a per-test line: what the reader should do
+/// with it. Flake evidence and quarantine calm the line; everything else is
+/// attention. Glyphs are not color — they survive pipes and `NO_COLOR`.
+fn glyph(explanation: &explain::Explanation) -> &'static str {
+    if explanation.quarantined {
+        return "🚧";
+    }
+    match &explanation.verdict {
+        explain::Verdict::KnownFlake { .. } => "🎲",
+        explain::Verdict::FailingSince { .. } => "📉",
+        explain::Verdict::Unknown => match &explanation.observed {
+            Some(explain::Observed::Flaky { .. } | explain::Observed::FlakyOrOrder) => "🎲",
+            _ => "❌",
+        },
+    }
+}
+
+/// The identity with its namespace prefix dimmed: every byte stays — grep
+/// and copy-paste keep working — the eye lands on `ClassTest::method`.
+fn identity(id: &str, style: Style) -> String {
+    let class_end = id.find("::").unwrap_or(id.len());
+    let Some(prefix_end) = id[..class_end].rfind('.') else {
+        return id.to_owned();
+    };
+    format!("{}{}", style.dim(&id[..=prefix_end]), &id[prefix_end + 1..])
 }
 
 /// The run's failures, each labeled with what sooth already knew about it.
@@ -306,7 +334,12 @@ pub fn print_explanation(analyses: &Analyses<'_>, style: Style) {
             parts.push(observed_phrase(observed, reordered, style));
         }
         parts.push(familiarity_phrase(explanation, style));
-        println!("  - {} — {}", explanation.id, parts.join(", "));
+        println!(
+            "  {} {} — {}",
+            glyph(explanation),
+            identity(&explanation.id, style),
+            parts.join(", ")
+        );
     }
     print_history_gap(analyses.history_observations, style);
 }
@@ -482,7 +515,7 @@ pub fn print_pardon_gap(style: Style) {
 pub fn pardoned_verdict(outcomes: &[RunOutcome], pardoned: usize, style: Style) -> String {
     let total: Duration = outcomes.iter().map(|outcome| outcome.duration).sum();
     style.yellow(&format!(
-        "result: PASSED — only quarantined flakes failed ({} pardoned) ({total:.2?} total)",
+        "result: ✅ PASSED — only quarantined flakes failed ({} pardoned) ({total:.2?} total)",
         count(pardoned, "test")
     ))
 }
