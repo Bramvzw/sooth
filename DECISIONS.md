@@ -646,3 +646,45 @@ the explain entry for the principle). What keeps it honest:
 - Exit codes: 0 or 2, never 1. Import judges nothing; failing to write *is*
   failing at the job, unlike `run`, where history is a side effect that must
   never change the verdict.
+
+## Console logs are evidence too — failures only, never passes
+
+A CI that never wrote a JUnit report still printed one thing worth keeping:
+the failure blocks in its console log, full test identity included, retained
+by GitHub for 90 days. For the codebase that prompted this, that was 259 red
+integration-branch runs — three months of CI failure history — available
+without changing one line of the host project. That last part is the
+principle this feature serves: **sooth never requires the host project to
+change for sooth's sake.** Presets inject reporter flags at runtime, import
+consumes what already exists, and now the log route mines what CI keeps by
+default. Asking a team to add `--log-junit` + an artifact upload stops being
+a prerequisite and becomes the gold standard for those who also want rates.
+
+`sooth import --log phpunit` reads those logs. What keeps it honest:
+
+- **Only failures are recorded.** A console log names its failures (the
+  `N) Class::method` blocks) and reduces every pass to an anonymous dot, so
+  failures are witnessed facts and passes would be deductions ("not named as
+  failed" also covers skipped, crashed, and never-ran). Sooth records
+  observations, never inferences — the same rule that keeps skips and dirty
+  runs out of the evidence. The pass half of a flaky proof comes from where
+  passes are witnessed: local runs, or JUnit artifacts when they exist.
+- **No denominator, and no pretense of one.** A log-mined history can say
+  *that* a test fails in ci, never how often it passes there. Until a pass
+  arrives on a shared commit, a log-only test honestly reads as `failing
+  since` — and flips to `known flake (… every failure in ci)` the moment one
+  clean local green lands.
+- **An anchor or a refusal.** Without a recognizable PHPUnit summary line
+  (`OK (…`, `Tests: …, Assertions: …`, `FAILURES!`) the file is not treated
+  as a PHPUnit log: exit 2, loudly. A green log is valid and records
+  nothing, and says so. Sooth does not guess — a fabricated identity in the
+  history is worse than a refused file.
+- **Framework-scoped, like the presets.** The failure-block format is
+  PHPUnit's; other runners get their own parser when a real codebase needs
+  one, not before. The identity is converted to the JUnit form (backslashes
+  to dots in the class half only) so log evidence and report evidence meet
+  on the same ids.
+- **Acquisition stays outside.** `gh run list` + `gh run view --log-failed`
+  fetch; sooth reads local files (`SECURITY.md` unchanged). The log's own
+  per-line timestamps date the observations; mtime and now remain the
+  fallbacks.

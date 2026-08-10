@@ -1100,6 +1100,122 @@ fn an_unreadable_file_fails_the_whole_import_before_anything_is_written() {
 }
 
 #[test]
+fn a_red_phpunit_log_is_ci_evidence_like_any_report() {
+    let Some(dir) = scratch_repo("log-import") else {
+        return; // no git: identity degrades to unknown, covered by unit tests
+    };
+    let sha = Command::new("git")
+        .arg("-C")
+        .arg(&dir)
+        .args(["rev-parse", "HEAD"])
+        .output()
+        .expect("git");
+    let sha = String::from_utf8(sha.stdout)
+        .expect("utf8")
+        .trim()
+        .to_owned();
+    let report = std::env::temp_dir().join(format!(
+        "sooth-contract-log-import-run-{}.xml",
+        std::process::id()
+    ));
+    for _ in 0..2 {
+        let script = format!(
+            "printf '<testsuite><testcase classname=\"c\" name=\"wob\"/></testsuite>' > '{}'",
+            report.display()
+        );
+        let output = Command::new(env!("CARGO_BIN_EXE_sooth"))
+            .current_dir(&dir)
+            .env_remove("CI")
+            .args([
+                "run",
+                "--junit",
+                &report.display().to_string(),
+                "--color",
+                "never",
+                "--",
+                "sh",
+                "-c",
+                &script,
+            ])
+            .output()
+            .expect("sooth should run");
+        assert_eq!(output.status.code(), Some(0));
+    }
+
+    // The "CI log" in the exact shape `gh run view --log` hands over: job
+    // and step columns, per-line timestamps, ANSI on the banner.
+    std::fs::write(
+        dir.join("ci.log"),
+        "Run Tests / PHPUnit\tUNKNOWN STEP\t2026-08-10T08:34:58.61Z There was 1 failure:\n\
+         Run Tests / PHPUnit\tUNKNOWN STEP\t2026-08-10T08:34:58.61Z \n\
+         Run Tests / PHPUnit\tUNKNOWN STEP\t2026-08-10T08:34:58.61Z 1) c::wob\n\
+         Run Tests / PHPUnit\tUNKNOWN STEP\t2026-08-10T08:34:58.61Z Failed asserting that false is true.\n\
+         Run Tests / PHPUnit\tUNKNOWN STEP\t2026-08-10T08:34:58.61Z \n\
+         Run Tests / PHPUnit\tUNKNOWN STEP\t2026-08-10T08:34:58.62Z \u{1b}[37;41mFAILURES!\u{1b}[0m\n\
+         Run Tests / PHPUnit\tUNKNOWN STEP\t2026-08-10T08:34:58.62Z Tests: 405, Assertions: 1474, Failures: 1.\n",
+    )
+    .expect("write log");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_sooth"))
+        .current_dir(&dir)
+        .env_remove("CI")
+        .args([
+            "import", "--log", "phpunit", "--env", "ci", "--commit", &sha, "--color", "never",
+            "ci.log",
+        ])
+        .output()
+        .expect("sooth should run");
+    let stdout = String::from_utf8(output.stdout).expect("stdout should be UTF-8");
+
+    assert_eq!(output.status.code(), Some(0), "import judges nothing");
+    assert!(stdout.contains("ci.log: 1 observation"), "got: {stdout:?}");
+    // Local greens + the log's witnessed failure on one clean commit: the
+    // same proof a JUnit artifact carries, mined from what CI already keeps.
+    assert!(stdout.contains("every failure in ci"), "got: {stdout:?}");
+    assert!(
+        stdout.contains("history now holds 3 observations"),
+        "got: {stdout:?}"
+    );
+    let _ = std::fs::remove_file(&report);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_green_log_records_nothing_and_a_foreign_log_is_refused() {
+    let (cwd, mut command) = sooth_in("log-green");
+    std::fs::write(cwd.join("green.log"), "....\nOK (4 tests, 8 assertions)\n").expect("write");
+
+    let output = command
+        .args(["import", "--log", "phpunit", "--env", "ci", "green.log"])
+        .output()
+        .expect("sooth should run");
+    let stdout = String::from_utf8(output.stdout).expect("stdout should be UTF-8");
+    assert_eq!(output.status.code(), Some(0));
+    assert!(
+        stdout.contains("green.log: no failures to record — a green log names no tests"),
+        "got: {stdout:?}"
+    );
+
+    let (cwd_bad, mut command) = sooth_in("log-foreign");
+    std::fs::write(cwd_bad.join("pytest.log"), "collected 3 items\n3 passed\n").expect("write");
+    let output = command
+        .args(["import", "--log", "phpunit", "--env", "ci", "pytest.log"])
+        .output()
+        .expect("sooth should run");
+    assert_eq!(
+        output.status.code(),
+        Some(2),
+        "sooth guessed at a foreign log"
+    );
+    assert!(
+        !cwd_bad.join(".sooth/history.jsonl").exists(),
+        "a refused log still wrote history"
+    );
+    let _ = std::fs::remove_dir_all(&cwd);
+    let _ = std::fs::remove_dir_all(&cwd_bad);
+}
+
+#[test]
 fn no_history_neither_writes_nor_reports() {
     let Some(dir) = scratch_repo("nohistory") else {
         return;

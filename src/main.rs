@@ -9,6 +9,7 @@ mod analyzers;
 mod cli;
 mod history;
 mod junit;
+mod phpunit_log;
 mod preset;
 mod quarantine;
 mod report;
@@ -513,6 +514,54 @@ struct Incoming {
     name: String,
 }
 
+/// One import file's yield: its per-test outcomes plus the timestamp the
+/// content itself carries. `None` is a valid file with nothing to record.
+type FileYield = Option<(
+    std::collections::BTreeMap<String, junit::TestStatus>,
+    Option<String>,
+)>;
+
+/// The outcomes one import file yields — `Ok(None)` is a green console log,
+/// which names no tests. Parse failures print here and become exit 2.
+fn file_outcomes(
+    content: &str,
+    log: Option<cli::LogFormat>,
+    path: &std::path::Path,
+) -> Result<FileYield, ()> {
+    match log {
+        Some(cli::LogFormat::Phpunit) => match phpunit_log::parse_str(content) {
+            Ok(parsed) if parsed.failures.is_empty() => {
+                println!(
+                    "{}: no failures to record — a green log names no tests",
+                    path.display()
+                );
+                Ok(None)
+            }
+            Ok(parsed) => Ok(Some((parsed.failures, parsed.at))),
+            Err(err) => {
+                eprintln!(
+                    "sooth: failed to parse PHPUnit log `{}`: {err}",
+                    path.display()
+                );
+                Err(())
+            }
+        },
+        None => match junit::parse_str(content) {
+            Ok(report) => Ok(Some((
+                analyzers::flaky::run_outcomes(&report),
+                junit::report_timestamp(content),
+            ))),
+            Err(err) => {
+                eprintln!(
+                    "sooth: failed to parse JUnit-XML report `{}`: {err}",
+                    path.display()
+                );
+                Err(())
+            }
+        },
+    }
+}
+
 fn import(args: &cli::ImportArgs) -> ExitCode {
     let style = report::Style::resolved(args.color);
     let ledger_path = std::path::Path::new(history::IMPORTED_PATH);
@@ -531,21 +580,17 @@ fn import(args: &cli::ImportArgs) -> ExitCode {
             println!("{}: skipped (already imported)", path.display());
             continue;
         }
-        let report = match junit::parse_str(&content) {
-            Ok(report) => report,
-            Err(err) => {
-                eprintln!(
-                    "sooth: failed to parse JUnit-XML report `{}`: {err}",
-                    path.display()
-                );
-                return ExitCode::from(EXIT_SOOTH_ERROR);
-            }
+        let Ok(parsed) = file_outcomes(&content, args.log, path) else {
+            return ExitCode::from(EXIT_SOOTH_ERROR);
         };
-        let at_epoch_secs = junit::report_timestamp(&content)
+        let Some((outcomes, content_stamp)) = parsed else {
+            continue;
+        };
+        let at_epoch_secs = content_stamp
             .and_then(|stamp| history::iso8601_to_epoch(&stamp))
             .or_else(|| file_state(path).and_then(|(mtime, _)| epoch_secs(mtime)))
             .unwrap_or_else(history::now_epoch_secs);
-        let observations: Vec<history::Observation> = analyzers::flaky::run_outcomes(&report)
+        let observations: Vec<history::Observation> = outcomes
             .into_iter()
             .map(|(id, status)| history::Observation {
                 id,

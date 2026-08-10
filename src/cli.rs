@@ -43,14 +43,27 @@ pub struct ImportArgs {
     #[arg(long, value_name = "SHA")]
     pub commit: Option<String>,
 
+    /// Read the files as test-runner console logs of this format instead of
+    /// `JUnit` XML. A log names only its failures, so only failures are
+    /// recorded; the passes stay anonymous dots.
+    #[arg(long, value_enum, value_name = "FORMAT")]
+    pub log: Option<LogFormat>,
+
     /// When to color the report: auto respects `NO_COLOR` and whether stdout
     /// is a terminal.
     #[arg(long, value_enum, default_value = "auto")]
     pub color: ColorChoice,
 
-    /// The JUnit-XML report files to import.
+    /// The JUnit-XML report files (or, with `--log`, console logs) to import.
     #[arg(required = true, value_name = "REPORT")]
     pub reports: Vec<PathBuf>,
+}
+
+/// Console-log formats `import --log` can read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum LogFormat {
+    /// `PHPUnit` console output, as `php artisan test` prints it too.
+    Phpunit,
 }
 
 /// Arguments for `sooth explain`.

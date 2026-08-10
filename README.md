@@ -107,6 +107,31 @@ comparing the two environments. Sooth only says it when a second environment
 actually observed the test — otherwise "every failure was local" would mean
 no more than "every run was local".
 
+### Mine your CI's past
+
+No JUnit artifacts in your pipeline (yet)? The console logs your CI already
+keeps name every failure with full test identity, and GitHub retains them
+for 90 days. `sooth import --log phpunit` reads them — failures only: a log
+reduces passes to anonymous dots, and sooth records witnessed facts, never
+deductions. Backfill months of CI failures without changing a line of your
+project:
+
+```bash
+gh run list --branch main --status failure --limit 1000 \
+  --json databaseId,headSha --jq '.[] | "\(.databaseId) \(.headSha)"' |
+while read id sha; do
+  gh run view "$id" --log-failed > "ci-logs/$id.log"
+  sooth import --log phpunit --env ci --commit "$sha" "ci-logs/$id.log"
+done
+```
+
+Stick to your integration branch — red PR runs are usually honestly broken
+work-in-progress, not flake signal. A log-mined test reads as `failing
+since` until a pass on a shared commit arrives (a log has no denominator);
+your next clean local green flips it to `known flake`, `every failure in
+ci`. Keeping JUnit artifacts stays the gold standard: reports carry the
+passes too, and with them the failure rates.
+
 ## Explain a red run
 
 The daily pain is not finding flakes, it is being blocked by them. Every
