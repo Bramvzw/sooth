@@ -36,6 +36,7 @@ fn main() -> ExitCode {
         Command::Run(args) => run(&args),
         Command::Explain(args) => explain(&args),
         Command::Import(args) => import(&args),
+        Command::History(args) => history_command(&args),
     }
 }
 
@@ -647,6 +648,45 @@ fn import(args: &cli::ImportArgs) -> ExitCode {
             history: Some(&analysis),
             ..Analyses::default()
         },
+        style,
+    );
+    println!(
+        "history now holds {}",
+        report::count(loaded.observations.len(), "observation")
+    );
+    ExitCode::SUCCESS
+}
+
+/// `sooth history` looks at the evidence without adding to it: nothing runs,
+/// so the observer principle leaves nothing to record.
+fn history_command(args: &cli::HistoryArgs) -> ExitCode {
+    let style = report::Style::resolved(args.color);
+    let loaded = load_history(std::path::Path::new(history::HISTORY_PATH));
+    if loaded.observations.is_empty() {
+        println!("the history is empty — every `sooth run` and `sooth import` adds to it");
+        return ExitCode::SUCCESS;
+    }
+    let analysis = analyzers::history::analyze(&loaded.observations);
+    if analysis.is_empty() {
+        println!("nothing stands out: no proven flakes, no failing-since pointers");
+    }
+    report::print_history(
+        &Analyses {
+            history: Some(&analysis),
+            ..Analyses::default()
+        },
+        style,
+    );
+    let unusable = loaded
+        .observations
+        .iter()
+        .filter(|observation| observation.dirty != Some(false))
+        .count();
+    report::print_history_gap(
+        Some(report::PriorEvidence {
+            observations: loaded.observations.len(),
+            unusable,
+        }),
         style,
     );
     println!(
