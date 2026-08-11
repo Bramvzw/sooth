@@ -688,3 +688,24 @@ a prerequisite and becomes the gold standard for those who also want rates.
   fetch; sooth reads local files (`SECURITY.md` unchanged). The log's own
   per-line timestamps date the observations; mtime and now remain the
   fallbacks.
+
+## A test's state reads at a glance
+
+Dogfooding on a production Laravel suite showed the per-test lines stop
+being scannable once real identities arrive: a 100-character namespace
+buries which test it is, and the verdict exists only as a phrase to read.
+Two presentation moves, no information destroyed:
+
+- A glyph opens every per-test line and mirrors the partition the exit logic
+  already uses: ❌ attention now (new, real, broken), 🎲 flake evidence
+  (look, don't panic), 📉 failing since a commit boundary, 🚧 quarantined,
+  and ✅/❌ on the verdict line. Glyphs are not color — they survive pipes
+  and `NO_COLOR`, like PHPUnit's own ✗. Precedence when the axes disagree:
+  quarantine > known flake > failing since > observed flaky > attention.
+- The namespace prefix of an identity is dimmed (everything up to the class
+  name), so the eye lands on `ClassTest::method` and the counts. Every byte
+  stays: grep and copy-paste keep working, and with `--color never` the
+  output is byte-identical to before.
+
+The machine contract is untouched — `--json` and the exit codes carry the
+same facts; the human report is for humans.

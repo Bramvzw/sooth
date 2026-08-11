@@ -23,7 +23,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   all-dirty note when it applies, and the observation total. Diagnosis-only
   like `explain`: an empty history says so and exits 0.
 - `sooth import --log phpunit`: import PHPUnit console logs — the failures
-  your CI already keeps for 90 days, no project change required. Only the
+  your CI already keeps (90 days on GitHub by default), no project change required. Only the
   named failures are recorded (a log reduces passes to anonymous dots, and
   sooth records witnessed facts, never deductions); a file without a
   PHPUnit summary line is refused loudly, and a green log records nothing
@@ -126,6 +126,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   gains an additive `reordered_runs` array alongside `flaky`/`broken`.
 ### Changed
 
+- A test's state reads at a glance: every per-test line opens with a glyph
+  that mirrors the verdict — ❌ attention now (new, real, broken), 🎲 flake
+  evidence, 📉 failing since, 🚧 quarantined — and the verdict line closes
+  with ✅/❌. The namespace prefix of an identity is dimmed so the eye lands
+  on `ClassTest::method`; every byte stays, and with `--color never` the
+  identities are byte-identical to before. `--json` is untouched.
 - The report is organised per test instead of per analysis pass. A failing
   test gets one line carrying both answers — what this run saw and whether
   sooth knew it already — so `flaky tests`, `real failures (reproduced on
