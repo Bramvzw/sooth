@@ -199,13 +199,13 @@ pub fn verdict_line(
                 count(report_failures, "failing test")
             )
         };
-        style.bold_red(&format!("result: ❌ FAILED — {detail} ({total:.2?} total)"))
+        style.bold_red(&format!("result: ✗ FAILED — {detail} ({total:.2?} total)"))
     } else {
         let tests = summary.map_or_else(String::new, |summary| {
             format!(", {}", count(summary.total, "test"))
         });
         style.bold_green(&format!(
-            "result: ✅ PASSED — {runs} of {runs} runs{tests} ({total:.2?} total)"
+            "result: ✓ PASSED — {runs} of {runs} runs{tests} ({total:.2?} total)"
         ))
     }
 }
@@ -250,8 +250,9 @@ pub fn print_history(analyses: &Analyses<'_>, style: Style) {
                     format!("; every failure in {environment}")
                 });
             println!(
-                "  {}. 🎲 {} {}",
+                "  {}. {} {} {}",
                 index + 1,
+                style.yellow("~"),
                 identity(&test.outcomes.id, style),
                 style.red(&format!(
                     "failed {} of {} observed runs ({}%{confined})",
@@ -267,7 +268,8 @@ pub fn print_history(analyses: &Analyses<'_>, style: Style) {
         for test in failing_since {
             let short = short_commit(&test.commit);
             println!(
-                "  📉 {} {}",
+                "  {} {} {}",
+                style.red("▼"),
                 identity(&test.id, style),
                 style.dim(&format!(
                     "(since {short}, failed the last {} observed runs)",
@@ -280,17 +282,21 @@ pub fn print_history(analyses: &Analyses<'_>, style: Style) {
 
 /// The one-glance glyph opening a per-test line: what the reader should do
 /// with it. Flake evidence and quarantine calm the line; everything else is
-/// attention. Glyphs are not color — they survive pipes and `NO_COLOR`.
-fn glyph(explanation: &explain::Explanation) -> &'static str {
+/// attention. Single-width characters, not emoji — every monospace font has
+/// them and, unlike emoji, they carry the ANSI color that is the point.
+/// With `--color never` the characters stay; only the paint drops.
+fn glyph(explanation: &explain::Explanation, style: Style) -> String {
     if explanation.quarantined {
-        return "🚧";
+        return style.yellow("⊘");
     }
     match &explanation.verdict {
-        explain::Verdict::KnownFlake { .. } => "🎲",
-        explain::Verdict::FailingSince { .. } => "📉",
+        explain::Verdict::KnownFlake { .. } => style.yellow("~"),
+        explain::Verdict::FailingSince { .. } => style.red("▼"),
         explain::Verdict::Unknown => match &explanation.observed {
-            Some(explain::Observed::Flaky { .. } | explain::Observed::FlakyOrOrder) => "🎲",
-            _ => "❌",
+            Some(explain::Observed::Flaky { .. } | explain::Observed::FlakyOrOrder) => {
+                style.yellow("~")
+            }
+            _ => style.bold_red("✗"),
         },
     }
 }
@@ -336,7 +342,7 @@ pub fn print_explanation(analyses: &Analyses<'_>, style: Style) {
         parts.push(familiarity_phrase(explanation, style));
         println!(
             "  {} {} — {}",
-            glyph(explanation),
+            glyph(explanation, style),
             identity(&explanation.id, style),
             parts.join(", ")
         );
@@ -515,7 +521,7 @@ pub fn print_pardon_gap(style: Style) {
 pub fn pardoned_verdict(outcomes: &[RunOutcome], pardoned: usize, style: Style) -> String {
     let total: Duration = outcomes.iter().map(|outcome| outcome.duration).sum();
     style.yellow(&format!(
-        "result: ✅ PASSED — only quarantined flakes failed ({} pardoned) ({total:.2?} total)",
+        "result: ✓ PASSED — only quarantined flakes failed ({} pardoned) ({total:.2?} total)",
         count(pardoned, "test")
     ))
 }

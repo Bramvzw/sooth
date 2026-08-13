@@ -697,11 +697,19 @@ buries which test it is, and the verdict exists only as a phrase to read.
 Two presentation moves, no information destroyed:
 
 - A glyph opens every per-test line and mirrors the partition the exit logic
-  already uses: ❌ attention now (new, real, broken), 🎲 flake evidence
-  (look, don't panic), 📉 failing since a commit boundary, 🚧 quarantined,
-  and ✅/❌ on the verdict line. Glyphs are not color — they survive pipes
-  and `NO_COLOR`, like PHPUnit's own ✗. Precedence when the axes disagree:
+  already uses: ✗ attention now (new, real, broken), ~ flake evidence
+  (look, don't panic), ▼ failing since a commit boundary, ⊘ quarantined,
+  and ✓/✗ on the verdict line. Glyphs survive pipes and `NO_COLOR`, like
+  PHPUnit's own ✗. Precedence when the axes disagree:
   quarantine > known flake > failing since > observed flaky > attention.
+
+  The first cut used emoji (❌ 🎲 📉 🚧) and a real terminal refuted it the
+  same day: emoji render as anonymous boxes in common monospace fonts, and
+  they cannot carry ANSI color at all — so the per-test lines lost their
+  color layer exactly where the glyph was meant to reinforce it. Single-width
+  characters every monospace font has, painted in the verdict's color, do
+  both jobs; with `--color never` the characters stay and only the paint
+  drops.
 - The namespace prefix of an identity is dimmed (everything up to the class
   name), so the eye lands on `ClassTest::method` and the counts. Every byte
   stays: grep and copy-paste keep working, and with `--color never` the

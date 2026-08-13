@@ -102,7 +102,7 @@ With local runs and CI reports in one history, the difference becomes
 visible:
 
 ```
-  🎲 App.OrderTest::test_ships — known flake (6 of 52 in history, 12%; every failure in ci)
+  ~ App.OrderTest::test_ships — known flake (6 of 52 in history, 12%; every failure in ci)
 ```
 
 That is the line that saves an afternoon: stop reading the test, start
@@ -143,9 +143,9 @@ already knows:
 
 ```
 3 failures — 1 known flake, 1 quarantined, 1 new
-  🚧 App.MailTest::test_send — broken (2 of 2 runs now), quarantined (listed in .sooth-quarantine)
-  ❌ App.NewTest::test_thing — broken (2 of 2 runs now), new (nothing in history)
-  🎲 App.OrderTest::test_ships — flaky (1 of 2 runs now), known flake (2 of 6 in history, 33%)
+  ⊘ App.MailTest::test_send — broken (2 of 2 runs now), quarantined (listed in .sooth-quarantine)
+  ✗ App.NewTest::test_thing — broken (2 of 2 runs now), new (nothing in history)
+  ~ App.OrderTest::test_ships — flaky (1 of 2 runs now), known flake (2 of 6 in history, 33%)
 ```
 
 Every failing test gets one line with two answers. **What this run saw** —
@@ -206,7 +206,7 @@ sooth run --fail-on-flaky --preset phpunit -- vendor/bin/phpunit
 
 The run exits 0 only when *every* failure is on the list — the pardoned
 failures are still printed, and the verdict says exactly what happened
-(`result: ✅ PASSED — only quarantined flakes failed (2 tests pardoned)`).
+(`result: ✓ PASSED — only quarantined flakes failed (2 tests pardoned)`).
 Any new failure, new flakiness, or a failed run the report cannot explain
 still fails the build. Without the flag the list still labels its entries as
 known (see above), but it pardons nothing and steers no exit code.

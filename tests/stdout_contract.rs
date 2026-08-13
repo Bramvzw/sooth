@@ -85,7 +85,7 @@ fn a_plain_run_ends_with_a_verdict_line() {
     assert!(
         lines
             .last()
-            .is_some_and(|line| line.starts_with("result: ✅ PASSED")),
+            .is_some_and(|line| line.starts_with("result: ✓ PASSED")),
         "expected a closing verdict line, got: {stdout:?}"
     );
 }
@@ -117,7 +117,7 @@ fn json_to_a_file_keeps_the_human_report_on_stdout() {
     let _ = std::fs::remove_file(&json_path);
 
     assert!(stdout.contains("tests: 2 total"), "got: {stdout:?}");
-    assert!(stdout.contains("result: ❌ FAILED"), "got: {stdout:?}");
+    assert!(stdout.contains("result: ✗ FAILED"), "got: {stdout:?}");
     assert!(written.starts_with(r#"{"schema_version":1,"#));
 }
 
@@ -165,7 +165,7 @@ fn a_failing_wrapped_command_exits_one() {
     assert_eq!(output.status.code(), Some(1));
     let stdout = String::from_utf8(output.stdout).expect("stdout should be UTF-8");
     assert!(stdout.contains("runner exit=1"), "got: {stdout:?}");
-    assert!(stdout.contains("result: ❌ FAILED"), "got: {stdout:?}");
+    assert!(stdout.contains("result: ✗ FAILED"), "got: {stdout:?}");
 }
 
 #[test]
@@ -251,7 +251,7 @@ fn a_quarantined_failure_is_pardoned_with_fail_on_flaky() {
         "the pardoned id must be reported, got: {stdout:?}"
     );
     assert!(
-        stdout.contains("result: ✅ PASSED — only quarantined flakes failed"),
+        stdout.contains("result: ✓ PASSED — only quarantined flakes failed"),
         "got: {stdout:?}"
     );
 }
@@ -281,7 +281,7 @@ fn an_unlisted_failure_still_fails_with_fail_on_flaky() {
 
     assert_eq!(output.status.code(), Some(1));
     let stdout = String::from_utf8(output.stdout).expect("stdout should be UTF-8");
-    assert!(stdout.contains("result: ❌ FAILED"), "got: {stdout:?}");
+    assert!(stdout.contains("result: ✗ FAILED"), "got: {stdout:?}");
 }
 
 #[test]
@@ -370,7 +370,7 @@ fn a_failing_runner_with_a_green_report_is_called_out_on_stderr() {
         "got: {stderr:?}"
     );
     let stdout = String::from_utf8(output.stdout).expect("stdout should be UTF-8");
-    assert!(stdout.contains("result: ❌ FAILED"), "got: {stdout:?}");
+    assert!(stdout.contains("result: ✗ FAILED"), "got: {stdout:?}");
 }
 
 #[test]
@@ -439,7 +439,7 @@ fn repeated_runs_report_mixed_outcomes_as_flaky() {
     assert_eq!(output.status.code(), Some(1), "a flaky run failed run 1");
     let stdout = String::from_utf8(output.stdout).expect("stdout should be UTF-8");
     assert!(
-        stdout.contains("🎲 c::wobbly — flaky (1 of 2 runs now), new (nothing in history)"),
+        stdout.contains("~ c::wobbly — flaky (1 of 2 runs now), new (nothing in history)"),
         "the repeat pass and the history must share one line per test: {stdout:?}"
     );
 }
@@ -610,7 +610,7 @@ fn history_accumulates_across_invocations_and_reports_proven_flakes() {
         "the history section repeated a failure the explanation already covers: {stdout:?}"
     );
     assert!(
-        stdout.contains("🎲 c::wob — known flake (1 of 2 in history, 50%)"),
+        stdout.contains("~ c::wob — known flake (1 of 2 in history, 50%)"),
         "got: {stdout:?}"
     );
 
@@ -684,7 +684,7 @@ fn a_red_run_labels_its_failures_against_the_accumulated_history() {
         "got: {stdout:?}"
     );
     assert!(
-        stdout.contains("🎲 c::wob — known flake (1 of 2 in history, 50%)"),
+        stdout.contains("~ c::wob — known flake (1 of 2 in history, 50%)"),
         "got: {stdout:?}"
     );
     // The other flake did not fail here, so it stays in the history section.
@@ -794,7 +794,7 @@ fn explain_classifies_a_report_without_running_or_recording_anything() {
         "explain diagnoses, it never steers an exit: {stdout:?}"
     );
     assert!(
-        stdout.contains("🎲 c::wob — known flake (1 of 2 in history, 50%)"),
+        stdout.contains("~ c::wob — known flake (1 of 2 in history, 50%)"),
         "got: {stdout:?}"
     );
     assert_eq!(
@@ -859,7 +859,7 @@ fn the_quarantine_labels_a_failure_without_the_flag_but_never_steers_the_exit() 
         "the list alone must not pardon anything: {stdout:?}"
     );
     assert!(
-        stdout.contains("🚧 tests.test_math::test_subtraction — quarantined"),
+        stdout.contains("⊘ tests.test_math::test_subtraction — quarantined"),
         "got: {stdout:?}"
     );
     assert!(
@@ -959,7 +959,7 @@ fn a_history_made_entirely_on_a_dirty_tree_says_why_it_proves_nothing() {
     let stdout = String::from_utf8(output.stdout).expect("stdout should be UTF-8");
 
     assert!(
-        stdout.contains("❌ c::wob — new (nothing in history)"),
+        stdout.contains("✗ c::wob — new (nothing in history)"),
         "got: {stdout:?}"
     );
     assert!(

@@ -127,9 +127,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - A test's state reads at a glance: every per-test line opens with a glyph
-  that mirrors the verdict — ❌ attention now (new, real, broken), 🎲 flake
-  evidence, 📉 failing since, 🚧 quarantined — and the verdict line closes
-  with ✅/❌. The namespace prefix of an identity is dimmed so the eye lands
+  that mirrors the verdict — ✗ attention now (new, real, broken), ~ flake
+  evidence, ▼ failing since, ⊘ quarantined — and the verdict line closes
+  with ✓/✗. The glyphs are single-width colored characters, not emoji:
+  emoji render as boxes in common monospace fonts and cannot carry ANSI
+  color, which is half the point. The namespace prefix of an identity is dimmed so the eye lands
   on `ClassTest::method`; every byte stays, and with `--color never` the
   identities are byte-identical to before. `--json` is untouched.
 - The report is organised per test instead of per analysis pass. A failing
