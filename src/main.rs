@@ -7,6 +7,7 @@
 
 mod analyzers;
 mod cli;
+mod gate;
 mod history;
 mod junit;
 mod phpunit_log;
@@ -52,7 +53,12 @@ fn run(args: &cli::RunArgs) -> ExitCode {
     }
     let style = report::Style::resolved(args.color);
 
-    let ((command, envs), report_source) = match prepared_command(args) {
+    let command_args = match gated_command(args, style) {
+        Ok(Some(command)) => command,
+        Ok(None) => return ExitCode::SUCCESS,
+        Err(exit) => return exit,
+    };
+    let ((command, envs), report_source) = match prepared_command(args, &command_args) {
         Ok(prepared) => prepared,
         Err(exit) => return exit,
     };
@@ -100,14 +106,7 @@ fn run(args: &cli::RunArgs) -> ExitCode {
         cleanup_preset_report(path);
     }
 
-    let junit_summary = reports
-        .last()
-        .map(|report| JunitSummary::from_report(report, args.slowest.unwrap_or(DEFAULT_SLOWEST)));
-    let flaky_analysis = if args.runs > 1 && !reports.is_empty() {
-        Some(analyzers::flaky::analyze(&reports))
-    } else {
-        None
-    };
+    let (junit_summary, flaky_analysis) = summarize_reports(args, &reports);
     let history_pass = record_history(args, &reports);
     let history_analysis = history_pass.as_ref().map(|pass| &pass.analysis);
     // The raw command: inject_selected re-injects the report flags itself.
@@ -174,6 +173,7 @@ fn run(args: &cli::RunArgs) -> ExitCode {
 /// the user's own file.
 fn prepared_command(
     args: &cli::RunArgs,
+    command: &[String],
 ) -> Result<(preset::Spawn, Option<ReportSource>), ExitCode> {
     match args.preset {
         Some(chosen) => {
@@ -181,13 +181,61 @@ fn prepared_command(
                 eprintln!("sooth: failed to create a temp directory for the report: {err}");
                 ExitCode::from(EXIT_SOOTH_ERROR)
             })?;
-            let spawn = preset::inject(&args.command, chosen, &path);
+            let spawn = preset::inject(command, chosen, &path);
             Ok((spawn, Some(ReportSource::Preset(path))))
         }
         None => Ok((
-            (args.command.clone(), Vec::new()),
+            (command.to_vec(), Vec::new()),
             args.junit.clone().map(ReportSource::User),
         )),
+    }
+}
+
+/// The last run's totals, and the active flaky pass when several runs
+/// produced reports to compare.
+fn summarize_reports(
+    args: &cli::RunArgs,
+    reports: &[junit::JunitReport],
+) -> (Option<JunitSummary>, Option<analyzers::flaky::Analysis>) {
+    let summary = reports
+        .last()
+        .map(|report| JunitSummary::from_report(report, args.slowest.unwrap_or(DEFAULT_SLOWEST)));
+    let flaky = if args.runs > 1 && !reports.is_empty() {
+        Some(analyzers::flaky::analyze(reports))
+    } else {
+        None
+    };
+    (summary, flaky)
+}
+
+/// The command with the gate's selection appended. `Ok(None)` is the gate's
+/// happy fast path: nothing changed, nothing to prove, nothing spawned.
+fn gated_command(
+    args: &cli::RunArgs,
+    style: report::Style,
+) -> Result<Option<Vec<String>>, ExitCode> {
+    let Some(base) = &args.changed else {
+        return Ok(Some(args.command.clone()));
+    };
+    let preset = args.preset.expect("rejected_flag guarantees a preset");
+    match gate::resolve(base.as_deref(), preset, std::path::Path::new(".")) {
+        Ok(selection) => {
+            if selection.files.is_empty() {
+                println!(
+                    "gate: no new or changed tests against {} — nothing to prove",
+                    selection.base
+                );
+                return Ok(None);
+            }
+            report::print_gate(&selection, style);
+            let mut command = args.command.clone();
+            command.extend(selection.args.iter().cloned());
+            Ok(Some(command))
+        }
+        Err(reason) => {
+            eprintln!("sooth: {reason}");
+            Err(ExitCode::from(EXIT_SOOTH_ERROR))
+        }
     }
 }
 
@@ -807,6 +855,17 @@ fn rejected_flag(args: &cli::RunArgs) -> Option<&'static str> {
             return Some(
                 "`--fail-on-flaky` requires a report: `--junit <PATH>` or `--preset <RUNNER>`",
             );
+        }
+    }
+    if args.changed.is_some() {
+        if args.preset.is_none() {
+            return Some(
+                "`--changed` needs `--preset <RUNNER>`: which files are tests and how to \
+                 run only them is runner knowledge",
+            );
+        }
+        if args.runs == 1 {
+            return Some("a gate of one run proves nothing — pass `--runs` (20 is a good start)");
         }
     }
     if args.verify {

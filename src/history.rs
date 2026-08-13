@@ -193,7 +193,7 @@ pub fn code_identity(dir: &Path) -> CodeIdentity {
     }
 }
 
-fn git(dir: &Path, args: &[&str]) -> Option<String> {
+pub(crate) fn git(dir: &Path, args: &[&str]) -> Option<String> {
     let output = Command::new("git")
         .arg("-C")
         .arg(dir)

@@ -1266,6 +1266,128 @@ fn an_empty_history_says_so_instead_of_printing_nothing() {
 }
 
 #[test]
+fn the_gate_needs_a_preset_and_a_real_runs_count() {
+    let (cwd, mut command) = sooth_in("gate-reject");
+    let output = command
+        .args(["run", "--changed", "--runs", "5", "--", "true"])
+        .output()
+        .expect("sooth should run");
+    assert_eq!(output.status.code(), Some(2));
+    let stderr = String::from_utf8(output.stderr).expect("stderr should be UTF-8");
+    assert!(stderr.contains("needs `--preset"), "got: {stderr:?}");
+
+    let (cwd_single, mut command) = sooth_in("gate-one-run");
+    let output = command
+        .args(["run", "--changed", "--preset", "phpunit", "--", "true"])
+        .output()
+        .expect("sooth should run");
+    assert_eq!(output.status.code(), Some(2));
+    let stderr = String::from_utf8(output.stderr).expect("stderr should be UTF-8");
+    assert!(stderr.contains("20 is a good start"), "got: {stderr:?}");
+    let _ = std::fs::remove_dir_all(&cwd);
+    let _ = std::fs::remove_dir_all(&cwd_single);
+}
+
+#[test]
+fn a_gate_with_nothing_changed_proves_nothing_and_spawns_nothing() {
+    let Some(dir) = scratch_repo("gate-clean") else {
+        return;
+    };
+    // The wrapped command is `false`: if the gate spawned it anyway, the
+    // run would fail and so would this test.
+    let output = Command::new(env!("CARGO_BIN_EXE_sooth"))
+        .current_dir(&dir)
+        .args([
+            "run",
+            "--changed=HEAD",
+            "--runs",
+            "5",
+            "--preset",
+            "phpunit",
+            "--color",
+            "never",
+            "--",
+            "false",
+        ])
+        .output()
+        .expect("sooth should run");
+    let stdout = String::from_utf8(output.stdout).expect("stdout should be UTF-8");
+    assert_eq!(output.status.code(), Some(0), "got: {stdout:?}");
+    assert!(stdout.contains("nothing to prove"), "got: {stdout:?}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn the_gate_repeats_only_the_changed_tests_and_catches_a_born_flake() {
+    let Some(dir) = scratch_repo("gate-e2e") else {
+        return;
+    };
+    // A brand-new test file: exactly what the gate exists to interrogate.
+    std::fs::write(dir.join("WobTest.php"), "<?php // new test\n").expect("write");
+    // The fake runner echoes its selection into the report and flips the
+    // outcome per run: a flake being born.
+    let runner = dir.join("runner.sh");
+    std::fs::write(
+        &runner,
+        concat!(
+            "#!/bin/sh\n",
+            "report=\"\"; prev=\"\"; files=\"\"\n",
+            "for a in \"$@\"; do\n",
+            "  if [ \"$prev\" = \"--log-junit\" ]; then report=\"$a\"; fi\n",
+            "  case \"$a\" in *Test.php) files=\"$files$a\";; esac\n",
+            "  prev=\"$a\"\n",
+            "done\n",
+            "n=$(cat gate-count 2>/dev/null || echo 0); n=$((n+1)); echo $n > gate-count\n",
+            "status=\"\"\n",
+            "if [ $((n % 2)) -eq 0 ]; then status=\"<failure/>\"; fi\n",
+            "printf '<testsuite><testcase classname=\"gate\" name=\"%s\">%s</testcase></testsuite>' \"$files\" \"$status\" > \"$report\"\n",
+        ),
+    )
+    .expect("write runner");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&runner, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    }
+
+    let output = Command::new(env!("CARGO_BIN_EXE_sooth"))
+        .current_dir(&dir)
+        .args([
+            "run",
+            "--changed=HEAD",
+            "--runs",
+            "4",
+            "--preset",
+            "phpunit",
+            "--color",
+            "never",
+            "--",
+            "./runner.sh",
+        ])
+        .output()
+        .expect("sooth should run");
+    let stdout = String::from_utf8(output.stdout).expect("stdout should be UTF-8");
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "a flaky gate must fail: {stdout:?}"
+    );
+    assert!(
+        stdout.contains("gate: 1 changed test file against HEAD"),
+        "got: {stdout:?}"
+    );
+    assert!(
+        stdout.contains("WobTest.php"),
+        "the selection must name the file: {stdout:?}"
+    );
+    assert!(
+        stdout.contains("flaky (2 of 4 runs now)"),
+        "got: {stdout:?}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn no_history_neither_writes_nor_reports() {
     let Some(dir) = scratch_repo("nohistory") else {
         return;

@@ -18,6 +18,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   With local greens and CI reds on one commit, the history verdict becomes
   `every failure in ci`. Exit 0, or 2 when a file is unreadable or the
   history unwritable; never 1 — import judges nothing.
+- `sooth run --changed[=BASE]`: the pre-push gate. Selects the test files
+  that are new or changed against the base (explicit `=BASE`, else
+  `@{upstream}`, else `origin/HEAD`; diffed from the merge-base, untracked
+  files included) and hands their paths to the runner, repeated `--runs`
+  times — a handful of tests twenty times is seconds, and catches a flake
+  where it is born. Requires `--preset` and an explicit `--runs` (both
+  refused loudly otherwise); with nothing changed it prints one line, exits
+  0, and spawns nothing. Go selection is package dirs; the other presets
+  take the file paths as-is.
 - `sooth history`: print the history analysis without running or recording
   anything — the roster of proven flakes and failing-since pointers, the
   all-dirty note when it applies, and the observation total. Diagnosis-only

@@ -5,6 +5,7 @@ use std::time::Duration;
 
 use crate::analyzers::{explain, flaky, history};
 use crate::cli::ColorChoice;
+use crate::gate;
 use crate::junit;
 use crate::runner::RunOutcome;
 use crate::verify;
@@ -134,6 +135,19 @@ pub fn print_runs(outcomes: &[RunOutcome], style: Style) {
             index + 1,
             outcome.duration
         );
+    }
+}
+
+/// What the gate selected: the files about to be repeated, so "why is my
+/// suite suddenly three tests" is answered before the first run.
+pub fn print_gate(selection: &gate::Selection, style: Style) {
+    println!(
+        "gate: {} against {}",
+        count(selection.files.len(), "changed test file"),
+        selection.base
+    );
+    for file in &selection.files {
+        println!("  {}", style.dim(file));
     }
 }
 
