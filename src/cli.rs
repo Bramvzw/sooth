@@ -34,17 +34,8 @@ pub enum Command {
 /// Arguments for `sooth import`.
 #[derive(Debug, Args)]
 pub struct ImportArgs {
-    /// Where these reports were produced (e.g. `ci`). Required because sooth
-    /// cannot tell where a downloaded file came from, and guessing would
-    /// poison the environment evidence. Use `ci` to match what `run` records
-    /// when the CI variable is set.
     #[arg(long, value_name = "LABEL")]
     pub env: String,
-
-    /// The commit the reports were produced from, asserting a clean checkout
-    /// of it (CI reality). Without it the observations count in totals but
-    /// can never be evidence — flaky proof needs a known clean commit.
-    #[arg(long, value_name = "SHA")]
     pub commit: Option<String>,
 
     /// Read the files as test-runner console logs of this format instead of
