@@ -134,6 +134,58 @@ pub fn supports_selection(preset: Preset) -> bool {
     selection_args(preset, &[]).is_some()
 }
 
+/// Whether `path` is a test file under `preset`'s conventions. Changed
+/// source files are out of scope on purpose: the gate is about tests being
+/// born, not test-impact analysis.
+pub fn is_test_file(preset: Preset, path: &str) -> bool {
+    let name = path.rsplit('/').next().unwrap_or(path);
+    match preset {
+        Preset::Phpunit => name.ends_with("Test.php"),
+        Preset::Pytest => match name.strip_suffix(".py") {
+            Some(stem) => stem.starts_with("test_") || stem.ends_with("_test"),
+            None => false,
+        },
+        // jest's default testMatch is `**/__tests__/**/*.[jt]s?(x)` plus
+        // `.test.`/`.spec.` names anywhere.
+        Preset::Jest => {
+            name.contains(".test.")
+                || name.contains(".spec.")
+                || (path.split('/').any(|part| part == "__tests__") && has_jest_extension(name))
+        }
+        Preset::Go => name.ends_with("_test.go"),
+    }
+}
+
+/// The extensions jest's default testMatch runs.
+fn has_jest_extension(name: &str) -> bool {
+    name.rsplit_once('.')
+        .is_some_and(|(_, extension)| matches!(extension, "js" | "jsx" | "ts" | "tsx"))
+}
+
+/// The runner arguments selecting exactly the test files `files` — paths,
+/// not name filters: every supported runner takes them, go included (as its
+/// packages).
+pub fn selected_paths(preset: Preset, files: &[String]) -> Vec<String> {
+    match preset {
+        Preset::Go => {
+            let mut dirs: Vec<String> = files
+                .iter()
+                .map(|file| match file.rsplit_once('/') {
+                    Some((dir, _)) => format!("./{dir}"),
+                    None => "./.".to_owned(),
+                })
+                .collect();
+            dirs.sort_unstable();
+            dirs.dedup();
+            dirs
+        }
+        // jest reads positional arguments as regexes matched against test
+        // paths: unescaped, `app/(shop)/cart.test.tsx` matches nothing.
+        Preset::Jest => files.iter().map(|file| regex_escape(file)).collect(),
+        Preset::Phpunit | Preset::Pytest => files.to_vec(),
+    }
+}
+
 /// The name without its `[parameters]` suffix (brackets break a `-k` expression).
 fn base_name(name: &str) -> &str {
     name.find('[').map_or(name, |i| &name[..i])
@@ -181,7 +233,9 @@ fn injection(preset: Preset, report: &Path) -> Injection {
 
 #[cfg(test)]
 mod tests {
-    use super::{inject, inject_selected, report_path, selection_args};
+    use super::{
+        inject, inject_selected, is_test_file, report_path, selected_paths, selection_args,
+    };
     use crate::cli::Preset;
     use std::path::Path;
 
@@ -374,5 +428,55 @@ mod tests {
     #[test]
     fn go_selection_is_declined_so_verification_refuses_loudly() {
         assert!(selection_args(Preset::Go, &names(&["TestX"])).is_none());
+    }
+
+    #[test]
+    fn each_preset_recognizes_its_own_test_files() {
+        assert!(is_test_file(Preset::Phpunit, "Modules/Hub/tests/ATest.php"));
+        assert!(!is_test_file(Preset::Phpunit, "Modules/Hub/src/A.php"));
+        assert!(is_test_file(Preset::Pytest, "tests/test_orders.py"));
+        assert!(is_test_file(Preset::Pytest, "tests/orders_test.py"));
+        assert!(!is_test_file(Preset::Pytest, "tests/conftest.py"));
+        assert!(is_test_file(Preset::Jest, "src/cart.test.tsx"));
+        assert!(is_test_file(Preset::Jest, "src/cart.spec.js"));
+        assert!(!is_test_file(Preset::Jest, "src/cart.ts"));
+        assert!(is_test_file(Preset::Go, "pkg/cart/cart_test.go"));
+        assert!(!is_test_file(Preset::Go, "pkg/cart/cart.go"));
+    }
+
+    #[test]
+    fn jest_recognizes_its_default_dunder_tests_convention() {
+        assert!(is_test_file(Preset::Jest, "src/__tests__/cart.js"));
+        assert!(is_test_file(Preset::Jest, "src/__tests__/deep/cart.tsx"));
+        assert!(!is_test_file(Preset::Jest, "src/__tests__/fixtures.json"));
+        assert!(!is_test_file(Preset::Jest, "src/__tests_almost__/cart.js"));
+    }
+
+    #[test]
+    fn most_runners_take_the_paths_verbatim() {
+        let files = vec!["a/BTest.php".to_owned(), "c/DTest.php".to_owned()];
+        assert_eq!(selected_paths(Preset::Phpunit, &files), files);
+    }
+
+    #[test]
+    fn jest_paths_are_escaped_because_jest_reads_them_as_regexes() {
+        let files = vec!["app/(shop)/cart.test.tsx".to_owned()];
+        assert_eq!(
+            selected_paths(Preset::Jest, &files),
+            vec![r"app\/\(shop\)\/cart\.test\.tsx".to_owned()]
+        );
+    }
+
+    #[test]
+    fn go_selects_deduplicated_package_dirs() {
+        let files = vec![
+            "pkg/cart/cart_test.go".to_owned(),
+            "pkg/cart/totals_test.go".to_owned(),
+            "root_test.go".to_owned(),
+        ];
+        assert_eq!(
+            selected_paths(Preset::Go, &files),
+            vec!["./.".to_owned(), "./pkg/cart".to_owned()]
+        );
     }
 }

@@ -218,8 +218,13 @@ exec sooth run --changed --runs 20 --preset phpunit -- vendor/bin/phpunit
 ```
 
 Needs `--preset` (which files are tests is runner knowledge) and an explicit
-`--runs`. What the gate cannot catch — flakes that need CI's own clock,
-machines, or parallelism — the history's CI evidence still does.
+`--runs`. Give the gate the bare runner: it appends the changed files itself,
+and a command that already carries its own selection (`./...`, a `tests/`
+path) runs the union — the whole suite, `--runs` times. Deleted or
+renamed-away tests select nothing (there is nothing left to run), and PHPUnit
+before 10 accepts a single path argument, so gating several changed files at
+once needs PHPUnit 10+. What the gate cannot catch — flakes that need CI's
+own clock, machines, or parallelism — the history's CI evidence still does.
 
 ## Quarantine known flakes
 

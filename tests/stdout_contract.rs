@@ -545,19 +545,45 @@ fn scratch_repo(tag: &str) -> Option<PathBuf> {
         &["add", "."][..],
         &["commit", "-q", "-m", "init"][..],
     ] {
-        let ok = Command::new("git")
-            .arg("-C")
-            .arg(&dir)
-            .args(args)
-            .env("GIT_AUTHOR_NAME", "t")
-            .env("GIT_AUTHOR_EMAIL", "t@t")
-            .env("GIT_COMMITTER_NAME", "t")
-            .env("GIT_COMMITTER_EMAIL", "t@t")
-            .output()
-            .is_ok_and(|o| o.status.success());
-        assert!(ok, "git {args:?} failed");
+        git_in(&dir, args);
     }
     Some(dir)
+}
+
+/// Run git in `dir`, asserting success.
+fn git_in(dir: &std::path::Path, args: &[&str]) {
+    let ok = Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(args)
+        .env("GIT_AUTHOR_NAME", "t")
+        .env("GIT_AUTHOR_EMAIL", "t@t")
+        .env("GIT_COMMITTER_NAME", "t")
+        .env("GIT_COMMITTER_EMAIL", "t@t")
+        .output()
+        .is_ok_and(|o| o.status.success());
+    assert!(ok, "git {args:?} failed");
+}
+
+/// A fake phpunit at `dir/runner.sh` that writes a green report to whatever
+/// `--log-junit` path the preset injects.
+fn write_green_runner(dir: &std::path::Path) {
+    use std::os::unix::fs::PermissionsExt;
+    let runner = dir.join("runner.sh");
+    std::fs::write(
+        &runner,
+        concat!(
+            "#!/bin/sh\n",
+            "report=\"\"; prev=\"\"\n",
+            "for a in \"$@\"; do\n",
+            "  if [ \"$prev\" = \"--log-junit\" ]; then report=\"$a\"; fi\n",
+            "  prev=\"$a\"\n",
+            "done\n",
+            "printf '<testsuite><testcase classname=\"gate\" name=\"ok\"/></testsuite>' > \"$report\"\n",
+        ),
+    )
+    .expect("write runner");
+    std::fs::set_permissions(&runner, std::fs::Permissions::from_mode(0o755)).expect("chmod");
 }
 
 #[test]
@@ -1314,6 +1340,237 @@ fn a_gate_with_nothing_changed_proves_nothing_and_spawns_nothing() {
     let stdout = String::from_utf8(output.stdout).expect("stdout should be UTF-8");
     assert_eq!(output.status.code(), Some(0), "got: {stdout:?}");
     assert!(stdout.contains("nothing to prove"), "got: {stdout:?}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn the_gate_skips_a_deleted_test_file_instead_of_handing_it_to_the_runner() {
+    let Some(dir) = scratch_repo("gate-deleted") else {
+        return;
+    };
+    std::fs::write(dir.join("GoneTest.php"), "<?php\n").expect("write");
+    git_in(&dir, &["add", "."]);
+    git_in(&dir, &["commit", "-q", "-m", "add test"]);
+    std::fs::remove_file(dir.join("GoneTest.php")).expect("remove");
+
+    // The wrapped command is `false`: if the gate handed the deleted path to
+    // a runner anyway, the run would fail and so would this test.
+    let output = Command::new(env!("CARGO_BIN_EXE_sooth"))
+        .current_dir(&dir)
+        .args([
+            "run",
+            "--changed=HEAD",
+            "--runs",
+            "5",
+            "--preset",
+            "phpunit",
+            "--color",
+            "never",
+            "--",
+            "false",
+        ])
+        .output()
+        .expect("sooth should run");
+    let stdout = String::from_utf8(output.stdout).expect("stdout should be UTF-8");
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "a deleted test selects nothing: {stdout:?}"
+    );
+    assert!(stdout.contains("nothing to prove"), "got: {stdout:?}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn the_gate_selects_a_test_file_with_a_non_ascii_name() {
+    let Some(dir) = scratch_repo("gate-quotepath") else {
+        return;
+    };
+    write_green_runner(&dir);
+    // git's default core.quotepath would C-quote this name; quoted, it would
+    // silently drop out of the selection — a false green.
+    std::fs::write(dir.join("CaféTest.php"), "<?php\n").expect("write");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_sooth"))
+        .current_dir(&dir)
+        .args([
+            "run",
+            "--changed=HEAD",
+            "--runs",
+            "2",
+            "--preset",
+            "phpunit",
+            "--color",
+            "never",
+            "--",
+            "./runner.sh",
+        ])
+        .output()
+        .expect("sooth should run");
+    let stdout = String::from_utf8(output.stdout).expect("stdout should be UTF-8");
+    assert_eq!(output.status.code(), Some(0), "got: {stdout:?}");
+    assert!(
+        stdout.contains("gate: 1 changed test file against HEAD"),
+        "got: {stdout:?}"
+    );
+    assert!(stdout.contains("CaféTest.php"), "got: {stdout:?}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn the_gate_run_from_a_subdirectory_selects_paths_the_runner_can_open() {
+    let Some(dir) = scratch_repo("gate-subdir") else {
+        return;
+    };
+    let backend = dir.join("backend");
+    std::fs::create_dir_all(&backend).expect("mkdir");
+    std::fs::write(backend.join("SubTest.php"), "<?php committed\n").expect("write");
+    git_in(&dir, &["add", "."]);
+    git_in(&dir, &["commit", "-q", "-m", "add test"]);
+    std::fs::write(backend.join("SubTest.php"), "<?php changed\n").expect("write");
+    write_green_runner(&backend);
+
+    // The runner is spawned in backend/, so the selection must be relative
+    // to backend/ — `backend/SubTest.php` would not exist there.
+    let output = Command::new(env!("CARGO_BIN_EXE_sooth"))
+        .current_dir(&backend)
+        .args([
+            "run",
+            "--changed=HEAD",
+            "--runs",
+            "2",
+            "--preset",
+            "phpunit",
+            "--color",
+            "never",
+            "--",
+            "./runner.sh",
+        ])
+        .output()
+        .expect("sooth should run");
+    let stdout = String::from_utf8(output.stdout).expect("stdout should be UTF-8");
+    assert_eq!(output.status.code(), Some(0), "got: {stdout:?}");
+    assert!(
+        stdout.contains("gate: 1 changed test file against HEAD"),
+        "got: {stdout:?}"
+    );
+    assert!(stdout.contains("SubTest.php"), "got: {stdout:?}");
+    assert!(
+        !stdout.contains("backend/SubTest.php"),
+        "the selection must be cwd-relative: {stdout:?}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn an_empty_gate_under_bare_json_still_emits_the_one_json_line() {
+    let Some(dir) = scratch_repo("gate-empty-json") else {
+        return;
+    };
+    let output = Command::new(env!("CARGO_BIN_EXE_sooth"))
+        .current_dir(&dir)
+        .args([
+            "run",
+            "--changed=HEAD",
+            "--runs",
+            "5",
+            "--preset",
+            "phpunit",
+            "--json",
+            "--color",
+            "never",
+            "--",
+            "false",
+        ])
+        .output()
+        .expect("sooth should run");
+    let stdout = String::from_utf8(output.stdout).expect("stdout should be UTF-8");
+    assert_eq!(output.status.code(), Some(0), "got: {stdout:?}");
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(
+        lines.len(),
+        1,
+        "bare --json must print exactly one line, gate or no gate: {stdout:?}"
+    );
+    assert!(lines[0].starts_with(r#"{"schema_version":1,"#));
+    assert!(lines[0].contains(r#""runs":[]"#), "got: {stdout:?}");
+    assert!(
+        lines[0].contains(r#""gate":{"base":"HEAD","files":[]}"#),
+        "got: {stdout:?}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn an_empty_gate_with_json_to_a_file_still_writes_the_document() {
+    let Some(dir) = scratch_repo("gate-empty-json-file") else {
+        return;
+    };
+    let json_path = dir.join("out.json");
+    let output = Command::new(env!("CARGO_BIN_EXE_sooth"))
+        .current_dir(&dir)
+        .args([
+            "run",
+            "--changed=HEAD",
+            "--runs",
+            "5",
+            "--preset",
+            "phpunit",
+            &format!("--json={}", json_path.display()),
+            "--color",
+            "never",
+            "--",
+            "false",
+        ])
+        .output()
+        .expect("sooth should run");
+    let stdout = String::from_utf8(output.stdout).expect("stdout should be UTF-8");
+    assert_eq!(output.status.code(), Some(0), "got: {stdout:?}");
+    assert!(stdout.contains("nothing to prove"), "got: {stdout:?}");
+    let written = std::fs::read_to_string(&json_path)
+        .expect("the JSON file must be written even when the gate is empty");
+    assert!(written.starts_with(r#"{"schema_version":1,"#));
+    assert!(written.contains(r#""runs":[]"#), "got: {written:?}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_gated_run_under_bare_json_keeps_the_one_line_contract_and_carries_the_gate() {
+    let Some(dir) = scratch_repo("gate-bare-json") else {
+        return;
+    };
+    write_green_runner(&dir);
+    std::fs::write(dir.join("WobTest.php"), "<?php\n").expect("write");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_sooth"))
+        .current_dir(&dir)
+        .args([
+            "run",
+            "--changed=HEAD",
+            "--runs",
+            "2",
+            "--preset",
+            "phpunit",
+            "--json",
+            "--color",
+            "never",
+            "--",
+            "./runner.sh",
+        ])
+        .output()
+        .expect("sooth should run");
+    let stdout = String::from_utf8(output.stdout).expect("stdout should be UTF-8");
+    assert_eq!(output.status.code(), Some(0), "got: {stdout:?}");
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(
+        lines.len(),
+        1,
+        "the gate's human lines must not break bare --json: {stdout:?}"
+    );
+    assert!(
+        lines[0].contains(r#""gate":{"base":"HEAD","files":["WobTest.php"]}"#),
+        "got: {stdout:?}"
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
 

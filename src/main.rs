@@ -53,8 +53,8 @@ fn run(args: &cli::RunArgs) -> ExitCode {
     }
     let style = report::Style::resolved(args.color);
 
-    let command_args = match gated_command(args, style) {
-        Ok(Some(command)) => command,
+    let (command_args, selection) = match gated_command(args, style) {
+        Ok(Some(gated)) => gated,
         Ok(None) => return ExitCode::SUCCESS,
         Err(exit) => return exit,
     };
@@ -135,6 +135,7 @@ fn run(args: &cli::RunArgs) -> ExitCode {
         verify: verify_verdict.as_ref(),
         pardoned: pardoned.as_deref(),
         explanation: explanation.as_deref(),
+        gate: selection.as_ref(),
     };
     // The worst run's count, over all reports: the mismatch note and the
     // verdict must not claim "0 failing" because the *last* run was green.
@@ -208,35 +209,75 @@ fn summarize_reports(
     (summary, flaky)
 }
 
-/// The command with the gate's selection appended. `Ok(None)` is the gate's
-/// happy fast path: nothing changed, nothing to prove, nothing spawned.
-fn gated_command(
-    args: &cli::RunArgs,
-    style: report::Style,
-) -> Result<Option<Vec<String>>, ExitCode> {
+/// The command to spawn plus the gate's selection when `--changed` gated it.
+type GatedRun = (Vec<String>, Option<gate::Selection>);
+
+/// The command with the gate's selection appended, plus the selection for
+/// the report. `Ok(None)` is the gate's happy fast path: nothing changed,
+/// nothing to prove, nothing spawned — its output is already emitted.
+fn gated_command(args: &cli::RunArgs, style: report::Style) -> Result<Option<GatedRun>, ExitCode> {
     let Some(base) = &args.changed else {
-        return Ok(Some(args.command.clone()));
+        return Ok(Some((args.command.clone(), None)));
     };
     let preset = args.preset.expect("rejected_flag guarantees a preset");
-    match gate::resolve(base.as_deref(), preset, std::path::Path::new(".")) {
-        Ok(selection) => {
-            if selection.files.is_empty() {
-                println!(
-                    "gate: no new or changed tests against {} — nothing to prove",
-                    selection.base
-                );
-                return Ok(None);
-            }
-            report::print_gate(&selection, style);
-            let mut command = args.command.clone();
-            command.extend(selection.args.iter().cloned());
-            Ok(Some(command))
-        }
+    let selection = match gate::resolve(base.as_deref(), preset, std::path::Path::new(".")) {
+        Ok(selection) => selection,
         Err(reason) => {
             eprintln!("sooth: {reason}");
-            Err(ExitCode::from(EXIT_SOOTH_ERROR))
+            return Err(ExitCode::from(EXIT_SOOTH_ERROR));
+        }
+    };
+    if selection.files.is_empty() {
+        return empty_gate(args, &selection).map(|()| None);
+    }
+    // Bare --json owns sooth's own stdout (one line of JSON); the selection
+    // rides in the JSON's `gate` object instead.
+    if !matches!(args.json, Some(None)) {
+        report::print_gate(&selection, style);
+    }
+    let mut command = args.command.clone();
+    command.extend(preset::selected_paths(preset, &selection.files));
+    Ok(Some((command, Some(selection))))
+}
+
+/// The empty gate's output, honoring every output mode's contract: bare
+/// `--json` emits the document (zero runs), `--json=PATH` writes it and
+/// keeps the human line on stdout.
+fn empty_gate(args: &cli::RunArgs, selection: &gate::Selection) -> Result<(), ExitCode> {
+    let analyses = Analyses {
+        gate: Some(selection),
+        ..Analyses::default()
+    };
+    let human = format!(
+        "gate: no new or changed tests against {} — nothing to prove",
+        selection.base
+    );
+    match &args.json {
+        None => println!("{human}"),
+        Some(None) => println!(
+            "{}",
+            report::to_json(&[], &JunitSummary::empty(), &analyses)
+        ),
+        Some(Some(path)) => {
+            println!("{human}");
+            write_json_file(
+                path,
+                report::to_json(&[], &JunitSummary::empty(), &analyses),
+            )?;
         }
     }
+    Ok(())
+}
+
+/// Write the JSON document to `path`; a failure is sooth's own (exit 2).
+fn write_json_file(path: &std::path::Path, json: String) -> Result<(), ExitCode> {
+    std::fs::write(path, json + "\n").map_err(|err| {
+        eprintln!(
+            "sooth: failed to write JSON report `{}`: {err}",
+            path.display()
+        );
+        ExitCode::from(EXIT_SOOTH_ERROR)
+    })
 }
 
 /// The failures pardoned by the quarantine file: `Some` — and the run exits
@@ -775,12 +816,8 @@ fn emit_output(
         (Some(summary), Some(Some(path))) => {
             print_sections(args, outcomes, summary, analyses, style);
             let json = report::to_json(outcomes, summary, analyses);
-            if let Err(err) = std::fs::write(path, json + "\n") {
-                eprintln!(
-                    "sooth: failed to write JSON report `{}`: {err}",
-                    path.display()
-                );
-                return Some(ExitCode::from(EXIT_SOOTH_ERROR));
+            if let Err(exit) = write_json_file(path, json) {
+                return Some(exit);
             }
             println!(
                 "{}",

@@ -25,8 +25,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   times — a handful of tests twenty times is seconds, and catches a flake
   where it is born. Requires `--preset` and an explicit `--runs` (both
   refused loudly otherwise); with nothing changed it prints one line, exits
-  0, and spawns nothing. Go selection is package dirs; the other presets
-  take the file paths as-is.
+  0, and spawns nothing. Go selection is package dirs; jest gets the paths
+  regex-escaped (jest reads positional arguments as patterns); the other
+  presets take the file paths as-is. The selection survives non-ASCII names
+  and runs from subdirectories, skips deleted files, and a failed git
+  listing refuses loudly instead of gating nothing. With `--json` the
+  document gains a `gate` object, and an empty gate still emits it
+  (`"runs":[]`).
 - `sooth history`: print the history analysis without running or recording
   anything — the roster of proven flakes and failing-since pointers, the
   all-dirty note when it applies, and the observation total. Diagnosis-only

@@ -747,9 +747,16 @@ Choices that keep it honest:
   files are tests is runner knowledge). `--runs` left at 1: refused — "a
   gate of one run proves nothing" — because a gate that silently proves
   nothing is worse than none.
+- **A failed git listing refuses, never gates nothing.** `git diff` or
+  `ls-files` failing (an index lock, a corrupt repo) is exit 2, not an empty
+  selection — the same reasoning as the `--runs 1` refusal. The listings run
+  with `core.quotepath=false` and `--relative` and skip deletions, so the
+  selection is what the runner, spawned in the cwd, can actually open.
 - **The empty gate spawns nothing.** No changed tests → one line, exit 0,
   no runner started: a pre-push hook must cost nothing on the pushes that
-  change no tests.
+  change no tests. It still honors `--json`: nothing ran is a result, so
+  the document is emitted with `"runs":[]` and the `gate` object — a machine
+  consumer never parses a stale file or a human sentence.
 - **The base resolves like a human would**: explicit `=BASE` wins, then
   `@{upstream}`, then `origin/HEAD`, then a loud refusal. The diff is taken
   against the merge-base, so commits on the base branch never read as yours.

@@ -86,6 +86,19 @@ pub struct JunitSummary {
 }
 
 impl JunitSummary {
+    /// The summary of a run that never happened: the empty gate still emits
+    /// the JSON document, with zero runs and zero tests.
+    pub fn empty() -> Self {
+        Self {
+            total: 0,
+            passed: 0,
+            failed: 0,
+            error: 0,
+            skipped: 0,
+            slowest: Vec::new(),
+        }
+    }
+
     pub fn from_report(report: &junit::JunitReport, slowest: usize) -> Self {
         let mut passed = 0;
         let mut failed = 0;
@@ -266,7 +279,7 @@ pub fn print_history(analyses: &Analyses<'_>, style: Style) {
             println!(
                 "  {}. {} {} {}",
                 index + 1,
-                style.yellow("~"),
+                flaky_mark(style),
                 identity(&test.outcomes.id, style),
                 style.red(&format!(
                     "failed {} of {} observed runs ({}%{confined})",
@@ -283,7 +296,7 @@ pub fn print_history(analyses: &Analyses<'_>, style: Style) {
             let short = short_commit(&test.commit);
             println!(
                 "  {} {} {}",
-                style.red("▼"),
+                regression_mark(style),
                 identity(&test.id, style),
                 style.dim(&format!(
                     "(since {short}, failed the last {} observed runs)",
@@ -304,15 +317,25 @@ fn glyph(explanation: &explain::Explanation, style: Style) -> String {
         return style.yellow("⊘");
     }
     match &explanation.verdict {
-        explain::Verdict::KnownFlake { .. } => style.yellow("~"),
-        explain::Verdict::FailingSince { .. } => style.red("▼"),
+        explain::Verdict::KnownFlake { .. } => flaky_mark(style),
+        explain::Verdict::FailingSince { .. } => regression_mark(style),
         explain::Verdict::Unknown => match &explanation.observed {
             Some(explain::Observed::Flaky { .. } | explain::Observed::FlakyOrOrder) => {
-                style.yellow("~")
+                flaky_mark(style)
             }
             _ => style.bold_red("✗"),
         },
     }
+}
+
+/// The marks that appear in more than one section: the per-test glyph and
+/// the history lines must paint the same verdict the same way.
+fn flaky_mark(style: Style) -> String {
+    style.yellow("~")
+}
+
+fn regression_mark(style: Style) -> String {
+    style.red("▼")
 }
 
 /// The identity with its namespace prefix dimmed: every byte stays — grep
@@ -563,6 +586,8 @@ pub struct Analyses<'a> {
     pub verify: Option<&'a verify::Verdict>,
     pub pardoned: Option<&'a [String]>,
     pub explanation: Option<&'a [explain::Explanation]>,
+    /// The gate's selection when `--changed` gated this run.
+    pub gate: Option<&'a gate::Selection>,
 }
 
 /// Hand-rolled JSON: the run outcomes plus the junit summary, versioned via
@@ -576,6 +601,7 @@ pub fn to_json(outcomes: &[RunOutcome], summary: &JunitSummary, analyses: &Analy
         verify,
         pardoned,
         explanation,
+        gate,
         // Context for the human note only; the JSON carries the counts.
         history_observations: _,
     } = *analyses;
@@ -637,8 +663,17 @@ pub fn to_json(outcomes: &[RunOutcome], summary: &JunitSummary, analyses: &Analy
         format!(r#","explanation":{}"#, explanation_object(explanations))
     });
 
+    // Additive within schema_version 1: present when `--changed` gated the run.
+    let gate = gate.map_or(String::new(), |selection| {
+        format!(
+            r#","gate":{{"base":"{}","files":[{}]}}"#,
+            json_escape(&selection.base),
+            json_ids(&selection.files)
+        )
+    });
+
     format!(
-        r#"{{"schema_version":{JSON_SCHEMA_VERSION},"sooth_version":"{}","runs":[{}],"junit":{{"total":{},"passed":{},"failed":{},"errors":{},"skipped":{},"slowest":[{}]}}{active}{history}{verification}{quarantine}{explanation}}}"#,
+        r#"{{"schema_version":{JSON_SCHEMA_VERSION},"sooth_version":"{}","runs":[{}],"junit":{{"total":{},"passed":{},"failed":{},"errors":{},"skipped":{},"slowest":[{}]}}{active}{history}{verification}{quarantine}{explanation}{gate}}}"#,
         env!("CARGO_PKG_VERSION"),
         runs.join(","),
         summary.total,
@@ -1215,6 +1250,28 @@ mod tests {
         assert!(json.contains(
             r#""explanation":{"failures":[{"name":"a","verdict":"failing_since","quarantined":false,"commit":"abc1234","failed_runs":3}]"#
         ));
+    }
+
+    #[test]
+    fn the_json_carries_the_gate_selection_when_the_gate_ran() {
+        let selection = crate::gate::Selection {
+            base: "origin/main".to_owned(),
+            files: vec!["a/BTest.php".to_owned()],
+        };
+        let json = to_json(
+            &[],
+            &JunitSummary::empty(),
+            &Analyses {
+                gate: Some(&selection),
+                ..Analyses::default()
+            },
+        );
+        assert!(
+            json.contains(r#""gate":{"base":"origin/main","files":["a/BTest.php"]}"#),
+            "got: {json}"
+        );
+        // The empty gate's document: zero runs is a result, not an omission.
+        assert!(json.contains(r#""runs":[]"#), "got: {json}");
     }
 
     #[test]
