@@ -192,6 +192,40 @@ go preset yet.
 sooth run --verify --preset phpunit -- vendor/bin/phpunit
 ```
 
+## Gate your push
+
+The ideal is that a flake never reaches CI — and one plain test run cannot
+promise that: a 1-in-20 flake survives it with 95%, and the ~59 runs that
+would catch it are hours on a full suite. But flakes are overwhelmingly
+*born* in the commit that adds or changes a test, and that is only a handful
+of files. The gate repeats exactly those:
+
+```bash
+sooth run --changed --runs 20 --preset phpunit -- vendor/bin/phpunit
+```
+
+`--changed[=BASE]` selects the test files that are new or changed against
+the base (default: your upstream, else `origin/HEAD`) — including uncommitted
+and untracked ones — and hands their paths to the runner. A handful of tests,
+twenty times, is seconds; a flake being born shows up as
+`~ … flaky (3 of 20 runs now)` and exits 1 before anyone else meets it. No
+changed tests means one line, exit 0, and no runner spawned, so it is cheap
+enough for a pre-push hook:
+
+```bash
+# .git/hooks/pre-push
+exec sooth run --changed --runs 20 --preset phpunit -- vendor/bin/phpunit
+```
+
+Needs `--preset` (which files are tests is runner knowledge) and an explicit
+`--runs`. Give the gate the bare runner: it appends the changed files itself,
+and a command that already carries its own selection (`./...`, a `tests/`
+path) runs the union — the whole suite, `--runs` times. Deleted or
+renamed-away tests select nothing (there is nothing left to run), and PHPUnit
+before 10 accepts a single path argument, so gating several changed files at
+once needs PHPUnit 10+. What the gate cannot catch — flakes that need CI's
+own clock, machines, or parallelism — the history's CI evidence still does.
+
 ## Quarantine known flakes
 
 Day one in an existing codebase finds twenty flaky tests — quarantine keeps

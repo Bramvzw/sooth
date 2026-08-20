@@ -123,6 +123,15 @@ pub struct RunArgs {
     #[arg(long)]
     pub no_history: bool,
 
+    /// The pre-push gate: run only the test files that are new or changed
+    /// against BASE (default: `@{upstream}`, else `origin/HEAD`), repeated
+    /// `--runs` times. A handful of tests 20 times is seconds, and catches a
+    /// flake where it is born. Needs --preset and an explicit --runs.
+    // Option<Option<_>> is clap's flag-with-optional-value shape, as --json.
+    #[allow(clippy::option_option)]
+    #[arg(long, value_name = "BASE", num_args = 0..=1, require_equals = true)]
+    pub changed: Option<Option<String>>,
+
     /// After a failing run, re-run only the failed tests and classify them
     /// as real or flaky/order-dependent (needs --preset, single run)
     #[arg(long)]

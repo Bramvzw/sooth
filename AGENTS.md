@@ -18,7 +18,8 @@ src/
 ├── cli.rs        # EXISTS — clap definitions: `run` and `explain`, --preset, --runs, --json[=PATH], --slowest, --junit, --color, --verify
 ├── runner.rs      # EXISTS — spawns the test subprocess (with env injection), captures exit status + wall time
 ├── junit.rs       # EXISTS — tolerant JUnit-XML union schema (parse_str/parse_file)
-├── preset.rs      # EXISTS — presets inject reporter flags/env and manage the temp report
+├── preset.rs      # EXISTS — presets inject reporter flags/env, manage the temp report, and own per-runner selection knowledge (is_test_file, selected_paths)
+├── gate.rs        # EXISTS — pre-push gate selection: which test files changed against a base (--changed)
 ├── history.rs     # EXISTS — local run history (.sooth/history.jsonl) + git code identity
 ├── verify.rs      # EXISTS — failure re-verification: classify failed tests after re-running only them
 ├── quarantine.rs  # EXISTS — committed .sooth-quarantine list that --fail-on-flaky pardons

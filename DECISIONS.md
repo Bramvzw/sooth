@@ -717,3 +717,49 @@ Two presentation moves, no information destroyed:
 
 The machine contract is untouched — `--json` and the exit codes carry the
 same facts; the human report is for humans.
+
+## The gate repeats only what changed — prevention priced in seconds
+
+The ideal is that a flaky test never reaches CI. One local suite run cannot
+deliver that: a 1-in-20 flake survives it with 95%, and the ~59 runs that
+would catch it (see the README's odds) cost hours on a whole suite. The
+affordable version exists because flakes are overwhelmingly *born* — in the
+commit that adds or changes a test — and a push changes only a handful of
+tests. `sooth run --changed[=BASE] --runs 20` repeats exactly those: seconds
+of work, high odds, before anyone else is blocked. Witnessed the same week
+this shipped: a flake born in a factory-selection change, discovered in CI,
+hidden behind a rerun, fixed hours later — a 20× gate on the changed file
+would have caught it at the desk.
+
+Choices that keep it honest:
+
+- **A flag on `run`, not a subcommand.** A gate is a run: it spawns tests,
+  records observations (pre-push trees are usually clean, so they count as
+  evidence), and lives under the same 0/1/2 exit contract. Everything —
+  the runs loop, the flaky analyzer, the report, `--json` — is reused.
+- **Selection by file paths, not name filters.** Every supported runner
+  takes paths (go takes the package dirs), unlike `--verify`'s name-regex
+  selection, which go cannot do. Changed *source* files do not select
+  anything: mapping code to affected tests is test-impact analysis, a
+  different tool; the gate's claim is about tests being born, and the limit
+  is documented rather than silently half-covered.
+- **Loud refusals instead of silent defaults.** No preset: refused (which
+  files are tests is runner knowledge). `--runs` left at 1: refused — "a
+  gate of one run proves nothing" — because a gate that silently proves
+  nothing is worse than none.
+- **A failed git listing refuses, never gates nothing.** `git diff` or
+  `ls-files` failing (an index lock, a corrupt repo) is exit 2, not an empty
+  selection — the same reasoning as the `--runs 1` refusal. The listings run
+  with `core.quotepath=false` and `--relative` and skip deletions, so the
+  selection is what the runner, spawned in the cwd, can actually open.
+- **The empty gate spawns nothing.** No changed tests → one line, exit 0,
+  no runner started: a pre-push hook must cost nothing on the pushes that
+  change no tests. It still honors `--json`: nothing ran is a result, so
+  the document is emitted with `"runs":[]` and the `gate` object — a machine
+  consumer never parses a stale file or a human sentence.
+- **The base resolves like a human would**: explicit `=BASE` wins, then
+  `@{upstream}`, then `origin/HEAD`, then a loud refusal. The diff is taken
+  against the merge-base, so commits on the base branch never read as yours.
+- What the gate cannot catch, CI evidence still does: flakes that need CI's
+  own conditions (clock, machine, parallelism) — the third layer next to
+  the history and the quarantine, not a replacement for them.
