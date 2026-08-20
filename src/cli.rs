@@ -36,6 +36,8 @@ pub enum Command {
 pub struct ImportArgs {
     #[arg(long, value_name = "LABEL")]
     pub env: String,
+
+    #[arg(long, value_name = "SHA")]
     pub commit: Option<String>,
 
     /// Read the files as test-runner console logs of this format instead of
