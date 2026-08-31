@@ -190,6 +190,97 @@ fn reportless_json_is_rejected_with_exit_two() {
     assert!(stderr.contains("requires a report"), "got: {stderr:?}");
 }
 
+/// A fake phpunit at `dir/runner.sh`: the initial run fails `c::wob` and
+/// exits 1; a `--filter` invocation (verify's selection) writes
+/// `verify_case` instead — the re-run outcome under test.
+fn write_verify_runner(dir: &std::path::Path, verify_case: &str) {
+    use std::os::unix::fs::PermissionsExt;
+    let script = format!(
+        concat!(
+            "#!/bin/sh\n",
+            "report=\"\"; prev=\"\"; verify=0\n",
+            "for a in \"$@\"; do\n",
+            "  if [ \"$prev\" = \"--log-junit\" ]; then report=\"$a\"; fi\n",
+            "  case \"$a\" in --filter) verify=1;; esac\n",
+            "  prev=\"$a\"\n",
+            "done\n",
+            "if [ \"$verify\" = \"1\" ]; then\n",
+            "  printf '<testsuite>{verify_case}</testsuite>' > \"$report\"\n",
+            "  exit 0\n",
+            "fi\n",
+            "printf '<testsuite><testcase classname=\"c\" name=\"wob\"><failure/></testcase></testsuite>' > \"$report\"\n",
+            "exit 1\n",
+        ),
+        verify_case = verify_case
+    );
+    let runner = dir.join("runner.sh");
+    std::fs::write(&runner, script).expect("write runner");
+    std::fs::set_permissions(&runner, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+}
+
+#[test]
+fn a_verified_failure_that_passes_on_re_run_reads_flaky_or_order_dependent() {
+    let (cwd, mut command) = sooth_in("verify-flake");
+    write_verify_runner(&cwd, r#"<testcase classname="c" name="wob"/>"#);
+    let output = command
+        .args([
+            "run",
+            "--verify",
+            "--no-history",
+            "--preset",
+            "phpunit",
+            "--color",
+            "never",
+            "--",
+            "./runner.sh",
+        ])
+        .output()
+        .expect("sooth should run");
+    let stdout = String::from_utf8(output.stdout).expect("stdout should be UTF-8");
+
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "verification classifies, it never absorbs the failure: {stdout:?}"
+    );
+    assert!(
+        stdout.contains("~ c::wob — flaky or order-dependent (passed on re-run in isolation)"),
+        "the verify pass's verdict must reach the per-test line: {stdout:?}"
+    );
+    let _ = std::fs::remove_dir_all(&cwd);
+}
+
+#[test]
+fn a_verified_failure_that_reproduces_reads_real() {
+    let (cwd, mut command) = sooth_in("verify-real");
+    write_verify_runner(
+        &cwd,
+        r#"<testcase classname="c" name="wob"><failure/></testcase>"#,
+    );
+    let output = command
+        .args([
+            "run",
+            "--verify",
+            "--no-history",
+            "--preset",
+            "phpunit",
+            "--color",
+            "never",
+            "--",
+            "./runner.sh",
+        ])
+        .output()
+        .expect("sooth should run");
+    let stdout = String::from_utf8(output.stdout).expect("stdout should be UTF-8");
+
+    assert_eq!(output.status.code(), Some(1), "got: {stdout:?}");
+    assert!(
+        stdout.contains("✗ c::wob — real (reproduced on re-run)"),
+        "a reproduced failure must be named real: {stdout:?}"
+    );
+    let _ = std::fs::remove_dir_all(&cwd);
+}
+
 #[test]
 fn verify_with_an_unselectable_preset_is_rejected_up_front_with_exit_two() {
     let output = sooth()
