@@ -763,3 +763,26 @@ Choices that keep it honest:
 - What the gate cannot catch, CI evidence still does: flakes that need CI's
   own conditions (clock, machine, parallelism) — the third layer next to
   the history and the quarantine, not a replacement for them.
+
+## The gate probes PHPUnit's version before selecting several files
+
+PHPUnit before 10 takes a single positional path and silently ignores the
+rest (`TextUI/CliArguments/Builder.php` reads `$options[1][0]` only). A gate
+that hands it two changed files would repeat one, print both, and exit 0 —
+the false green the gate entry above calls worse than no gate (#139).
+
+So when the phpunit preset selects **two or more** files, the gate runs
+`<program> --version` once and reads the major out of the banner:
+
+- **Older than 10 → refused, exit 2.** The message names what would have
+  been silently dropped and the fix (upgrade to PHPUnit 10+).
+- **Unreadable banner → a stderr warning, then proceed.** Refusing on
+  ignorance would break exotic-but-working setups; a warning keeps the limit
+  out loud without punishing them.
+- **One file, or any other preset → no probe.** The probe costs a spawn, so
+  it runs only when the failure mode exists.
+
+A `--filter` fallback for old PHPUnit (deriving class names from file
+basenames) was rejected: filename→class is a convention, not a guarantee,
+and a gate built on a guess can under-select — the exact failure this
+decision exists to prevent. Revisit only if PHPUnit ≤ 9 gate demand shows up.

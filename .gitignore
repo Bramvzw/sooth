@@ -11,3 +11,7 @@
 
 # sooth's own run history (dogfooding)
 .sooth/
+
+# cargo-mutants reports
+/mutants.out/
+/mutants.out.old/
