@@ -196,22 +196,20 @@ fn reportless_json_is_rejected_with_exit_two() {
 fn write_verify_runner(dir: &std::path::Path, verify_case: &str) {
     use std::os::unix::fs::PermissionsExt;
     let script = format!(
-        concat!(
-            "#!/bin/sh\n",
-            "report=\"\"; prev=\"\"; verify=0\n",
-            "for a in \"$@\"; do\n",
-            "  if [ \"$prev\" = \"--log-junit\" ]; then report=\"$a\"; fi\n",
-            "  case \"$a\" in --filter) verify=1;; esac\n",
-            "  prev=\"$a\"\n",
-            "done\n",
-            "if [ \"$verify\" = \"1\" ]; then\n",
-            "  printf '<testsuite>{verify_case}</testsuite>' > \"$report\"\n",
-            "  exit 0\n",
-            "fi\n",
-            "printf '<testsuite><testcase classname=\"c\" name=\"wob\"><failure/></testcase></testsuite>' > \"$report\"\n",
-            "exit 1\n",
-        ),
-        verify_case = verify_case
+        r#"#!/bin/sh
+report=""; prev=""; verify=0
+for a in "$@"; do
+  if [ "$prev" = "--log-junit" ]; then report="$a"; fi
+  case "$a" in --filter) verify=1;; esac
+  prev="$a"
+done
+if [ "$verify" = "1" ]; then
+  printf '<testsuite>{verify_case}</testsuite>' > "$report"
+  exit 0
+fi
+printf '<testsuite><testcase classname="c" name="wob"><failure/></testcase></testsuite>' > "$report"
+exit 1
+"#
     );
     let runner = dir.join("runner.sh");
     std::fs::write(&runner, script).expect("write runner");
