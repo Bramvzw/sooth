@@ -1265,6 +1265,17 @@ mod tests {
     }
 
     #[test]
+    fn verify_with_multiple_runs_is_rejected() {
+        // The acceptance side of this boundary — --verify with the default
+        // single run — is pinned end to end by the stdout contract suite.
+        let args = parse_run_args(&[
+            "sooth", "run", "--verify", "--preset", "pytest", "--runs", "2", "--", "pytest",
+        ]);
+        let reason = rejected_flag(&args).expect("flag should be rejected");
+        assert!(reason.contains("single run"), "got: {reason}");
+    }
+
+    #[test]
     fn quarantine_pardons_when_every_failure_is_listed() {
         let quarantine = BTreeSet::from(["case".to_owned()]);
         let pardoned = quarantine_pardon(
