@@ -190,36 +190,29 @@ fn reportless_json_is_rejected_with_exit_two() {
     assert!(stderr.contains("requires a report"), "got: {stderr:?}");
 }
 
-/// A fake phpunit at `dir/runner.sh`: the initial run fails `c::wob` and
-/// exits 1; a `--filter` invocation (verify's selection) writes
-/// `verify_case` instead — the re-run outcome under test.
-fn write_verify_runner(dir: &std::path::Path, verify_case: &str) {
+/// Copy the fake-phpunit fixture (`tests/fixtures/verify_runner.sh`) into
+/// `dir`. Each test picks the verify re-run's outcome by setting the
+/// `SOOTH_TEST_VERIFY_CASE` environment variable, which sooth passes
+/// through to the runner it spawns.
+fn write_verify_runner(dir: &std::path::Path) {
     use std::os::unix::fs::PermissionsExt;
-    let script = format!(
-        r#"#!/bin/sh
-report=""; prev=""; verify=0
-for a in "$@"; do
-  if [ "$prev" = "--log-junit" ]; then report="$a"; fi
-  case "$a" in --filter) verify=1;; esac
-  prev="$a"
-done
-if [ "$verify" = "1" ]; then
-  printf '<testsuite>{verify_case}</testsuite>' > "$report"
-  exit 0
-fi
-printf '<testsuite><testcase classname="c" name="wob"><failure/></testcase></testsuite>' > "$report"
-exit 1
-"#
+    let fixture = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/verify_runner.sh"
     );
     let runner = dir.join("runner.sh");
-    std::fs::write(&runner, script).expect("write runner");
+    std::fs::copy(fixture, &runner).expect("copy runner");
     std::fs::set_permissions(&runner, std::fs::Permissions::from_mode(0o755)).expect("chmod");
 }
 
 #[test]
 fn a_verified_failure_that_passes_on_re_run_reads_flaky_or_order_dependent() {
     let (cwd, mut command) = sooth_in("verify-flake");
-    write_verify_runner(&cwd, r#"<testcase classname="c" name="wob"/>"#);
+    write_verify_runner(&cwd);
+    command.env(
+        "SOOTH_TEST_VERIFY_CASE",
+        r#"<testcase classname="c" name="wob"/>"#,
+    );
     let output = command
         .args([
             "run",
@@ -251,8 +244,9 @@ fn a_verified_failure_that_passes_on_re_run_reads_flaky_or_order_dependent() {
 #[test]
 fn a_verified_failure_that_reproduces_reads_real() {
     let (cwd, mut command) = sooth_in("verify-real");
-    write_verify_runner(
-        &cwd,
+    write_verify_runner(&cwd);
+    command.env(
+        "SOOTH_TEST_VERIFY_CASE",
         r#"<testcase classname="c" name="wob"><failure/></testcase>"#,
     );
     let output = command
