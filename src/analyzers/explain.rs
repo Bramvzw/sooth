@@ -33,6 +33,13 @@ pub enum Observed {
         failed_runs: usize,
         observed_runs: usize,
     },
+    /// Flipped once across this invocation's runs and never came back.
+    MonotoneFlip {
+        flipped_after_run: usize,
+        started_green: bool,
+    },
+    /// Failed the one run it appeared in, absent from the rest.
+    LoneFailure { absent_runs: usize },
     /// Failed every run of this invocation.
     Broken { observed_runs: usize },
     /// Verification reproduced the failure.
@@ -128,6 +135,17 @@ fn observed_for(id: &str, passes: &Passes<'_>) -> Option<Observed> {
             return Some(Observed::Flaky {
                 failed_runs: test.failed,
                 observed_runs: test.observed(),
+            });
+        }
+        if let Some(flip) = active.monotone.iter().find(|flip| flip.outcomes.id == id) {
+            return Some(Observed::MonotoneFlip {
+                flipped_after_run: flip.flipped_after_run,
+                started_green: flip.started_green,
+            });
+        }
+        if let Some(test) = active.lone_failures.iter().find(|test| test.id == id) {
+            return Some(Observed::LoneFailure {
+                absent_runs: test.absent_runs,
             });
         }
         if let Some(test) = active.broken.iter().find(|test| test.id == id) {
@@ -284,7 +302,7 @@ mod tests {
                 passed: 0,
                 failed: 3,
             }],
-            reordered_runs: Vec::new(),
+            ..crate::analyzers::flaky::Analysis::default()
         };
         let history = history();
         let passes = super::Passes {
