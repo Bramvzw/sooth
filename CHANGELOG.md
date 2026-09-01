@@ -185,6 +185,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A multi-file gate on PHPUnit older than 10 is refused loudly (exit 2)
+  instead of silently gating only the first file: old PHPUnit takes a single
+  positional path and drops the rest, which made the gate print every
+  selected file while proving only one — a false green. The version is
+  probed via `--version` only when the phpunit preset selects two or more
+  files; an unreadable banner warns and proceeds.
 - The history analysis orders observations by their timestamp instead of
   their position in the file. Appending lines from elsewhere (a CI history,
   an older backup) used to land old evidence at the tail of the file —

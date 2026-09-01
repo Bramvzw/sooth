@@ -1657,6 +1657,146 @@ fn a_gated_run_under_bare_json_keeps_the_one_line_contract_and_carries_the_gate(
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// Copy the fake-phpunit gate fixture (`tests/fixtures/gate_runner.sh`)
+/// into `dir`. Its `--version` banner comes from the
+/// `SOOTH_TEST_PHPUNIT_VERSION` environment variable; a real run leaves a
+/// `ran-tests` marker.
+fn write_gate_runner(dir: &std::path::Path) {
+    use std::os::unix::fs::PermissionsExt;
+    let fixture = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/gate_runner.sh");
+    let runner = dir.join("runner.sh");
+    std::fs::copy(fixture, &runner).expect("copy runner");
+    std::fs::set_permissions(&runner, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+}
+
+/// A gate invocation of the fixture runner in `dir`, with two new test
+/// files and the given `--version` banner.
+fn gate_two_files_under(dir: &std::path::Path, banner: &str) -> std::process::Output {
+    write_gate_runner(dir);
+    std::fs::write(dir.join("ATest.php"), "<?php\n").expect("write");
+    std::fs::write(dir.join("BTest.php"), "<?php\n").expect("write");
+    Command::new(env!("CARGO_BIN_EXE_sooth"))
+        .current_dir(dir)
+        .env("SOOTH_TEST_PHPUNIT_VERSION", banner)
+        .args([
+            "run",
+            "--changed=HEAD",
+            "--runs",
+            "2",
+            "--no-history",
+            "--preset",
+            "phpunit",
+            "--color",
+            "never",
+            "--",
+            "./runner.sh",
+        ])
+        .output()
+        .expect("sooth should run")
+}
+
+#[test]
+fn the_gate_refuses_a_multi_file_selection_on_phpunit_before_ten() {
+    let Some(dir) = scratch_repo("gate-old-phpunit") else {
+        return;
+    };
+    let output = gate_two_files_under(
+        &dir,
+        "PHPUnit 9.6.11 by Sebastian Bergmann and contributors.",
+    );
+    let stderr = String::from_utf8(output.stderr).expect("stderr should be UTF-8");
+
+    assert_eq!(
+        output.status.code(),
+        Some(2),
+        "a gate that would silently prove nothing must refuse: {stderr:?}"
+    );
+    assert!(
+        stderr.contains("PHPUnit 9") && stderr.contains("first path"),
+        "got: {stderr:?}"
+    );
+    assert!(
+        !dir.join("ran-tests").exists(),
+        "nothing may run once the gate knows it cannot gate everything"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn the_gate_gates_several_files_on_phpunit_ten_and_later() {
+    let Some(dir) = scratch_repo("gate-new-phpunit") else {
+        return;
+    };
+    let output = gate_two_files_under(
+        &dir,
+        "PHPUnit 13.2.4 by Sebastian Bergmann and contributors.",
+    );
+    let stdout = String::from_utf8(output.stdout).expect("stdout should be UTF-8");
+
+    assert_eq!(output.status.code(), Some(0), "got: {stdout:?}");
+    assert!(
+        stdout.contains("gate: 2 changed test files against HEAD"),
+        "got: {stdout:?}"
+    );
+    assert!(dir.join("ran-tests").exists(), "the gate must have run");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn an_unreadable_phpunit_version_warns_but_does_not_block_the_gate() {
+    let Some(dir) = scratch_repo("gate-foreign-version") else {
+        return;
+    };
+    let output = gate_two_files_under(&dir, "Pest 2.34.1");
+    let stderr = String::from_utf8(output.stderr).expect("stderr should be UTF-8");
+
+    assert_eq!(output.status.code(), Some(0), "got: {stderr:?}");
+    assert!(
+        stderr.contains("could not read a PHPUnit version"),
+        "not knowing must be said out loud: {stderr:?}"
+    );
+    assert!(dir.join("ran-tests").exists(), "the gate must have run");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_single_file_gate_on_old_phpunit_proceeds_without_a_word() {
+    let Some(dir) = scratch_repo("gate-old-single") else {
+        return;
+    };
+    write_gate_runner(&dir);
+    std::fs::write(dir.join("OnlyTest.php"), "<?php\n").expect("write");
+    let output = Command::new(env!("CARGO_BIN_EXE_sooth"))
+        .current_dir(&dir)
+        .env(
+            "SOOTH_TEST_PHPUNIT_VERSION",
+            "PHPUnit 9.6.11 by Sebastian Bergmann and contributors.",
+        )
+        .args([
+            "run",
+            "--changed=HEAD",
+            "--runs",
+            "2",
+            "--no-history",
+            "--preset",
+            "phpunit",
+            "--color",
+            "never",
+            "--",
+            "./runner.sh",
+        ])
+        .output()
+        .expect("sooth should run");
+    let stderr = String::from_utf8(output.stderr).expect("stderr should be UTF-8");
+
+    assert_eq!(output.status.code(), Some(0), "got: {stderr:?}");
+    assert!(
+        !stderr.contains("PHPUnit"),
+        "one path is exactly what old PHPUnit handles — no noise: {stderr:?}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn the_gate_repeats_only_the_changed_tests_and_catches_a_born_flake() {
     let Some(dir) = scratch_repo("gate-e2e") else {

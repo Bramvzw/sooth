@@ -186,6 +186,26 @@ pub fn selected_paths(preset: Preset, files: &[String]) -> Vec<String> {
     }
 }
 
+/// `PHPUnit`'s major version, probed from `program --version`. `None` when
+/// the probe fails or the banner is not `PHPUnit`'s — the caller decides
+/// how loud to be about not knowing.
+pub fn phpunit_major(program: &str) -> Option<u32> {
+    let output = std::process::Command::new(program)
+        .arg("--version")
+        .output()
+        .ok()?;
+    parse_phpunit_major(&String::from_utf8_lossy(&output.stdout))
+}
+
+/// The major out of a `PHPUnit 9.6.11 by Sebastian Bergmann …` banner.
+fn parse_phpunit_major(banner: &str) -> Option<u32> {
+    let rest = banner.trim_start().strip_prefix("PHPUnit ")?;
+    let digits = &rest[..rest
+        .find(|c: char| !c.is_ascii_digit())
+        .unwrap_or(rest.len())];
+    digits.parse().ok()
+}
+
 /// The name without its `[parameters]` suffix (brackets break a `-k` expression).
 fn base_name(name: &str) -> &str {
     name.find('[').map_or(name, |i| &name[..i])
@@ -428,6 +448,22 @@ mod tests {
     #[test]
     fn go_selection_is_declined_so_verification_refuses_loudly() {
         assert!(selection_args(Preset::Go, &names(&["TestX"])).is_none());
+    }
+
+    #[test]
+    fn the_phpunit_major_is_read_from_its_version_banner() {
+        use super::parse_phpunit_major;
+        assert_eq!(
+            parse_phpunit_major("PHPUnit 9.6.11 by Sebastian Bergmann and contributors.\n"),
+            Some(9)
+        );
+        assert_eq!(
+            parse_phpunit_major("PHPUnit 13.2.4 by Sebastian Bergmann and contributors.\n"),
+            Some(13)
+        );
+        // A foreign banner is not knowing, never a guess.
+        assert_eq!(parse_phpunit_major("Pest 2.34.1\n"), None);
+        assert_eq!(parse_phpunit_major(""), None);
     }
 
     #[test]

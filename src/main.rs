@@ -230,6 +230,29 @@ fn gated_command(args: &cli::RunArgs, style: report::Style) -> Result<Option<Gat
     if selection.files.is_empty() {
         return empty_gate(args, &selection).map(|()| None);
     }
+    // PHPUnit before 10 runs only the first positional path: a multi-file
+    // selection would gate one file while claiming them all (#139). Probed
+    // only when that can happen; too old refuses, unknown warns.
+    if preset == cli::Preset::Phpunit && selection.files.len() > 1 {
+        match preset::phpunit_major(&args.command[0]) {
+            Some(major) if major < 10 => {
+                eprintln!(
+                    "sooth: the gate selected {} test files, but PHPUnit {major} runs only \
+                     the first path it is given — the rest would silently not be gated. \
+                     Upgrade to PHPUnit 10+ to gate several files at once",
+                    selection.files.len()
+                );
+                return Err(ExitCode::from(EXIT_SOOTH_ERROR));
+            }
+            None => eprintln!(
+                "sooth: could not read a PHPUnit version from `{} --version` — if it is \
+                 older than 10, only the first of the {} selected files will run",
+                args.command[0],
+                selection.files.len()
+            ),
+            Some(_) => {}
+        }
+    }
     // Bare --json owns sooth's own stdout (one line of JSON); the selection
     // rides in the JSON's `gate` object instead.
     if !matches!(args.json, Some(None)) {
