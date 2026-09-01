@@ -786,3 +786,22 @@ A `--filter` fallback for old PHPUnit (deriving class names from file
 basenames) was rejected: filename→class is a convention, not a guarantee,
 and a gate built on a guess can under-select — the exact failure this
 decision exists to prevent. Revisit only if PHPUnit ≤ 9 gate demand shows up.
+
+## A zero-test pass keeps its exit but loses its celebration
+
+A run whose report names zero tests used to end in a bold green
+`result: ✓ PASSED` (#141). Every cause of an empty report is a mistake —
+a `--filter` matching nothing, an empty testsuite in the config, a runner
+pointed at the wrong directory — and for a gate it is a false green with
+real consequences: the selection printed files, the report proved none of
+them.
+
+The exit stays 0: the runner and its report agree that nothing failed, and
+that agreement is the whole exit contract. Failing the run (1) would blame
+the tests for a vacuum, erroring (2) would blame sooth for the user's
+configuration, and runners that consider an empty selection an error
+(pytest exits 5) already fail the run through the runner's own exit. What
+changes is the sentence: the verdict says `— but the report shows 0 tests,
+so this run proved nothing`, in yellow rather than bold green. Vacuous
+truth is still truth, but it is not proof, and sooth must not dress it up
+as proof.

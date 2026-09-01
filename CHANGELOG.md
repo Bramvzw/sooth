@@ -140,6 +140,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   gains an additive `reordered_runs` array alongside `flaky`/`broken`.
 ### Changed
 
+- A pass whose report names zero tests says so instead of celebrating: the
+  verdict becomes `result: ✓ PASSED — but the report shows 0 tests, so this
+  run proved nothing`, in yellow rather than bold green. The exit stays 0 —
+  the runner and its report agree nothing failed — but an empty suite, a
+  filter matching nothing, or a runner pointed at the wrong directory no
+  longer reads as proof.
 - A test's state reads at a glance: every per-test line opens with a glyph
   that mirrors the verdict — ✗ attention now (new, real, broken), ~ flake
   evidence, ▼ failing since, ⊘ quarantined — and the verdict line closes

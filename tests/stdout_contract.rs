@@ -122,6 +122,39 @@ fn json_to_a_file_keeps_the_human_report_on_stdout() {
 }
 
 #[test]
+fn a_report_with_zero_tests_passes_but_says_it_proved_nothing() {
+    let (cwd, mut command) = sooth_in("zero-tests");
+    let report = cwd.join("empty.xml");
+    let script = format!("printf '<testsuite></testsuite>' > '{}'", report.display());
+    let output = command
+        .args([
+            "run",
+            "--no-history",
+            "--junit",
+            &report.display().to_string(),
+            "--color",
+            "never",
+            "--",
+            "sh",
+            "-c",
+            &script,
+        ])
+        .output()
+        .expect("sooth should run");
+    let stdout = String::from_utf8(output.stdout).expect("stdout should be UTF-8");
+
+    // Runner and report agree nothing failed: the exit contract holds …
+    assert_eq!(output.status.code(), Some(0), "got: {stdout:?}");
+    // … but an empty suite, a filter matching nothing, or a wrong directory
+    // must never read as bold green proof.
+    assert!(
+        stdout.contains("but the report shows 0 tests, so this run proved nothing"),
+        "got: {stdout:?}"
+    );
+    let _ = std::fs::remove_dir_all(&cwd);
+}
+
+#[test]
 fn a_junit_report_that_predates_the_run_is_rejected_as_stale() {
     // Write the report BEFORE the run; the wrapped command touches nothing.
     let report =
