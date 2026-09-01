@@ -227,6 +227,14 @@ pub fn verdict_line(
             )
         };
         style.bold_red(&format!("result: ✗ FAILED — {detail} ({total:.2?} total)"))
+    } else if summary.is_some_and(|summary| summary.total == 0) {
+        // Runner and report agree nothing failed, so the exit stays 0 — but
+        // a run of zero tests verified nothing, and a bold green would dress
+        // the vacuum up as proof (see `DECISIONS.md`).
+        style.yellow(&format!(
+            "result: ✓ PASSED — but the report shows 0 tests, so this run proved nothing \
+             ({total:.2?} total)"
+        ))
     } else {
         let tests = summary.map_or_else(String::new, |summary| {
             format!(", {}", count(summary.total, "test"))
@@ -952,6 +960,22 @@ mod tests {
         let line = verdict_line(&[outcome(true)], Some(&summary), 0, false, plain());
         assert!(line.contains("PASSED"));
         assert!(line.contains("1 of 1 runs, 1 test ("));
+    }
+
+    #[test]
+    fn a_zero_test_pass_says_it_proved_nothing() {
+        let line = verdict_line(
+            &[outcome(true)],
+            Some(&JunitSummary::empty()),
+            0,
+            false,
+            plain(),
+        );
+        assert!(line.contains("✓ PASSED"), "the exit contract holds: {line}");
+        assert!(
+            line.contains("0 tests, so this run proved nothing"),
+            "got: {line}"
+        );
     }
 
     #[test]
