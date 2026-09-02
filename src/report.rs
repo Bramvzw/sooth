@@ -438,6 +438,10 @@ fn observed_phrase(observed: &explain::Observed, reordered: &[usize], style: Sty
             "broken ({observed_runs} of {observed_runs} runs now)"
         )),
         explain::Observed::Real => style.bold_red("real (reproduced on re-run)"),
+        explain::Observed::FailedDifferently { suite, isolation } => style.red(&format!(
+            "failed differently on re-run ({suite} in the suite, {isolation} in \
+             isolation — not a reproduction)"
+        )),
         explain::Observed::FlakyOrOrder => {
             style.yellow("flaky or order-dependent (passed on re-run in isolation)")
         }
@@ -699,14 +703,7 @@ pub fn to_json(outcomes: &[RunOutcome], summary: &JunitSummary, analyses: &Analy
     // Additive within schema_version 1: present whenever the history pass ran.
     let history = history.map_or(String::new(), history_object);
 
-    let verification = verify.map_or(String::new(), |verdict| {
-        format!(
-            r#","verification":{{"real":[{}],"flaky_or_order_dependent":[{}],"unverified":[{}]}}"#,
-            json_ids(&verdict.real),
-            json_ids(&verdict.flaky_or_order),
-            json_ids(&verdict.unverified)
-        )
-    });
+    let verification = verify.map_or(String::new(), verification_object);
 
     let quarantine = pardoned.map_or(String::new(), |ids| {
         format!(r#","quarantine":{{"pardoned":[{}]}}"#, json_ids(ids))
@@ -795,6 +792,30 @@ fn explanation_object(explanations: &[explain::Explanation]) -> String {
         counts.quarantined,
         counts.new,
         counts.only_known_flakes()
+    )
+}
+
+/// The verification pass as JSON: the three id lists plus, per failure that
+/// failed differently, both signatures.
+fn verification_object(verdict: &verify::Verdict) -> String {
+    let different: Vec<String> = verdict
+        .failed_differently
+        .iter()
+        .map(|failure| {
+            format!(
+                r#"{{"name":"{}","suite":"{}","isolation":"{}"}}"#,
+                json_escape(&failure.id),
+                json_escape(&failure.suite),
+                json_escape(&failure.isolation)
+            )
+        })
+        .collect();
+    format!(
+        r#","verification":{{"real":[{}],"flaky_or_order_dependent":[{}],"failed_differently":[{}],"unverified":[{}]}}"#,
+        json_ids(&verdict.real),
+        json_ids(&verdict.flaky_or_order),
+        different.join(","),
+        json_ids(&verdict.unverified)
     )
 }
 
@@ -910,6 +931,7 @@ mod tests {
             classname: None,
             duration: Duration::from_secs_f64(duration_seconds),
             status,
+            failure_type: None,
         }
     }
 
@@ -1085,6 +1107,14 @@ mod tests {
                 },
                 "red up to run 2, then green for every later run (the environment may \
                  have changed between runs)",
+            ),
+            (
+                explain::Observed::FailedDifferently {
+                    suite: "TypeError".to_owned(),
+                    isolation: "RuntimeException".to_owned(),
+                },
+                "failed differently on re-run (TypeError in the suite, RuntimeException \
+                 in isolation — not a reproduction)",
             ),
             (
                 explain::Observed::LoneFailure { absent_runs: 19 },
