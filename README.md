@@ -196,6 +196,42 @@ go preset yet.
 sooth run --verify --preset phpunit -- vendor/bin/phpunit
 ```
 
+## How many runs do I need?
+
+`--runs N` is a binomial experiment: a flake that fails a fraction *p* of
+runs survives all N of them with probability (1−p)^N. To see it fail at
+least once with confidence C you need `N ≥ ln(1−C) / ln(1−p)` runs — in
+table form, pick the failure rate you want to rule out and the confidence
+you can live with:
+
+| a flake failing… | 90% confidence | 95% | 99% |
+|---|---|---|---|
+| 1 in 2 runs (50%) | 4 | 5 | 7 |
+| 1 in 3 (33%) | 6 | 8 | 12 |
+| 1 in 5 (20%) | 11 | 14 | 21 |
+| 1 in 10 (10%) | 22 | 29 | 44 |
+| 1 in 20 (5%) | 45 | 59 | 90 |
+| 1 in 50 (2%) | 114 | 149 | 228 |
+| 1 in 100 (1%) | 230 | 299 | 459 |
+
+Read it in both directions. Five runs only catch a flake that fails more
+than ~37% of the time (at 90% confidence) — "ran it a few times, found
+nothing" rules out almost nothing. The gate's suggested `--runs 20`
+catches a 1-in-10 flake with ~88% confidence, and stays cheap because it
+repeats a handful of changed files, not the suite.
+
+Three caveats keep the table honest:
+
+- It assumes runs are independent coin flips. A flake tied to the clock, a
+  fixed random seed, or leftover state (the monotone-flip line) is not —
+  repeats then prove less than the table promises.
+- A green N-run invocation proves an upper bound, never absence: "no flake
+  above ~10%, at 95%" is the strongest claim 29 green runs support.
+- You rarely need the big numbers. The run history accumulates the same
+  evidence for free from runs that happen anyway, and `sooth import`
+  brings CI's runs into it — `--runs` is the lab instrument, the history
+  is the security camera.
+
 ## Gate your push
 
 The ideal is that a flake never reaches CI — and one plain test run cannot
