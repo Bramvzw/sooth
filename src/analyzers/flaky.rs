@@ -80,9 +80,8 @@ pub struct Analysis {
     pub flaky: Vec<TestOutcomes>,
     /// Failed every observed run — broken, not flaky.
     pub broken: Vec<TestOutcomes>,
-    /// Mixed outcomes that flipped once and never returned, the new state
-    /// confirmed by at least two observations — a single trailing flip is
-    /// indistinguishable from a flake.
+    /// Mixed outcomes that flipped once and never returned (the exact rule
+    /// lives on `monotone_flip`).
     pub monotone: Vec<MonotoneFlip>,
     /// Failed the single run they appeared in, absent from the rest.
     pub lone_failures: Vec<LoneFailure>,
@@ -171,9 +170,8 @@ pub fn analyze(reports: &[JunitReport]) -> Analysis {
 }
 
 /// The run after which a mixed sequence flipped for good, when it did:
-/// exactly one direction change, and the new state held for at least two
-/// observations — "never back" needs a chance to have come back, so a
-/// single trailing flip stays an ordinary flake.
+/// exactly one direction change, and the new state seen at least twice
+/// (see `DECISIONS.md`).
 fn monotone_flip(observations: &[(usize, bool)]) -> Option<(usize, bool)> {
     let mut change_at = None;
     for (index, pair) in observations.windows(2).enumerate() {
