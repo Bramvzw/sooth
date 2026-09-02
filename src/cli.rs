@@ -103,7 +103,8 @@ pub struct RunArgs {
 
     /// How many times to run the suite (fixed order). With a report source
     /// and more than one run, mixed outcomes are reported as flaky; the
-    /// summary table itself reflects the final run.
+    /// summary table itself reflects the final run. How many you need for a
+    /// given failure rate: see "How many runs do I need?" in the README.
     #[arg(long, default_value_t = 1, value_parser = clap::value_parser!(u32).range(1..))]
     pub runs: u32,
 
