@@ -805,3 +805,36 @@ changes is the sentence: the verdict says `— but the report shows 0 tests,
 so this run proved nothing`, in yellow rather than bold green. Vacuous
 truth is still truth, but it is not proof, and sooth must not dress it up
 as proof.
+
+## The flaky pass reads the shape of the sequence, not only the rate
+
+Two dogfooding findings shared one root: the pass reduced each test's runs
+to a pass/fail tally, and the tally supports weaker claims than it made.
+
+- Fifteen tests went green→red at the same run and stayed red — a suite
+  polluting its own environment (a reused database checksum), reported as
+  fifteen "flaky" tests, sending the reader hunting for nondeterminism that
+  is not there (#113). Real flakes bounce; this flips once and never back.
+- A test whose name carries per-run random data exists once per name: its
+  failing sighting read as "broken (1 of 1 runs now)" — the word for
+  fails-every-run, claimed on one observation — while its passing twin
+  under the next name hid the flake entirely (#137).
+
+So the pass now keeps each test's per-run sequence and claims only what the
+shape supports. Mixed outcomes that flipped exactly once, the new state
+confirmed by at least two observations ("never back" needs a chance to have
+come back — a single trailing flip stays a flake), leave the flaky ranking:
+`green up to run 2, then red for every later run (the environment may have
+changed between runs)` — the reverse flip reads the same way. A failure observed
+in a single run while *absent* from others is neither flaky nor broken:
+`failed its only observed run (absent from the other 19 — a name that
+changes per run hides flakiness)`. Present-but-skipped elsewhere stays
+broken — a skip is a stable name, and only true absence questions identity.
+
+Normalizing identities instead (stripping data-set suffixes so drifting
+names merge into one test with a real flaky claim) was rejected: sooth
+would be guessing that two names are one test, the guess can merge rows
+that are genuinely different tests, and history, quarantine and explain all
+key on the full identity. Facts over inference, the same call as the gate's
+PHPUnit probe. The `--json` document gains additive `monotone` and
+`lone_failures` arrays beside `flaky`/`broken`.

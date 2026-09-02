@@ -561,6 +561,63 @@ fn repeated_runs_report_mixed_outcomes_as_flaky() {
 }
 
 #[test]
+fn a_monotone_flip_and_a_lone_failure_are_named_for_what_they_are() {
+    // Run 1: "polluted" passes and "drift-1" fails. Runs 2 and 3: "polluted"
+    // fails and a differently-named drift passes — the #113 and #137 shapes
+    // in one invocation.
+    let (cwd, mut command) = sooth_in("sequence-shapes");
+    let report = cwd.join("report.xml");
+    let script = format!(
+        r#"n=$(cat runcount 2>/dev/null || echo 0); n=$((n+1)); echo $n > runcount
+if [ "$n" = "1" ]; then
+  printf '<testsuite><testcase classname="c" name="polluted"/><testcase classname="c" name="drift-1"><failure/></testcase></testsuite>' > '{report}'
+else
+  printf '<testsuite><testcase classname="c" name="polluted"><failure/></testcase><testcase classname="c" name="drift-%s"/></testsuite>' "$n" > '{report}'
+fi"#,
+        report = report.display()
+    );
+    let output = command
+        .args([
+            "run",
+            "--runs",
+            "3",
+            "--no-history",
+            "--junit",
+            &report.display().to_string(),
+            "--color",
+            "never",
+            "--",
+            "sh",
+            "-c",
+            &script,
+        ])
+        .output()
+        .expect("sooth should run");
+    let stdout = String::from_utf8(output.stdout).expect("stdout should be UTF-8");
+
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "failures stay red: {stdout:?}"
+    );
+    assert!(
+        stdout.contains(
+            "~ c::polluted — green up to run 1, then red for every later run \
+             (the environment may have changed between runs)"
+        ),
+        "a flip that never returns must not be called flaky: {stdout:?}"
+    );
+    assert!(
+        stdout.contains(
+            "✗ c::drift-1 — failed its only observed run (absent from the other 2 \
+             — a name that changes per run hides flakiness)"
+        ),
+        "one sighting must not be called broken: {stdout:?}"
+    );
+    let _ = std::fs::remove_dir_all(&cwd);
+}
+
+#[test]
 fn a_preset_runner_that_stops_writing_reports_fails_loudly() {
     use std::os::unix::fs::PermissionsExt;
     // Run 1 writes a report; run 2 writes nothing. Because sooth deletes the

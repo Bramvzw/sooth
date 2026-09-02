@@ -328,9 +328,11 @@ fn glyph(explanation: &explain::Explanation, style: Style) -> String {
         explain::Verdict::KnownFlake { .. } => flaky_mark(style),
         explain::Verdict::FailingSince { .. } => regression_mark(style),
         explain::Verdict::Unknown => match &explanation.observed {
-            Some(explain::Observed::Flaky { .. } | explain::Observed::FlakyOrOrder) => {
-                flaky_mark(style)
-            }
+            Some(
+                explain::Observed::Flaky { .. }
+                | explain::Observed::FlakyOrOrder
+                | explain::Observed::MonotoneFlip { .. },
+            ) => flaky_mark(style),
             _ => style.bold_red("✗"),
         },
     }
@@ -413,6 +415,24 @@ fn observed_phrase(observed: &explain::Observed, reordered: &[usize], style: Sty
             observed_runs,
         } => style.red(&format!(
             "flaky ({failed_runs} of {observed_runs} runs now)"
+        )),
+        explain::Observed::MonotoneFlip {
+            flipped_after_run,
+            started_green,
+        } => {
+            let (opening, closing) = if *started_green {
+                ("green", "red")
+            } else {
+                ("red", "green")
+            };
+            style.yellow(&format!(
+                "{opening} up to run {flipped_after_run}, then {closing} for every later \
+                 run (the environment may have changed between runs)"
+            ))
+        }
+        explain::Observed::LoneFailure { absent_runs } => style.red(&format!(
+            "failed its only observed run (absent from the other {absent_runs} — a name \
+             that changes per run hides flakiness)"
         )),
         explain::Observed::Broken { observed_runs } => style.red(&format!(
             "broken ({observed_runs} of {observed_runs} runs now)"
@@ -639,14 +659,39 @@ pub fn to_json(outcomes: &[RunOutcome], summary: &JunitSummary, analyses: &Analy
         })
         .collect();
 
-    // Additive within schema_version 1: the flaky/broken fields appear only
+    // Additive within schema_version 1: the analysis fields appear only
     // when a multi-run analysis ran.
     let active = flaky.map_or(String::new(), |pass| {
         let reordered: Vec<String> = pass.reordered_runs.iter().map(usize::to_string).collect();
+        let monotone: Vec<String> = pass
+            .monotone
+            .iter()
+            .map(|flip| {
+                format!(
+                    r#"{{"name":"{}","flipped_after_run":{},"started_green":{}}}"#,
+                    json_escape(&flip.outcomes.id),
+                    flip.flipped_after_run,
+                    flip.started_green
+                )
+            })
+            .collect();
+        let lone: Vec<String> = pass
+            .lone_failures
+            .iter()
+            .map(|test| {
+                format!(
+                    r#"{{"name":"{}","absent_runs":{}}}"#,
+                    json_escape(&test.id),
+                    test.absent_runs
+                )
+            })
+            .collect();
         format!(
-            r#","flaky":[{}],"broken":[{}],"reordered_runs":[{}]"#,
+            r#","flaky":[{}],"broken":[{}],"monotone":[{}],"lone_failures":[{}],"reordered_runs":[{}]"#,
             outcome_entries(&pass.flaky),
             outcome_entries(&pass.broken),
+            monotone.join(","),
+            lone.join(","),
             reordered.join(",")
         )
     });
@@ -1024,6 +1069,27 @@ mod tests {
             (
                 explain::Observed::Unverified,
                 "unverified (the re-run did not cover it)",
+            ),
+            (
+                explain::Observed::MonotoneFlip {
+                    flipped_after_run: 1,
+                    started_green: true,
+                },
+                "green up to run 1, then red for every later run (the environment may \
+                 have changed between runs)",
+            ),
+            (
+                explain::Observed::MonotoneFlip {
+                    flipped_after_run: 2,
+                    started_green: false,
+                },
+                "red up to run 2, then green for every later run (the environment may \
+                 have changed between runs)",
+            ),
+            (
+                explain::Observed::LoneFailure { absent_runs: 19 },
+                "failed its only observed run (absent from the other 19 — a name that \
+                 changes per run hides flakiness)",
             ),
         ] {
             assert_eq!(super::observed_phrase(&observed, &[], plain()), expected);
