@@ -46,6 +46,9 @@ pub enum Observed {
     Real,
     /// Verification passed it in isolation.
     FlakyOrOrder,
+    /// Verification made it fail, but with a different signature than the
+    /// suite saw — an artifact of isolation, not a reproduction.
+    FailedDifferently { suite: String, isolation: String },
     /// Verification never actually re-ran it.
     Unverified,
 }
@@ -161,6 +164,16 @@ fn observed_for(id: &str, passes: &Passes<'_>) -> Option<Observed> {
     }
     if verdict.flaky_or_order.contains(&owned) {
         return Some(Observed::FlakyOrOrder);
+    }
+    if let Some(different) = verdict
+        .failed_differently
+        .iter()
+        .find(|failure| failure.id == owned)
+    {
+        return Some(Observed::FailedDifferently {
+            suite: different.suite.clone(),
+            isolation: different.isolation.clone(),
+        });
     }
     verdict
         .unverified
@@ -334,6 +347,7 @@ mod tests {
             real: vec!["c::dead".to_owned()],
             flaky_or_order: vec!["c::wobbly".to_owned()],
             unverified: vec!["c::missed".to_owned()],
+            ..crate::verify::Verdict::default()
         };
         let passes = super::Passes {
             verify: Some(&verdict),

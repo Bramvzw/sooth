@@ -12,5 +12,5 @@ if [ "$verify" = "1" ]; then
   printf '<testsuite>%s</testsuite>' "$SOOTH_TEST_VERIFY_CASE" > "$report"
   exit 0
 fi
-printf '<testsuite><testcase classname="c" name="wob"><failure/></testcase></testsuite>' > "$report"
+printf '<testsuite><testcase classname="c" name="wob"><failure type="AssertionError"/></testcase></testsuite>' > "$report"
 exit 1

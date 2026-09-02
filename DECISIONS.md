@@ -838,3 +838,28 @@ that are genuinely different tests, and history, quarantine and explain all
 key on the full identity. Facts over inference, the same call as the gate's
 PHPUnit probe. The `--json` document gains additive `monotone` and
 `lone_failures` arrays beside `flaky`/`broken`.
+
+## A re-run that fails differently reproduced nothing
+
+`--verify` compared pass/fail and nothing else, so a test that failed the
+suite with an assertion and died in isolation on a bootstrap error read as
+`real — reproduced on re-run` (#103). Nothing was reproduced: the second
+failure is an artifact of tearing the test out of its context, and on
+suites with shared bootstrap state this misfires systematically — always
+toward the confident label.
+
+Verification now compares the failure's *signature*: its kind
+(`<failure>` vs `<error>`) plus the exception class from the report's
+`type` attribute. Same signature → `real`, as before. Different →
+`failed differently on re-run (TypeError in the suite, RuntimeException in
+isolation — not a reproduction)`, its own bucket in the report and the
+JSON. Two boundaries keep it honest: absent metadata never manufactures a
+difference (a report without `type` attributes compares on kind alone),
+and the failure *message* is deliberately not compared — messages embed
+volatile data (ids, faker values), so a message comparison would read real
+reproductions as different. A pass on re-run still outranks everything:
+one green isolation run says more than any signature.
+
+The third case the issue names — failed alone with the *same* signature
+while the suite's normal order was green — is order-dependence and belongs
+to #111 (v0.3), not to verification.

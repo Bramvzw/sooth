@@ -140,6 +140,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   gains an additive `reordered_runs` array alongside `flaky`/`broken`.
 ### Changed
 
+- `--verify` compares the failure's signature, not just pass/fail: a re-run
+  that fails with a different kind or exception class than the suite saw is
+  no longer `real (reproduced on re-run)` but `failed differently on re-run
+  (TypeError in the suite, RuntimeException in isolation — not a
+  reproduction)` — its own bucket, also in the JSON's `verification`
+  object. Absent `type` attributes never manufacture a difference, and the
+  failure message is deliberately not compared (volatile data would read
+  real reproductions as different).
 - The flaky pass claims only what the run sequence supports. A mixed
   outcome that flipped exactly once and never came back (the new state
   confirmed by at least two observations) leaves the flaky ranking and is reported as the distinct

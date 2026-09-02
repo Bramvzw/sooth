@@ -444,8 +444,7 @@ fn verify_failures(
         }
         cleanup_preset_report(&path);
     }
-    let ids: Vec<String> = failed.into_iter().map(|test| test.id).collect();
-    Some(verify::classify(&ids, &verify_reports))
+    Some(verify::classify(&failed, &verify_reports))
 }
 
 /// What the passive layer produced for this run: the classification, plus
@@ -1113,6 +1112,7 @@ mod tests {
             classname: None,
             duration: Duration::from_secs_f64(duration_seconds),
             status,
+            failure_type: None,
         }
     }
 

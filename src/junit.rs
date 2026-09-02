@@ -46,6 +46,9 @@ pub struct TestCase {
     pub classname: Option<String>,
     pub duration: Duration,
     pub status: TestStatus,
+    /// The `type` attribute of the `<failure>`/`<error>` child that set the
+    /// status — the exception class, when the runner writes one.
+    pub failure_type: Option<String>,
 }
 
 impl TestCase {
@@ -198,13 +201,13 @@ pub fn parse_str(xml: &str) -> Result<JunitReport, JunitError> {
                     b"testcase" => {
                         open_case = Some(OpenTestCase::new(&tag, depth - 1)?);
                     }
-                    other => mark_status(open_case.as_mut(), other),
+                    _ => mark_status(open_case.as_mut(), &tag),
                 }
             }
             Event::Empty(tag) => match tag.local_name().as_ref() {
                 b"testsuite" | b"testsuites" => seen_root = true,
                 b"testcase" => test_cases.push(OpenTestCase::new(&tag, depth)?.finish()),
-                other => mark_status(open_case.as_mut(), other),
+                _ => mark_status(open_case.as_mut(), &tag),
             },
             Event::End(_) => {
                 depth -= 1;
@@ -269,6 +272,7 @@ struct OpenTestCase {
     classname: Option<String>,
     duration: Duration,
     status: TestStatus,
+    failure_type: Option<String>,
     /// The `depth` value the matching `Event::End` brings the reader back to.
     close_depth: i64,
 }
@@ -297,6 +301,7 @@ impl OpenTestCase {
             classname,
             duration,
             status: TestStatus::Passed,
+            failure_type: None,
             close_depth,
         })
     }
@@ -307,18 +312,20 @@ impl OpenTestCase {
             classname: self.classname,
             duration: self.duration,
             status: self.status,
+            failure_type: self.failure_type,
         }
     }
 }
 
-/// Upgrade `case`'s status if `local_tag_name` names a status-bearing child
-/// element and outranks the status already recorded. A no-op outside a
-/// `<testcase>` (`case` is `None`) or for an unrecognised tag.
-fn mark_status(case: Option<&mut OpenTestCase>, local_tag_name: &[u8]) {
+/// Upgrade `case`'s status if `tag` names a status-bearing child element
+/// and outranks the status already recorded; the child's `type` attribute
+/// (the exception class) rides along. A no-op outside a `<testcase>`
+/// (`case` is `None`) or for an unrecognised tag.
+fn mark_status(case: Option<&mut OpenTestCase>, tag: &BytesStart) {
     let Some(case) = case else {
         return;
     };
-    let candidate = match local_tag_name {
+    let candidate = match tag.local_name().as_ref() {
         b"error" => TestStatus::Error,
         b"failure" => TestStatus::Failed,
         b"skipped" => TestStatus::Skipped,
@@ -326,7 +333,25 @@ fn mark_status(case: Option<&mut OpenTestCase>, local_tag_name: &[u8]) {
     };
     if candidate.severity() > case.status.severity() {
         case.status = candidate;
+        case.failure_type = match candidate {
+            TestStatus::Failed | TestStatus::Error => type_attribute(tag),
+            _ => None,
+        };
     }
+}
+
+/// The `type` attribute of a status-bearing child; unreadable attributes
+/// read as absent — tolerance, as everywhere in this parser.
+fn type_attribute(tag: &BytesStart) -> Option<String> {
+    for attribute in tag.attributes().flatten() {
+        if attribute.key.local_name().as_ref() == b"type" {
+            return attribute
+                .normalized_value(XmlVersion::Implicit1_0)
+                .ok()
+                .map(std::borrow::Cow::into_owned);
+        }
+    }
+    None
 }
 
 /// Parse a `time` attribute value (seconds, possibly fractional) into a
@@ -356,6 +381,28 @@ mod tests {
         Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("tests/fixtures")
             .join(name)
+    }
+
+    #[test]
+    fn the_failure_type_attribute_rides_along_with_the_status() {
+        let report = parse_str(
+            r#"<testsuite>
+                <testcase name="typed"><failure type="TypeError" message="m"/></testcase>
+                <testcase name="bare"><failure/></testcase>
+                <testcase name="ok"/>
+                <testcase name="worst"><failure type="F"/><error type="E"/></testcase>
+            </testsuite>"#,
+        )
+        .unwrap();
+        assert_eq!(
+            report.test_cases[0].failure_type.as_deref(),
+            Some("TypeError")
+        );
+        assert_eq!(report.test_cases[1].failure_type, None);
+        assert_eq!(report.test_cases[2].failure_type, None);
+        // The type follows the status that won the severity contest.
+        assert_eq!(report.test_cases[3].status, TestStatus::Error);
+        assert_eq!(report.test_cases[3].failure_type.as_deref(), Some("E"));
     }
 
     #[test]

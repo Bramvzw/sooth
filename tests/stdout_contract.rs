@@ -275,6 +275,44 @@ fn a_verified_failure_that_passes_on_re_run_reads_flaky_or_order_dependent() {
 }
 
 #[test]
+fn a_verified_failure_that_fails_differently_is_not_called_real() {
+    let (cwd, mut command) = sooth_in("verify-different");
+    write_verify_runner(&cwd);
+    // The suite saw an AssertionError (the fixture's initial run); the
+    // re-run dies on a RuntimeException instead — isolation broke the
+    // bootstrap, nothing was reproduced.
+    command.env(
+        "SOOTH_TEST_VERIFY_CASE",
+        r#"<testcase classname="c" name="wob"><error type="RuntimeException"/></testcase>"#,
+    );
+    let output = command
+        .args([
+            "run",
+            "--verify",
+            "--no-history",
+            "--preset",
+            "phpunit",
+            "--color",
+            "never",
+            "--",
+            "./runner.sh",
+        ])
+        .output()
+        .expect("sooth should run");
+    let stdout = String::from_utf8(output.stdout).expect("stdout should be UTF-8");
+
+    assert_eq!(output.status.code(), Some(1), "got: {stdout:?}");
+    assert!(
+        stdout.contains(
+            "✗ c::wob — failed differently on re-run (AssertionError in the suite, \
+             RuntimeException in isolation — not a reproduction)"
+        ),
+        "a different failure must never read as reproduced: {stdout:?}"
+    );
+    let _ = std::fs::remove_dir_all(&cwd);
+}
+
+#[test]
 fn a_verified_failure_that_reproduces_reads_real() {
     let (cwd, mut command) = sooth_in("verify-real");
     write_verify_runner(&cwd);
