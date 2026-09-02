@@ -143,9 +143,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The flaky pass claims only what the run sequence supports. A mixed
   outcome that flipped exactly once and never came back (the new state
   confirmed by at least two observations) leaves the flaky ranking and is reported as the distinct
-  finding it is: `green until run 2, red after and never back (a repeat may
-  not be measuring the same suite)` — the suite polluted itself; the test
-  is predictable. The reverse flip reads the same way. And a failure
+  finding it is: `green up to run 2, then red for every later run (the
+  environment may have changed between runs)` — the suite polluted itself;
+  the test is predictable. The reverse flip reads the same way. And a failure
   observed in a single run while absent from the others is no longer
   "broken (1 of 1 runs now)" but `failed its only observed run (absent from
   the other 19 — a name that changes per run hides flakiness)`. The

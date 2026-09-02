@@ -426,8 +426,8 @@ fn observed_phrase(observed: &explain::Observed, reordered: &[usize], style: Sty
                 ("red", "green")
             };
             style.yellow(&format!(
-                "{opening} until run {flipped_after_run}, {closing} after and never back \
-                 (a repeat may not be measuring the same suite)"
+                "{opening} up to run {flipped_after_run}, then {closing} for every later \
+                 run (the environment may have changed between runs)"
             ))
         }
         explain::Observed::LoneFailure { absent_runs } => style.red(&format!(
@@ -1075,16 +1075,16 @@ mod tests {
                     flipped_after_run: 1,
                     started_green: true,
                 },
-                "green until run 1, red after and never back (a repeat may not be \
-                 measuring the same suite)",
+                "green up to run 1, then red for every later run (the environment may \
+                 have changed between runs)",
             ),
             (
                 explain::Observed::MonotoneFlip {
                     flipped_after_run: 2,
                     started_green: false,
                 },
-                "red until run 2, green after and never back (a repeat may not be \
-                 measuring the same suite)",
+                "red up to run 2, then green for every later run (the environment may \
+                 have changed between runs)",
             ),
             (
                 explain::Observed::LoneFailure { absent_runs: 19 },

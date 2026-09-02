@@ -824,8 +824,8 @@ So the pass now keeps each test's per-run sequence and claims only what the
 shape supports. Mixed outcomes that flipped exactly once, the new state
 confirmed by at least two observations ("never back" needs a chance to have
 come back — a single trailing flip stays a flake), leave the flaky ranking:
-`green until run 2, red after and never back (a repeat may not be measuring
-the same suite)` — the reverse flip reads the same way. A failure observed
+`green up to run 2, then red for every later run (the environment may have
+changed between runs)` — the reverse flip reads the same way. A failure observed
 in a single run while *absent* from others is neither flaky nor broken:
 `failed its only observed run (absent from the other 19 — a name that
 changes per run hides flakiness)`. Present-but-skipped elsewhere stays

@@ -602,8 +602,8 @@ fi"#,
     );
     assert!(
         stdout.contains(
-            "~ c::polluted — green until run 1, red after and never back \
-             (a repeat may not be measuring the same suite)"
+            "~ c::polluted — green up to run 1, then red for every later run \
+             (the environment may have changed between runs)"
         ),
         "a flip that never returns must not be called flaky: {stdout:?}"
     );
