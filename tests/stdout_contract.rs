@@ -1489,6 +1489,118 @@ fn sooth_history_reads_the_evidence_without_touching_it() {
 }
 
 #[test]
+fn a_regression_prints_its_mark_and_the_commit_it_started_at() {
+    let (cwd, mut command) = sooth_in("history-failing-since");
+    std::fs::create_dir_all(cwd.join(".sooth")).expect("mkdir");
+    // Passed on commit aaa, then a two-red trailing streak on bbb…: the
+    // shape that anchors a failing-since pointer (and never reads as flaky —
+    // no clean commit saw both outcomes).
+    std::fs::write(
+        cwd.join(".sooth/history.jsonl"),
+        concat!(
+            r#"{"at":1,"commit":"aaa","dirty":false,"env":"local","status":"passed","id":"c::reg"}"#,
+            "\n",
+            r#"{"at":2,"commit":"bbb1234def","dirty":false,"env":"local","status":"failed","id":"c::reg"}"#,
+            "\n",
+            r#"{"at":3,"commit":"bbb1234def","dirty":false,"env":"local","status":"failed","id":"c::reg"}"#,
+            "\n",
+        ),
+    )
+    .expect("write");
+
+    let output = command
+        .args(["history", "--color", "never"])
+        .output()
+        .expect("sooth should run");
+    let stdout = String::from_utf8(output.stdout).expect("stdout should be UTF-8");
+
+    assert_eq!(output.status.code(), Some(0));
+    assert!(
+        stdout.contains("failing since a commit boundary:"),
+        "got: {stdout:?}"
+    );
+    // The mark, the git-style short commit, and the streak length are the
+    // whole regression line — each mutable without this pin.
+    assert!(
+        stdout.contains("▼ c::reg (since bbb1234, failed the last 2 observed runs)"),
+        "got: {stdout:?}"
+    );
+    assert!(
+        !stdout.contains("flaky per history"),
+        "an empty flaky section must stay silent: {stdout:?}"
+    );
+    let _ = std::fs::remove_dir_all(&cwd);
+}
+
+#[test]
+fn an_unlisted_known_flake_under_fail_on_flaky_explains_the_gap() {
+    let Some(dir) = scratch_repo("pardon-gap") else {
+        return;
+    };
+    let report = std::env::temp_dir().join(format!(
+        "sooth-contract-pardon-gap-{}.xml",
+        std::process::id()
+    ));
+    let run = |cases: &str, flags: &[&str]| {
+        let script = format!(
+            "printf '<testsuite>{cases}</testsuite>' > '{}'",
+            report.display()
+        );
+        let report_path = report.display().to_string();
+        let mut args = vec!["run"];
+        args.extend_from_slice(flags);
+        args.extend_from_slice(&[
+            "--junit",
+            &report_path,
+            "--color",
+            "never",
+            "--",
+            "sh",
+            "-c",
+            &script,
+        ]);
+        Command::new(env!("CARGO_BIN_EXE_sooth"))
+            .current_dir(&dir)
+            .args(&args)
+            .output()
+            .expect("sooth should run")
+    };
+
+    // Green then red on one clean commit: c::wob becomes a proven flake.
+    run(r#"<testcase classname="c" name="wob"/>"#, &[]);
+    run(
+        r#"<testcase classname="c" name="wob"><failure/></testcase>"#,
+        &[],
+    );
+    // Red again under --fail-on-flaky, with no quarantine file: nothing new
+    // failed, yet nothing was pardoned — the note must explain that gap.
+    let output = run(
+        r#"<testcase classname="c" name="wob"><failure/></testcase>"#,
+        &["--fail-on-flaky"],
+    );
+    let stdout = String::from_utf8(output.stdout).expect("stdout should be UTF-8");
+
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "the list alone pardons; sooth's own evidence never does: {stdout:?}"
+    );
+    assert!(
+        stdout.contains("all known flakes, nothing new"),
+        "got: {stdout:?}"
+    );
+    assert!(
+        stdout.contains(
+            "note: not every failure above is in .sooth-quarantine, so --fail-on-flaky \
+             pardoned nothing — add the ids to pardon them"
+        ),
+        "\"nothing new\" plus exit 1 without this note reads as a contradiction: {stdout:?}"
+    );
+    let _ = std::fs::remove_file(&report);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn an_empty_history_says_so_instead_of_printing_nothing() {
     let (cwd, mut command) = sooth_in("history-empty");
     let _ = std::fs::remove_dir_all(cwd.join(".sooth"));
