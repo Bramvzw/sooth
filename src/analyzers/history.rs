@@ -197,6 +197,26 @@ mod tests {
     }
 
     #[test]
+    fn the_window_drops_the_oldest_observations_beyond_the_limit() {
+        use crate::history::WINDOW_PER_TEST;
+        // The lone failure is the oldest of WINDOW+1 observations: the
+        // window drops exactly it, and with it the only flaky evidence.
+        let mut history = vec![clean("c::t", TestStatus::Failed, "aaa")];
+        history.extend((0..WINDOW_PER_TEST).map(|_| clean("c::t", TestStatus::Passed, "aaa")));
+        assert!(
+            analyze(&history).is_empty(),
+            "the failure must have left the window"
+        );
+
+        // One observation fewer and the failure sits inside the window:
+        // proven flaky, counts covering the whole window.
+        let analysis = analyze(&history[..WINDOW_PER_TEST]);
+        assert_eq!(analysis.flaky.len(), 1);
+        assert_eq!(analysis.flaky[0].outcomes.failed, 1);
+        assert_eq!(analysis.flaky[0].outcomes.passed, WINDOW_PER_TEST - 1);
+    }
+
+    #[test]
     fn mixed_outcomes_on_one_clean_commit_prove_flaky() {
         let history = [
             clean("c::t", TestStatus::Passed, "aaa"),
