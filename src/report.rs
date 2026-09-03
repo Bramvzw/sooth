@@ -1340,6 +1340,162 @@ mod tests {
     }
 
     #[test]
+    fn the_json_carries_the_flaky_and_broken_entries_with_their_fields() {
+        let summary = JunitSummary::from_report(
+            &JunitReport {
+                test_cases: vec![test_case("a", TestStatus::Failed, 0.1)],
+            },
+            0,
+        );
+        let pass = flaky::Analysis {
+            flaky: vec![flaky::TestOutcomes {
+                id: "c::wob".to_owned(),
+                passed: 1,
+                failed: 2,
+            }],
+            broken: vec![flaky::TestOutcomes {
+                id: "c::dead".to_owned(),
+                passed: 0,
+                failed: 3,
+            }],
+            ..flaky::Analysis::default()
+        };
+        let json = to_json(
+            &[outcome(false)],
+            &summary,
+            &Analyses {
+                flaky: Some(&pass),
+                ..Analyses::default()
+            },
+        );
+        assert!(
+            json.contains(r#""flaky":[{"name":"c::wob","failed_runs":2,"observed_runs":3}]"#),
+            "got: {json}"
+        );
+        assert!(
+            json.contains(r#""broken":[{"name":"c::dead","failed_runs":3,"observed_runs":3}]"#),
+            "got: {json}"
+        );
+    }
+
+    #[test]
+    fn the_json_carries_the_monotone_and_lone_entries_with_their_fields() {
+        let summary = JunitSummary::from_report(
+            &JunitReport {
+                test_cases: vec![test_case("a", TestStatus::Failed, 0.1)],
+            },
+            0,
+        );
+        let pass = flaky::Analysis {
+            monotone: vec![flaky::MonotoneFlip {
+                outcomes: flaky::TestOutcomes {
+                    id: "c::polluted".to_owned(),
+                    passed: 1,
+                    failed: 2,
+                },
+                flipped_after_run: 1,
+                started_green: true,
+            }],
+            lone_failures: vec![flaky::LoneFailure {
+                id: "c::drift".to_owned(),
+                absent_runs: 2,
+            }],
+            ..flaky::Analysis::default()
+        };
+        let json = to_json(
+            &[outcome(false)],
+            &summary,
+            &Analyses {
+                flaky: Some(&pass),
+                ..Analyses::default()
+            },
+        );
+        assert!(
+            json.contains(
+                r#""monotone":[{"name":"c::polluted","flipped_after_run":1,"started_green":true}]"#
+            ),
+            "got: {json}"
+        );
+        assert!(
+            json.contains(r#""lone_failures":[{"name":"c::drift","absent_runs":2}]"#),
+            "got: {json}"
+        );
+    }
+
+    #[test]
+    fn the_json_carries_the_history_objects_with_their_fields() {
+        let summary = JunitSummary::from_report(
+            &JunitReport {
+                test_cases: vec![test_case("a", TestStatus::Failed, 0.1)],
+            },
+            0,
+        );
+        let pass = crate::analyzers::history::Analysis {
+            flaky: vec![crate::analyzers::history::HistoricFlake {
+                outcomes: flaky::TestOutcomes {
+                    id: "c::wob".to_owned(),
+                    passed: 3,
+                    failed: 1,
+                },
+                failures_confined_to: Some("ci".to_owned()),
+            }],
+            failing_since: vec![crate::analyzers::history::FailingSince {
+                id: "c::reg".to_owned(),
+                commit: "abc1234def".to_owned(),
+                failed_runs: 3,
+            }],
+        };
+        let json = to_json(
+            &[outcome(false)],
+            &summary,
+            &Analyses {
+                history: Some(&pass),
+                ..Analyses::default()
+            },
+        );
+        assert!(
+            json.contains(
+                r#""history":{"flaky":[{"name":"c::wob","failed_runs":1,"observed_runs":4,"failures_confined_to":"ci"}],"failing_since":[{"name":"c::reg","commit":"abc1234def","failed_runs":3}]}"#
+            ),
+            "got: {json}"
+        );
+    }
+
+    #[test]
+    fn the_json_carries_the_verification_buckets_with_their_fields() {
+        let summary = JunitSummary::from_report(
+            &JunitReport {
+                test_cases: vec![test_case("a", TestStatus::Failed, 0.1)],
+            },
+            0,
+        );
+        let verdict = crate::verify::Verdict {
+            real: vec!["c::dead".to_owned()],
+            flaky_or_order: vec!["c::wob".to_owned()],
+            failed_differently: vec![crate::verify::DifferentFailure {
+                id: "c::boot".to_owned(),
+                suite: "AssertionError".to_owned(),
+                isolation: "RuntimeException".to_owned(),
+            }],
+            unverified: vec!["c::missed".to_owned()],
+        };
+        let json = to_json(
+            &[outcome(false)],
+            &summary,
+            &Analyses {
+                verify: Some(&verdict),
+                ..Analyses::default()
+            },
+        );
+        assert!(
+            json.contains(
+                r#""verification":{"real":["c::dead"],"flaky_or_order_dependent":["c::wob"],"failed_differently":[{"name":"c::boot","suite":"AssertionError","isolation":"RuntimeException"}],"unverified":["c::missed"]}"#
+            ),
+            "got: {json}"
+        );
+    }
+
+    #[test]
     fn the_run_json_gains_the_explanation_only_when_the_pass_ran() {
         let summary = JunitSummary::from_report(
             &JunitReport {
