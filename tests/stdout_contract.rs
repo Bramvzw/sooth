@@ -1064,6 +1064,83 @@ fn explain_on_a_green_report_has_nothing_to_explain() {
 }
 
 #[test]
+fn explain_on_a_red_report_without_history_says_the_evidence_is_empty() {
+    let (cwd, mut command) = sooth_in("explain-empty-history");
+    let _ = std::fs::remove_dir_all(cwd.join(".sooth"));
+    let report = cwd.join("red.xml");
+    std::fs::write(
+        &report,
+        r#"<testsuite><testcase classname="c" name="t"><failure/></testcase></testsuite>"#,
+    )
+    .expect("report should write");
+
+    let output = command
+        .args([
+            "explain",
+            "--junit",
+            &report.display().to_string(),
+            "--color",
+            "never",
+        ])
+        .output()
+        .expect("sooth should run");
+    let stdout = String::from_utf8(output.stdout).expect("stdout should be UTF-8");
+
+    assert_eq!(output.status.code(), Some(0));
+    assert!(
+        stdout.contains("✗ c::t — new (nothing in history)"),
+        "got: {stdout:?}"
+    );
+    // "new" against an empty history must say the comparison was vacuous —
+    // and an empty history is not the same as one that was not consulted.
+    assert!(
+        stdout.contains("no observations from earlier runs yet"),
+        "got: {stdout:?}"
+    );
+    let _ = std::fs::remove_dir_all(&cwd);
+}
+
+#[test]
+fn a_preset_run_cleans_its_private_report_dir_up() {
+    let (cwd, mut command) = sooth_in("preset-cleanup");
+    write_gate_runner(&cwd);
+    // sooth reads TMPDIR for its private report dirs: pointing it at a
+    // scratch dir makes "everything cleaned up" a checkable fact.
+    let scratch_tmp = cwd.join("tmp");
+    std::fs::create_dir_all(&scratch_tmp).expect("mkdir");
+    command.env("TMPDIR", &scratch_tmp);
+
+    let output = command
+        .args([
+            "run",
+            "--no-history",
+            "--preset",
+            "phpunit",
+            "--color",
+            "never",
+            "--",
+            "./runner.sh",
+        ])
+        .output()
+        .expect("sooth should run");
+
+    assert_eq!(output.status.code(), Some(0));
+    let leftovers: Vec<String> = std::fs::read_dir(&scratch_tmp)
+        .expect("scratch tmp should exist")
+        .filter_map(|entry| {
+            entry
+                .ok()
+                .map(|e| e.file_name().to_string_lossy().into_owned())
+        })
+        .collect();
+    assert!(
+        leftovers.is_empty(),
+        "a finished run must remove its private report dir, left: {leftovers:?}"
+    );
+    let _ = std::fs::remove_dir_all(&cwd);
+}
+
+#[test]
 fn the_quarantine_labels_a_failure_without_the_flag_but_never_steers_the_exit() {
     let (cwd, mut command) = sooth_in("quarantine-label");
     std::fs::write(
