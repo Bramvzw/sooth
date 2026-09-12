@@ -582,13 +582,14 @@ mod tests {
 
     #[test]
     fn iso8601_pins_the_arithmetic_the_common_shapes_never_reach() {
-        // The mutation run showed the era, zone-minute and sign branches
-        // were free to mutate: every vector here exercises one of them
-        // (values cross-checked against Python's datetime).
+        // Every value here is cross-checked against Python's datetime.
         use super::iso8601_to_epoch as epoch;
         // A zone with minutes, in both directions.
         assert_eq!(epoch("2026-08-08T10:00:00+05:30"), Some(1_786_163_400));
         assert_eq!(epoch("2026-08-08T10:00:00-02:00"), Some(1_786_190_400));
+        // Fractional seconds are skipped, not consumed: the zone behind
+        // them still lands on the instant the zone alone would.
+        assert_eq!(epoch("2026-08-08T10:00:00.123+02:00"), Some(1_786_176_000));
         // Century leap day (divisible by 400) and a non-leap century start.
         assert_eq!(epoch("2000-02-29T12:00:00"), Some(951_825_600));
         assert_eq!(epoch("2100-01-01T00:00:00"), Some(4_102_444_800));
@@ -596,13 +597,16 @@ mod tests {
         assert_eq!(epoch("2023-12-31T23:59:59"), Some(1_704_067_199));
         // Before the epoch there is no u64: None, not a wrapped value.
         assert_eq!(epoch("1969-12-31T23:59:59"), None);
+        // One out-of-range field is enough to reject the whole stamp.
+        assert_eq!(epoch("2026-01-01T24:00:00"), None);
+        assert_eq!(epoch("2026-01-01T10:60:00"), None);
+        assert_eq!(epoch("2026-01-01T10:00:60"), None);
     }
 
     #[test]
     fn every_escape_the_writer_emits_survives_a_load() {
-        // The reader also accepts `\/` (legal JSON any writer may emit);
-        // the id exercises every arm: quote, backslash, slash, newline,
-        // carriage return, tab, and a \u escape.
+        // `\/` is legal JSON any writer may emit, so the reader accepts it
+        // alongside the escapes sooth itself writes.
         let path = temp_path("unescape");
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(
