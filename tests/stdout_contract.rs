@@ -2,18 +2,62 @@
 //! entry in `DECISIONS.md`), so it is pinned against the real binary.
 #![cfg(unix)] // the wrapped commands are `true` and `sh`, which are Unix-only
 
-use std::path::PathBuf;
+use std::ffi::OsStr;
+use std::ops::Deref;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
-fn sooth() -> Command {
+/// A scratch directory holding everything one test writes, removed when the
+/// guard drops. Drop also runs while a failed assertion unwinds, which a
+/// cleanup line at the end of a test body never reaches.
+struct Scratch(PathBuf);
+
+impl Scratch {
+    fn new(tag: &str) -> Scratch {
+        let path =
+            std::env::temp_dir().join(format!("sooth-contract-{tag}-{}", std::process::id()));
+        // A previous run of this same test (same pid is possible after a
+        // crash) must not hand its leftovers to this one.
+        let _ = std::fs::remove_dir_all(&path);
+        std::fs::create_dir_all(&path).expect("scratch dir should be creatable");
+        Scratch(path)
+    }
+}
+
+impl Deref for Scratch {
+    type Target = Path;
+
+    fn deref(&self) -> &Path {
+        &self.0
+    }
+}
+
+impl AsRef<Path> for Scratch {
+    fn as_ref(&self) -> &Path {
+        &self.0
+    }
+}
+
+impl AsRef<OsStr> for Scratch {
+    fn as_ref(&self) -> &OsStr {
+        self.0.as_os_str()
+    }
+}
+
+impl Drop for Scratch {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+/// A sooth invocation in its own scratch cwd: history writes `.sooth/` into
+/// the working directory and a `.sooth-quarantine` is read from it, so the
+/// suite must never run in the repo's own tree or in a cwd another test owns.
+fn sooth_in(tag: &str) -> (Scratch, Command) {
+    let cwd = Scratch::new(tag);
     let mut command = Command::new(env!("CARGO_BIN_EXE_sooth"));
-    // History writes `.sooth/` into the working directory; the contract
-    // suite must not seed the repo's own history. Every test passes
-    // absolute paths, so the cwd itself is free to be scratch.
-    let cwd = std::env::temp_dir().join(format!("sooth-contract-cwd-{}", std::process::id()));
-    let _ = std::fs::create_dir_all(&cwd);
-    command.current_dir(cwd);
-    command
+    command.current_dir(&cwd);
+    (cwd, command)
 }
 
 fn fixture() -> &'static str {
@@ -23,20 +67,33 @@ fn fixture() -> &'static str {
     )
 }
 
-/// A per-test temp path for the report. The wrapped command copies the
-/// fixture into place *during the run*, because a `--junit` file that
-/// predates the run is rejected as stale.
-fn fresh_report(tag: &str) -> (PathBuf, String) {
-    let path =
-        std::env::temp_dir().join(format!("sooth-contract-{tag}-{}.xml", std::process::id()));
+/// A report path in `dir` and the command that fills it. The wrapped command
+/// copies the fixture into place *during the run*, because a `--junit` file
+/// that predates the run is rejected as stale.
+fn fresh_report(dir: &Path) -> (PathBuf, String) {
+    let path = dir.join("report.xml");
     let write_during_run = format!("cp '{}' '{}'", fixture(), path.display());
     (path, write_during_run)
 }
 
 #[test]
+fn a_scratch_dir_is_gone_once_its_guard_drops() {
+    let path = {
+        let scratch = Scratch::new("guard");
+        std::fs::write(scratch.join("leftover.txt"), "x").expect("write");
+        scratch.to_path_buf()
+    };
+    assert!(
+        !path.exists(),
+        "the guard must take its directory with it: {path:?}"
+    );
+}
+
+#[test]
 fn bare_json_prints_exactly_one_stdout_line_of_json() {
-    let (report, write_report) = fresh_report("bare-json");
-    let output = sooth()
+    let (cwd, mut command) = sooth_in("bare-json");
+    let (report, write_report) = fresh_report(&cwd);
+    let output = command
         .args([
             "run",
             "--junit",
@@ -51,7 +108,6 @@ fn bare_json_prints_exactly_one_stdout_line_of_json() {
         ])
         .output()
         .expect("sooth should run");
-    let _ = std::fs::remove_file(&report);
 
     let stdout = String::from_utf8(output.stdout).expect("stdout should be UTF-8");
     let lines: Vec<&str> = stdout.lines().collect();
@@ -68,7 +124,8 @@ fn bare_json_prints_exactly_one_stdout_line_of_json() {
 
 #[test]
 fn a_plain_run_ends_with_a_verdict_line() {
-    let output = sooth()
+    let (_cwd, mut command) = sooth_in("plain-run");
+    let output = command
         .args(["run", "--color", "never", "--", "true"])
         .output()
         .expect("sooth should run");
@@ -92,10 +149,10 @@ fn a_plain_run_ends_with_a_verdict_line() {
 
 #[test]
 fn json_to_a_file_keeps_the_human_report_on_stdout() {
-    let (report, write_report) = fresh_report("json-file");
-    let json_path =
-        std::env::temp_dir().join(format!("sooth-contract-{}.json", std::process::id()));
-    let output = sooth()
+    let (cwd, mut command) = sooth_in("json-file");
+    let (report, write_report) = fresh_report(&cwd);
+    let json_path = cwd.join("report.json");
+    let output = command
         .args([
             "run",
             "--junit",
@@ -113,8 +170,6 @@ fn json_to_a_file_keeps_the_human_report_on_stdout() {
 
     let stdout = String::from_utf8(output.stdout).expect("stdout should be UTF-8");
     let written = std::fs::read_to_string(&json_path).expect("the JSON file should exist");
-    let _ = std::fs::remove_file(&report);
-    let _ = std::fs::remove_file(&json_path);
 
     assert!(stdout.contains("tests: 2 total"), "got: {stdout:?}");
     assert!(stdout.contains("result: ✗ FAILED"), "got: {stdout:?}");
@@ -151,17 +206,16 @@ fn a_report_with_zero_tests_passes_but_says_it_proved_nothing() {
         stdout.contains("but the report shows 0 tests, so this run proved nothing"),
         "got: {stdout:?}"
     );
-    let _ = std::fs::remove_dir_all(&cwd);
 }
 
 #[test]
 fn a_junit_report_that_predates_the_run_is_rejected_as_stale() {
-    // Write the report BEFORE the run; the wrapped command touches nothing.
-    let report =
-        std::env::temp_dir().join(format!("sooth-contract-stale-{}.xml", std::process::id()));
+    let (cwd, mut command) = sooth_in("stale");
+    let report = cwd.join("report.xml");
+    // Written BEFORE the run; the wrapped command touches nothing.
     std::fs::copy(fixture(), &report).expect("fixture should copy");
 
-    let output = sooth()
+    let output = command
         .args([
             "run",
             "--junit",
@@ -173,7 +227,6 @@ fn a_junit_report_that_predates_the_run_is_rejected_as_stale() {
         ])
         .output()
         .expect("sooth should run");
-    let _ = std::fs::remove_file(&report);
 
     assert_eq!(
         output.status.code(),
@@ -191,7 +244,8 @@ fn a_junit_report_that_predates_the_run_is_rejected_as_stale() {
 /// stable set-mtime API and a dev-dependency for one test is not worth it.
 #[test]
 fn a_failing_wrapped_command_exits_one() {
-    let output = sooth()
+    let (_cwd, mut command) = sooth_in("failing-command");
+    let output = command
         .args(["run", "--color", "never", "--", "false"])
         .output()
         .expect("sooth should run");
@@ -203,7 +257,8 @@ fn a_failing_wrapped_command_exits_one() {
 
 #[test]
 fn an_unspawnable_command_is_sooths_error() {
-    let output = sooth()
+    let (_cwd, mut command) = sooth_in("unspawnable");
+    let output = command
         .args(["run", "--", "sooth-no-such-binary-xyzzy"])
         .output()
         .expect("sooth should run");
@@ -214,7 +269,8 @@ fn an_unspawnable_command_is_sooths_error() {
 
 #[test]
 fn reportless_json_is_rejected_with_exit_two() {
-    let output = sooth()
+    let (_cwd, mut command) = sooth_in("reportless-json");
+    let output = command
         .args(["run", "--json", "--", "true"])
         .output()
         .expect("sooth should run");
@@ -271,7 +327,6 @@ fn a_verified_failure_that_passes_on_re_run_reads_flaky_or_order_dependent() {
         stdout.contains("~ c::wob — flaky or order-dependent (passed on re-run in isolation)"),
         "the verify pass's verdict must reach the per-test line: {stdout:?}"
     );
-    let _ = std::fs::remove_dir_all(&cwd);
 }
 
 #[test]
@@ -309,7 +364,6 @@ fn a_verified_failure_that_fails_differently_is_not_called_real() {
         ),
         "a different failure must never read as reproduced: {stdout:?}"
     );
-    let _ = std::fs::remove_dir_all(&cwd);
 }
 
 #[test]
@@ -341,12 +395,12 @@ fn a_verified_failure_that_reproduces_reads_real() {
         stdout.contains("✗ c::wob — real (reproduced on re-run)"),
         "a reproduced failure must be named real: {stdout:?}"
     );
-    let _ = std::fs::remove_dir_all(&cwd);
 }
 
 #[test]
 fn verify_with_an_unselectable_preset_is_rejected_up_front_with_exit_two() {
-    let output = sooth()
+    let (_cwd, mut command) = sooth_in("verify-unselectable");
+    let output = command
         .args(["run", "--verify", "--preset", "go", "--", "true"])
         .output()
         .expect("sooth should run");
@@ -358,16 +412,6 @@ fn verify_with_an_unselectable_preset_is_rejected_up_front_with_exit_two() {
     );
 }
 
-/// A sooth invocation in its own scratch cwd, so a `.sooth-quarantine`
-/// written for one test never leaks into another.
-fn sooth_in(tag: &str) -> (PathBuf, Command) {
-    let cwd = std::env::temp_dir().join(format!("sooth-contract-{tag}-cwd-{}", std::process::id()));
-    let _ = std::fs::create_dir_all(&cwd);
-    let mut command = Command::new(env!("CARGO_BIN_EXE_sooth"));
-    command.current_dir(&cwd);
-    (cwd, command)
-}
-
 #[test]
 fn a_quarantined_failure_is_pardoned_with_fail_on_flaky() {
     let (cwd, mut command) = sooth_in("quarantine-hit");
@@ -376,7 +420,7 @@ fn a_quarantined_failure_is_pardoned_with_fail_on_flaky() {
         "# known flakes\ntests.test_math::test_subtraction\n",
     )
     .expect("quarantine file should write");
-    let (report, write_report) = fresh_report("quarantine-hit");
+    let (report, write_report) = fresh_report(&cwd);
     let output = command
         .args([
             "run",
@@ -392,7 +436,6 @@ fn a_quarantined_failure_is_pardoned_with_fail_on_flaky() {
         ])
         .output()
         .expect("sooth should run");
-    let _ = std::fs::remove_file(&report);
 
     let stdout = String::from_utf8(output.stdout).expect("stdout should be UTF-8");
     assert_eq!(
@@ -415,7 +458,7 @@ fn an_unlisted_failure_still_fails_with_fail_on_flaky() {
     let (cwd, mut command) = sooth_in("quarantine-miss");
     std::fs::write(cwd.join(".sooth-quarantine"), "some.other::test_flake\n")
         .expect("quarantine file should write");
-    let (report, write_report) = fresh_report("quarantine-miss");
+    let (report, write_report) = fresh_report(&cwd);
     let output = command
         .args([
             "run",
@@ -431,7 +474,6 @@ fn an_unlisted_failure_still_fails_with_fail_on_flaky() {
         ])
         .output()
         .expect("sooth should run");
-    let _ = std::fs::remove_file(&report);
 
     assert_eq!(output.status.code(), Some(1));
     let stdout = String::from_utf8(output.stdout).expect("stdout should be UTF-8");
@@ -440,7 +482,8 @@ fn an_unlisted_failure_still_fails_with_fail_on_flaky() {
 
 #[test]
 fn reportless_fail_on_flaky_is_rejected_with_exit_two() {
-    let output = sooth()
+    let (_cwd, mut command) = sooth_in("reportless-fail-on-flaky");
+    let output = command
         .args(["run", "--fail-on-flaky", "--", "true"])
         .output()
         .expect("sooth should run");
@@ -451,7 +494,8 @@ fn reportless_fail_on_flaky_is_rejected_with_exit_two() {
 
 #[test]
 fn a_signal_killed_run_reports_the_signal_and_exits_one() {
-    let output = sooth()
+    let (_cwd, mut command) = sooth_in("signal");
+    let output = command
         .args(["run", "--color", "never", "--", "sh", "-c", "kill -TERM $$"])
         .output()
         .expect("sooth should run");
@@ -464,8 +508,9 @@ fn a_signal_killed_run_reports_the_signal_and_exits_one() {
 fn the_runner_report_mismatch_is_called_out_on_stderr() {
     // The wrapped command writes a failing report but exits 0: the report
     // wins (exit 1) and the mismatch note lands on stderr, not stdout.
-    let (report, write_report) = fresh_report("mismatch");
-    let output = sooth()
+    let (cwd, mut command) = sooth_in("mismatch");
+    let (report, write_report) = fresh_report(&cwd);
+    let output = command
         .args([
             "run",
             "--junit",
@@ -479,7 +524,6 @@ fn the_runner_report_mismatch_is_called_out_on_stderr() {
         ])
         .output()
         .expect("sooth should run");
-    let _ = std::fs::remove_file(&report);
 
     assert_eq!(output.status.code(), Some(1));
     let stderr = String::from_utf8(output.stderr).expect("stderr should be UTF-8");
@@ -493,15 +537,13 @@ fn the_runner_report_mismatch_is_called_out_on_stderr() {
 fn a_failing_runner_with_a_green_report_is_called_out_on_stderr() {
     // The wrapped command writes an all-passing report but exits nonzero:
     // the failure wins (exit 1) and the disagreement lands on stderr.
-    let report = std::env::temp_dir().join(format!(
-        "sooth-contract-green-mismatch-{}.xml",
-        std::process::id()
-    ));
+    let (cwd, mut command) = sooth_in("green-mismatch");
+    let report = cwd.join("report.xml");
     let write_green_then_fail = format!(
         "printf '<testsuite><testcase classname=\"c\" name=\"ok\"/></testsuite>' > '{}'; exit 3",
         report.display()
     );
-    let output = sooth()
+    let output = command
         .args([
             "run",
             "--junit",
@@ -515,7 +557,6 @@ fn a_failing_runner_with_a_green_report_is_called_out_on_stderr() {
         ])
         .output()
         .expect("sooth should run");
-    let _ = std::fs::remove_file(&report);
 
     assert_eq!(output.status.code(), Some(1));
     let stderr = String::from_utf8(output.stderr).expect("stderr should be UTF-8");
@@ -531,10 +572,10 @@ fn a_failing_runner_with_a_green_report_is_called_out_on_stderr() {
 fn an_unusable_report_after_a_crashed_runner_keeps_the_run_facts() {
     // The runner writes garbage instead of XML and exits nonzero; sooth
     // must point at the crash instead of only naming an unparsable file.
-    let report =
-        std::env::temp_dir().join(format!("sooth-contract-crash-{}.xml", std::process::id()));
+    let (cwd, mut command) = sooth_in("crash");
+    let report = cwd.join("report.xml");
     let write_garbage = format!("echo 'PHP Fatal error' > '{}'; exit 255", report.display());
-    let output = sooth()
+    let output = command
         .args([
             "run",
             "--junit",
@@ -548,7 +589,6 @@ fn an_unusable_report_after_a_crashed_runner_keeps_the_run_facts() {
         ])
         .output()
         .expect("sooth should run");
-    let _ = std::fs::remove_file(&report);
 
     assert_eq!(output.status.code(), Some(2));
     let stderr = String::from_utf8(output.stderr).expect("stderr should be UTF-8");
@@ -559,19 +599,16 @@ fn an_unusable_report_after_a_crashed_runner_keeps_the_run_facts() {
 
 #[test]
 fn repeated_runs_report_mixed_outcomes_as_flaky() {
-    let dir = std::env::temp_dir();
-    let report = dir.join(format!("sooth-contract-flaky-{}.xml", std::process::id()));
-    let marker = dir.join(format!(
-        "sooth-contract-flaky-marker-{}",
-        std::process::id()
-    ));
+    let (cwd, mut command) = sooth_in("flaky");
+    let report = cwd.join("report.xml");
+    let marker = cwd.join("marker");
     // Run 1: the test fails (runner exits 1). Run 2: it passes. Mixed = flaky.
     let script = format!(
         "if [ -f '{marker}' ]; then printf '<testsuite><testcase classname=\"c\" name=\"wobbly\"/></testsuite>' > '{report}'; else printf '<testsuite><testcase classname=\"c\" name=\"wobbly\"><failure/></testcase></testsuite>' > '{report}'; touch '{marker}'; exit 1; fi",
         marker = marker.display(),
         report = report.display()
     );
-    let output = sooth()
+    let output = command
         .args([
             "run",
             "--runs",
@@ -587,8 +624,6 @@ fn repeated_runs_report_mixed_outcomes_as_flaky() {
         ])
         .output()
         .expect("sooth should run");
-    let _ = std::fs::remove_file(&report);
-    let _ = std::fs::remove_file(&marker);
 
     assert_eq!(output.status.code(), Some(1), "a flaky run failed run 1");
     let stdout = String::from_utf8(output.stdout).expect("stdout should be UTF-8");
@@ -652,7 +687,6 @@ fi"#,
         ),
         "one sighting must not be called broken: {stdout:?}"
     );
-    let _ = std::fs::remove_dir_all(&cwd);
 }
 
 #[test]
@@ -661,7 +695,8 @@ fn a_preset_runner_that_stops_writing_reports_fails_loudly() {
     // Run 1 writes a report; run 2 writes nothing. Because sooth deletes the
     // preset report before every run, run 2 must fail loudly instead of
     // silently re-serving run 1's truth.
-    let dir = std::env::temp_dir().join(format!("sooth-fakebin-{}", std::process::id()));
+    let (cwd, mut command) = sooth_in("fakebin");
+    let dir = cwd.join("bin");
     std::fs::create_dir_all(&dir).expect("fake bin dir");
     let marker = dir.join("ran-once");
     let fake = dir.join("pytest");
@@ -677,14 +712,13 @@ fn a_preset_runner_that_stops_writing_reports_fails_loudly() {
         dir.display(),
         std::env::var("PATH").unwrap_or_default()
     );
-    let output = sooth()
+    let output = command
         .env("PATH", path_env)
         .args([
             "run", "--runs", "2", "--preset", "pytest", "--color", "never", "--", "pytest",
         ])
         .output()
         .expect("sooth should run");
-    let _ = std::fs::remove_dir_all(&dir);
 
     assert_eq!(
         output.status.code(),
@@ -702,10 +736,9 @@ fn a_preset_runner_that_stops_writing_reports_fails_loudly() {
 fn runs_in_a_different_order_weaken_the_flaky_label() {
     // The wrapped script lists the same two tests in opposite order per run,
     // with one of them mixed — what --order-by=defects does to a repeat.
-    let report =
-        std::env::temp_dir().join(format!("sooth-contract-reorder-{}.xml", std::process::id()));
-    let marker = std::env::temp_dir().join(format!("sooth-reorder-{}", std::process::id()));
-    let _ = std::fs::remove_file(&marker);
+    let (cwd, mut command) = sooth_in("reorder");
+    let report = cwd.join("report.xml");
+    let marker = cwd.join("marker");
     let script = format!(
         "if [ -f '{m}' ]; then rm '{m}'; \
          printf '<testsuite><testcase classname=\"c\" name=\"steady\"/><testcase classname=\"c\" name=\"wobbly\"/></testsuite>' > '{r}'; \
@@ -714,7 +747,7 @@ fn runs_in_a_different_order_weaken_the_flaky_label() {
         m = marker.display(),
         r = report.display()
     );
-    let output = sooth()
+    let output = command
         .args([
             "run",
             "--runs",
@@ -730,8 +763,6 @@ fn runs_in_a_different_order_weaken_the_flaky_label() {
         ])
         .output()
         .expect("sooth should run");
-    let _ = std::fs::remove_file(&report);
-    let _ = std::fs::remove_file(&marker);
     let stdout = String::from_utf8(output.stdout).expect("stdout should be UTF-8");
 
     assert_eq!(output.status.code(), Some(1), "run 1 failed: {stdout:?}");
@@ -743,12 +774,48 @@ fn runs_in_a_different_order_weaken_the_flaky_label() {
     );
 }
 
+/// A scratch git repo and the directory holding it. Anything a history test
+/// writes next to the repo — a report above all — must land outside the
+/// working tree, because an untracked file makes every run dirty and a dirty
+/// run is never evidence.
+struct Repo {
+    scratch: Scratch,
+    dir: PathBuf,
+}
+
+impl Repo {
+    /// A path beside the repo, inside the same scratch directory.
+    fn outside(&self, name: &str) -> PathBuf {
+        self.scratch.join(name)
+    }
+}
+
+impl Deref for Repo {
+    type Target = Path;
+
+    fn deref(&self) -> &Path {
+        &self.dir
+    }
+}
+
+impl AsRef<Path> for Repo {
+    fn as_ref(&self) -> &Path {
+        &self.dir
+    }
+}
+
+impl AsRef<OsStr> for Repo {
+    fn as_ref(&self) -> &OsStr {
+        self.dir.as_os_str()
+    }
+}
+
 /// A scratch git repo (one commit, `.sooth/` ignored) for history tests;
 /// returns `None` when git is unavailable.
-fn scratch_repo(tag: &str) -> Option<PathBuf> {
+fn scratch_repo(tag: &str) -> Option<Repo> {
     Command::new("git").arg("--version").output().ok()?;
-    let dir = std::env::temp_dir().join(format!("sooth-contract-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
+    let scratch = Scratch::new(tag);
+    let dir = scratch.join("repo");
     std::fs::create_dir_all(&dir).ok()?;
     std::fs::write(dir.join(".gitignore"), ".sooth/\n").ok()?;
     for args in [
@@ -758,7 +825,7 @@ fn scratch_repo(tag: &str) -> Option<PathBuf> {
     ] {
         git_in(&dir, args);
     }
-    Some(dir)
+    Some(Repo { scratch, dir })
 }
 
 /// Run git in `dir`, asserting success.
@@ -802,11 +869,7 @@ fn history_accumulates_across_invocations_and_reports_proven_flakes() {
     let Some(dir) = scratch_repo("history") else {
         return; // no git: identity degrades to unknown, covered by unit tests
     };
-    // The report lives outside the repo so the working tree stays clean.
-    let report = std::env::temp_dir().join(format!(
-        "sooth-contract-history-report-{}.xml",
-        std::process::id()
-    ));
+    let report = dir.outside("report.xml");
     let run = |cases: &str| {
         let script = format!(
             "printf '<testsuite>{cases}</testsuite>' > '{}'",
@@ -867,8 +930,6 @@ fn history_accumulates_across_invocations_and_reports_proven_flakes() {
     let history = std::fs::read_to_string(dir.join(".sooth/history.jsonl"))
         .expect("history should have been written");
     assert_eq!(history.lines().count(), 3);
-    let _ = std::fs::remove_file(&report);
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -876,10 +937,7 @@ fn a_red_run_labels_its_failures_against_the_accumulated_history() {
     let Some(dir) = scratch_repo("explain-run") else {
         return; // no git: identity degrades to unknown, covered by unit tests
     };
-    let report = std::env::temp_dir().join(format!(
-        "sooth-contract-explain-run-{}.xml",
-        std::process::id()
-    ));
+    let report = dir.outside("report.xml");
     let run = |cases: &str| {
         let script = format!(
             "printf '<testsuite>{cases}</testsuite>' > '{}'",
@@ -930,8 +988,6 @@ fn a_red_run_labels_its_failures_against_the_accumulated_history() {
         "got: {stdout:?}"
     );
     assert!(stdout.contains("c::other"), "got: {stdout:?}");
-    let _ = std::fs::remove_file(&report);
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -939,10 +995,7 @@ fn the_very_first_run_says_its_failures_read_as_new_for_lack_of_history() {
     let Some(dir) = scratch_repo("explain-first") else {
         return;
     };
-    let report = std::env::temp_dir().join(format!(
-        "sooth-contract-explain-first-{}.xml",
-        std::process::id()
-    ));
+    let report = dir.outside("report.xml");
     let script = format!(
         "printf '<testsuite><testcase classname=\"c\" name=\"t\"><failure/></testcase></testsuite>' > '{}'",
         report.display()
@@ -971,8 +1024,6 @@ fn the_very_first_run_says_its_failures_read_as_new_for_lack_of_history() {
         "a first run let \"new\" stand without saying there was nothing to compare against: \
          {stdout:?}"
     );
-    let _ = std::fs::remove_file(&report);
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -980,12 +1031,7 @@ fn explain_classifies_a_report_without_running_or_recording_anything() {
     let Some(dir) = scratch_repo("explain-cmd") else {
         return;
     };
-    // Outside the repo: an untracked report makes every run dirty, and a
-    // dirty run is never evidence.
-    let report = std::env::temp_dir().join(format!(
-        "sooth-contract-explain-cmd-{}.xml",
-        std::process::id()
-    ));
+    let report = dir.outside("report.xml");
     let run = |cases: &str| {
         let script = format!(
             "printf '<testsuite>{cases}</testsuite>' > '{}'",
@@ -1039,8 +1085,6 @@ fn explain_classifies_a_report_without_running_or_recording_anything() {
         before,
         "explain recorded observations for a run it never made"
     );
-    let _ = std::fs::remove_file(&report);
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -1060,13 +1104,11 @@ fn explain_on_a_green_report_has_nothing_to_explain() {
 
     assert_eq!(output.status.code(), Some(0));
     assert!(stdout.contains("nothing to explain"), "got: {stdout:?}");
-    let _ = std::fs::remove_file(&report);
 }
 
 #[test]
 fn explain_on_a_red_report_without_history_says_the_evidence_is_empty() {
     let (cwd, mut command) = sooth_in("explain-empty-history");
-    let _ = std::fs::remove_dir_all(cwd.join(".sooth"));
     let report = cwd.join("red.xml");
     std::fs::write(
         &report,
@@ -1097,7 +1139,6 @@ fn explain_on_a_red_report_without_history_says_the_evidence_is_empty() {
         stdout.contains("no observations from earlier runs yet"),
         "got: {stdout:?}"
     );
-    let _ = std::fs::remove_dir_all(&cwd);
 }
 
 #[test]
@@ -1137,7 +1178,6 @@ fn a_preset_run_cleans_its_private_report_dir_up() {
         leftovers.is_empty(),
         "a finished run must remove its private report dir, left: {leftovers:?}"
     );
-    let _ = std::fs::remove_dir_all(&cwd);
 }
 
 #[test]
@@ -1148,7 +1188,7 @@ fn the_quarantine_labels_a_failure_without_the_flag_but_never_steers_the_exit() 
         "tests.test_math::test_subtraction\n",
     )
     .expect("quarantine file should write");
-    let (report, write_report) = fresh_report("quarantine-label");
+    let (report, write_report) = fresh_report(&cwd);
     let output = command
         .args([
             "run",
@@ -1164,7 +1204,6 @@ fn the_quarantine_labels_a_failure_without_the_flag_but_never_steers_the_exit() 
         ])
         .output()
         .expect("sooth should run");
-    let _ = std::fs::remove_file(&report);
     let stdout = String::from_utf8(output.stdout).expect("stdout should be UTF-8");
 
     assert_eq!(
@@ -1187,10 +1226,7 @@ fn a_flake_that_only_breaks_in_ci_says_so() {
     let Some(dir) = scratch_repo("environment") else {
         return; // no git: identity degrades to unknown, covered by unit tests
     };
-    let report = std::env::temp_dir().join(format!(
-        "sooth-contract-environment-{}.xml",
-        std::process::id()
-    ));
+    let report = dir.outside("report.xml");
     // Same commit, same order; only the environment and the outcome differ.
     let run = |cases: &str, ci: bool| {
         let script = format!(
@@ -1232,8 +1268,6 @@ fn a_flake_that_only_breaks_in_ci_says_so() {
         stdout.contains("known flake (1 of 4 in history, 25%; every failure in ci)"),
         "the environment is the first thing to check, so it belongs on the line: {stdout:?}"
     );
-    let _ = std::fs::remove_file(&report);
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -1244,8 +1278,7 @@ fn a_history_made_entirely_on_a_dirty_tree_says_why_it_proves_nothing() {
     // An untracked file makes every run dirty — the ordinary state of a
     // machine someone is working on.
     std::fs::write(dir.join("scratch.txt"), "work in progress").expect("write");
-    let report =
-        std::env::temp_dir().join(format!("sooth-contract-dirty-{}.xml", std::process::id()));
+    let report = dir.outside("report.xml");
     let run = |cases: &str| {
         let script = format!(
             "printf '<testsuite>{cases}</testsuite>' > '{}'",
@@ -1280,8 +1313,6 @@ fn a_history_made_entirely_on_a_dirty_tree_says_why_it_proves_nothing() {
         stdout.contains("were made on a dirty tree and cannot be evidence"),
         "a dirty history reads exactly like an empty one unless sooth says so: {stdout:?}"
     );
-    let _ = std::fs::remove_file(&report);
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -1299,10 +1330,7 @@ fn imported_ci_evidence_completes_the_local_green_ci_red_proof() {
         .expect("utf8")
         .trim()
         .to_owned();
-    let report = std::env::temp_dir().join(format!(
-        "sooth-contract-import-run-{}.xml",
-        std::process::id()
-    ));
+    let report = dir.outside("report.xml");
 
     // Two clean local greens; CI removed so they record env "local" even on
     // a CI runner.
@@ -1385,9 +1413,6 @@ fn imported_ci_evidence_completes_the_local_green_ci_red_proof() {
         stdout.contains("history now holds 3 observations"),
         "a re-import grew the history: {stdout:?}"
     );
-
-    let _ = std::fs::remove_file(&report);
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -1410,7 +1435,6 @@ fn an_unreadable_file_fails_the_whole_import_before_anything_is_written() {
         !cwd.join(".sooth/history.jsonl").exists(),
         "a failed import wrote a partial batch"
     );
-    let _ = std::fs::remove_dir_all(&cwd);
 }
 
 #[test]
@@ -1428,10 +1452,7 @@ fn a_red_phpunit_log_is_ci_evidence_like_any_report() {
         .expect("utf8")
         .trim()
         .to_owned();
-    let report = std::env::temp_dir().join(format!(
-        "sooth-contract-log-import-run-{}.xml",
-        std::process::id()
-    ));
+    let report = dir.outside("report.xml");
     for _ in 0..2 {
         let script = format!(
             "printf '<testsuite><testcase classname=\"c\" name=\"wob\"/></testsuite>' > '{}'",
@@ -1490,8 +1511,6 @@ fn a_red_phpunit_log_is_ci_evidence_like_any_report() {
         stdout.contains("history now holds 3 observations"),
         "got: {stdout:?}"
     );
-    let _ = std::fs::remove_file(&report);
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -1525,8 +1544,6 @@ fn a_green_log_records_nothing_and_a_foreign_log_is_refused() {
         !cwd_bad.join(".sooth/history.jsonl").exists(),
         "a refused log still wrote history"
     );
-    let _ = std::fs::remove_dir_all(&cwd);
-    let _ = std::fs::remove_dir_all(&cwd_bad);
 }
 
 #[test]
@@ -1562,7 +1579,6 @@ fn sooth_history_reads_the_evidence_without_touching_it() {
     );
     let after = std::fs::read_to_string(cwd.join(".sooth/history.jsonl")).expect("read");
     assert_eq!(before, after, "a look at the history changed it");
-    let _ = std::fs::remove_dir_all(&cwd);
 }
 
 #[test]
@@ -1606,7 +1622,6 @@ fn a_regression_prints_its_mark_and_the_commit_it_started_at() {
         !stdout.contains("flaky per history"),
         "an empty flaky section must stay silent: {stdout:?}"
     );
-    let _ = std::fs::remove_dir_all(&cwd);
 }
 
 #[test]
@@ -1614,10 +1629,7 @@ fn an_unlisted_known_flake_under_fail_on_flaky_explains_the_gap() {
     let Some(dir) = scratch_repo("pardon-gap") else {
         return;
     };
-    let report = std::env::temp_dir().join(format!(
-        "sooth-contract-pardon-gap-{}.xml",
-        std::process::id()
-    ));
+    let report = dir.outside("report.xml");
     let run = |cases: &str, flags: &[&str]| {
         let script = format!(
             "printf '<testsuite>{cases}</testsuite>' > '{}'",
@@ -1673,14 +1685,11 @@ fn an_unlisted_known_flake_under_fail_on_flaky_explains_the_gap() {
         ),
         "\"nothing new\" plus exit 1 without this note reads as a contradiction: {stdout:?}"
     );
-    let _ = std::fs::remove_file(&report);
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
 fn an_empty_history_says_so_instead_of_printing_nothing() {
-    let (cwd, mut command) = sooth_in("history-empty");
-    let _ = std::fs::remove_dir_all(cwd.join(".sooth"));
+    let (_cwd, mut command) = sooth_in("history-empty");
     let output = command
         .args(["history", "--color", "never"])
         .output()
@@ -1688,12 +1697,11 @@ fn an_empty_history_says_so_instead_of_printing_nothing() {
     let stdout = String::from_utf8(output.stdout).expect("stdout should be UTF-8");
     assert_eq!(output.status.code(), Some(0));
     assert!(stdout.contains("the history is empty"), "got: {stdout:?}");
-    let _ = std::fs::remove_dir_all(&cwd);
 }
 
 #[test]
 fn the_gate_needs_a_preset_and_a_real_runs_count() {
-    let (cwd, mut command) = sooth_in("gate-reject");
+    let (_cwd, mut command) = sooth_in("gate-reject");
     let output = command
         .args(["run", "--changed", "--runs", "5", "--", "true"])
         .output()
@@ -1702,7 +1710,7 @@ fn the_gate_needs_a_preset_and_a_real_runs_count() {
     let stderr = String::from_utf8(output.stderr).expect("stderr should be UTF-8");
     assert!(stderr.contains("needs `--preset"), "got: {stderr:?}");
 
-    let (cwd_single, mut command) = sooth_in("gate-one-run");
+    let (_cwd_single, mut command) = sooth_in("gate-one-run");
     let output = command
         .args(["run", "--changed", "--preset", "phpunit", "--", "true"])
         .output()
@@ -1710,8 +1718,6 @@ fn the_gate_needs_a_preset_and_a_real_runs_count() {
     assert_eq!(output.status.code(), Some(2));
     let stderr = String::from_utf8(output.stderr).expect("stderr should be UTF-8");
     assert!(stderr.contains("20 is a good start"), "got: {stderr:?}");
-    let _ = std::fs::remove_dir_all(&cwd);
-    let _ = std::fs::remove_dir_all(&cwd_single);
 }
 
 #[test]
@@ -1740,7 +1746,6 @@ fn a_gate_with_nothing_changed_proves_nothing_and_spawns_nothing() {
     let stdout = String::from_utf8(output.stdout).expect("stdout should be UTF-8");
     assert_eq!(output.status.code(), Some(0), "got: {stdout:?}");
     assert!(stdout.contains("nothing to prove"), "got: {stdout:?}");
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -1778,7 +1783,6 @@ fn the_gate_skips_a_deleted_test_file_instead_of_handing_it_to_the_runner() {
         "a deleted test selects nothing: {stdout:?}"
     );
     assert!(stdout.contains("nothing to prove"), "got: {stdout:?}");
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -1814,7 +1818,6 @@ fn the_gate_selects_a_test_file_with_a_non_ascii_name() {
         "got: {stdout:?}"
     );
     assert!(stdout.contains("CaféTest.php"), "got: {stdout:?}");
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -1859,7 +1862,6 @@ fn the_gate_run_from_a_subdirectory_selects_paths_the_runner_can_open() {
         !stdout.contains("backend/SubTest.php"),
         "the selection must be cwd-relative: {stdout:?}"
     );
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -1898,7 +1900,6 @@ fn an_empty_gate_under_bare_json_still_emits_the_one_json_line() {
         lines[0].contains(r#""gate":{"base":"HEAD","files":[]}"#),
         "got: {stdout:?}"
     );
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -1931,7 +1932,6 @@ fn an_empty_gate_with_json_to_a_file_still_writes_the_document() {
         .expect("the JSON file must be written even when the gate is empty");
     assert!(written.starts_with(r#"{"schema_version":1,"#));
     assert!(written.contains(r#""runs":[]"#), "got: {written:?}");
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -1971,7 +1971,6 @@ fn a_gated_run_under_bare_json_keeps_the_one_line_contract_and_carries_the_gate(
         lines[0].contains(r#""gate":{"base":"HEAD","files":["WobTest.php"]}"#),
         "got: {stdout:?}"
     );
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// Copy the fake-phpunit gate fixture (`tests/fixtures/gate_runner.sh`)
@@ -2036,7 +2035,6 @@ fn the_gate_refuses_a_multi_file_selection_on_phpunit_before_ten() {
         !dir.join("ran-tests").exists(),
         "nothing may run once the gate knows it cannot gate everything"
     );
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -2056,7 +2054,6 @@ fn the_gate_gates_several_files_on_phpunit_ten_and_later() {
         "got: {stdout:?}"
     );
     assert!(dir.join("ran-tests").exists(), "the gate must have run");
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -2073,7 +2070,6 @@ fn an_unreadable_phpunit_version_warns_but_does_not_block_the_gate() {
         "not knowing must be said out loud: {stderr:?}"
     );
     assert!(dir.join("ran-tests").exists(), "the gate must have run");
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -2111,7 +2107,6 @@ fn a_single_file_gate_on_old_phpunit_proceeds_without_a_word() {
         !stderr.contains("PHPUnit"),
         "one path is exactly what old PHPUnit handles — no noise: {stderr:?}"
     );
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -2181,7 +2176,6 @@ fn the_gate_repeats_only_the_changed_tests_and_catches_a_born_flake() {
         stdout.contains("flaky (2 of 4 runs now)"),
         "got: {stdout:?}"
     );
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -2189,10 +2183,7 @@ fn no_history_neither_writes_nor_reports() {
     let Some(dir) = scratch_repo("nohistory") else {
         return;
     };
-    let report = std::env::temp_dir().join(format!(
-        "sooth-contract-nohistory-report-{}.xml",
-        std::process::id()
-    ));
+    let report = dir.outside("report.xml");
     let script = format!(
         "printf '<testsuite><testcase classname=\"c\" name=\"t\"/></testsuite>' > '{}'",
         report.display()
@@ -2218,6 +2209,4 @@ fn no_history_neither_writes_nor_reports() {
         !dir.join(".sooth").exists(),
         "--no-history still wrote a history"
     );
-    let _ = std::fs::remove_file(&report);
-    let _ = std::fs::remove_dir_all(&dir);
 }
