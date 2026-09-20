@@ -10,7 +10,8 @@ instant, single binary. No server, no dashboard, no AI, no accounts.
 sooth run --preset pytest -- pytest
 ```
 
-> **v0.1.0 is out** — `cargo install sooth`. Flaky detection (v0.2) is in active development.
+> **v0.2.0 is out** — `cargo install sooth`. Flaky detection has landed: run history, failure
+> re-verification and `--runs N`. Slow-test and order-dependence analysis are next.
 > See `ROADMAP.md` for the full plan and `DECISIONS.md` for why it's built this way.
 
 ## Usage
