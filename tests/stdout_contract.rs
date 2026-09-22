@@ -1416,6 +1416,60 @@ fn imported_ci_evidence_completes_the_local_green_ci_red_proof() {
 }
 
 #[test]
+fn an_abbreviated_commit_is_stored_as_the_full_sha_and_an_unknown_one_is_refused() {
+    let Some(dir) = scratch_repo("import-short-sha") else {
+        return;
+    };
+    let full = Command::new("git")
+        .arg("-C")
+        .arg(&dir)
+        .args(["rev-parse", "HEAD"])
+        .output()
+        .expect("git");
+    let full = String::from_utf8(full.stdout)
+        .expect("utf8")
+        .trim()
+        .to_owned();
+    let report = dir.outside("ci.xml");
+    std::fs::write(
+        &report,
+        r#"<testsuite><testcase classname="c" name="t"><failure/></testcase></testsuite>"#,
+    )
+    .expect("write report");
+    let import = |commit: &str| {
+        Command::new(env!("CARGO_BIN_EXE_sooth"))
+            .current_dir(&dir)
+            .args([
+                "import", "--env", "ci", "--commit", commit, "--color", "never",
+            ])
+            .arg(&report)
+            .output()
+            .expect("sooth should run")
+    };
+
+    // What every CI screen shows — must combine with local observations.
+    let output = import(&full[..7]);
+    assert_eq!(output.status.code(), Some(0));
+    let history = std::fs::read_to_string(dir.join(".sooth/history.jsonl")).expect("history");
+    assert!(
+        history.contains(&format!(r#""commit":"{full}""#)),
+        "the observation must carry the full sha, got: {history:?}"
+    );
+
+    let output = import("deadbee");
+    assert_eq!(
+        output.status.code(),
+        Some(2),
+        "a sha that resolves to nothing must be refused, not stored"
+    );
+    let stderr = String::from_utf8(output.stderr).expect("stderr should be UTF-8");
+    assert!(
+        stderr.contains("`--commit deadbee` names no commit"),
+        "got: {stderr:?}"
+    );
+}
+
+#[test]
 fn an_unreadable_file_fails_the_whole_import_before_anything_is_written() {
     let (cwd, mut command) = sooth_in("import-atomic");
     std::fs::write(
