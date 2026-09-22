@@ -228,6 +228,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `sooth import --commit` with an abbreviated sha — the form every CI
+  screen shows — is resolved against the local repository and stored as
+  the full sha, so imported observations actually combine with local ones.
+  Stored as typed it could never match a local observation and the import
+  counted in totals while proving nothing, silently. A sha the repository
+  does not know is refused (exit 2) instead of stored.
 - A multi-file gate on PHPUnit older than 10 is refused loudly (exit 2)
   instead of silently gating only the first file: old PHPUnit takes a single
   positional path and drops the rest, which made the gate print every

@@ -632,7 +632,10 @@ the explain entry for the principle). What keeps it honest:
   imported observations can combine with local ones into flaky proof.
   Without it they count in totals and are never evidence — the same rule
   dirty local runs live under. One commit per invocation; guessing shas from
-  filenames would be magic.
+  filenames would be magic. An abbreviated sha is resolved against the local
+  clone and stored in full — local runs record the full sha, and the history
+  compares commits exactly, so an abbreviation stored as typed would never
+  combine with anything. One the clone does not know is refused, not stored.
 - A content-hash ledger (`.sooth/imported`, FNV-1a 64 — hand-rolled because
   `DefaultHasher` is not stable across Rust versions and the input is the
   user's own files) makes re-importing the same download a no-op instead of
