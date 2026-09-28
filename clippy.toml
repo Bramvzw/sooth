@@ -1,3 +1,6 @@
+allow-unwrap-in-tests = true
+# More than five parameters is a missing type (CONTRIBUTING.md, code rules).
+too-many-arguments-threshold = 5
 disallowed-methods = [
     { path = "std::process::Command::new", reason = "only runner.rs, preset.rs and history.rs spawn processes (AGENTS.md)" },
 ]

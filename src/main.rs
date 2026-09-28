@@ -865,8 +865,9 @@ fn epoch_secs(time: std::time::SystemTime) -> Option<u64> {
 /// Print the run's output in the shape the flags ask for. Returns an exit
 /// code only when emitting itself failed (the JSON file could not be
 /// written).
-// Prints outside report.rs until the commands move out of main.rs (#191, #192).
-#[allow(clippy::print_stdout)]
+// Prints outside report.rs until the commands move out of main.rs (#191, #192);
+// the run's values travel loose until #192 gives them a type.
+#[allow(clippy::print_stdout, clippy::too_many_arguments)]
 fn emit_output(
     args: &cli::RunArgs,
     outcomes: &[runner::RunOutcome],
@@ -934,6 +935,8 @@ fn emit_output(
 
 /// The closing verdict line, pardon-aware: a pardoned run explains why it
 /// exits 0 instead of claiming a clean pass.
+// The run's values travel loose until #192 gives them a type.
+#[allow(clippy::too_many_arguments)]
 fn verdict(
     analyses: &Analyses<'_>,
     outcomes: &[runner::RunOutcome],

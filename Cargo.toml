@@ -34,3 +34,6 @@ pedantic = { level = "deny", priority = -1 }
 print_stdout = "deny"
 print_stderr = "deny"
 disallowed_methods = "deny"
+# The code rules in CONTRIBUTING.md: a bug panics with a message (`expect`),
+# input never reaches a bare `unwrap`.
+unwrap_used = "deny"

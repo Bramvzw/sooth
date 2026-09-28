@@ -38,6 +38,7 @@ with `(#n)` only when it adds clarity; `Closes #n` in the PR body is enough.
 - [ ] `DECISIONS.md` updated for any non-obvious choice.
 - [ ] Docs (`README.md`, `AGENTS.md`) updated if documented behaviour changed.
 - [ ] Comments follow the comment rule below.
+- [ ] Code follows the code rules below; a new test fails against the code before the change.
 
 ## Comment rule
 
@@ -55,6 +56,33 @@ later, an external contributor — and states only facts the code cannot show.
 - When in doubt, leave it out. One fact, one home: rationale lives in
   `DECISIONS.md`, change context in the PR body, domain definitions on the
   item that owns them.
+
+## Code rules
+
+The layering lives in `AGENTS.md` (architecture invariants); these are the rules inside a module.
+Each is either checked by `make check` (*enforced*) or answers a problem this codebase has had —
+a rule with neither is not on the list. The tag names the source: `C-…` the
+[Rust API Guidelines](https://rust-lang.github.io/api-guidelines/checklist.html), `M-…`
+Microsoft's [Pragmatic Rust Guidelines](https://microsoft.github.io/rust-guidelines/guidelines/checklist/index.html).
+
+- **One rule, one home.** A domain definition — what counts as evidence, when a run is red, which
+  category a verdict gets — is one named function the rest calls. A duplicated rule is always
+  fixed; code that merely looks alike waits for its third copy.
+- **Solve the problem in front of you.** No generality, option or module for a need that does not
+  exist yet (Google's review guide, "over-engineering").
+- **One concept, one name** across modules and in a consistent word order (`C-WORD-ORDER`).
+- **Meaning lives in types, not in `bool`, `Option` or tuples** at a module boundary
+  (`C-CUSTOM-TYPE`). A value with an invariant — a full sha, a test id — gets a newtype that
+  guards it (`C-NEWTYPE`, `M-STRONG-TYPES-GUARD`).
+- **Domain modules return typed errors; the sentence is built where it is shown** (`C-GOOD-ERR`).
+  `Result<_, String>` and `Result<_, ()>` are for the CLI edge only.
+- **A bug panics, input never does** (`M-PANIC-ON-BUG`). `unwrap()` is not used outside tests
+  (*enforced*); `expect()` states the invariant it relies on (`M-PANIC-MESSAGE`). A `&str` is not
+  sliced at a byte offset that input controls (#204).
+- **A function fits on a screen and takes at most five parameters** — more is a missing type
+  (*enforced*: `too_many_lines`, `too-many-arguments-threshold`).
+- **A test checks behaviour, not the code's own arithmetic** (`M-TAUTOLOGICAL-TESTS`), is named as
+  the sentence it proves, and fails against the code before the change.
 
 ## Security
 
