@@ -34,7 +34,8 @@ with `(#n)` only when it adds clarity; `Closes #n` in the PR body is enough.
 - [ ] Behaviour change has a test covering it.
 - [ ] A line was added under `## [Unreleased]` in `CHANGELOG.md`.
 - [ ] `make check` is green: `cargo fmt --check` + `cargo clippy --all-targets -- -D warnings`
-      + `cargo test`. No `#[allow]` without a comment saying why; `unsafe` is denied crate-wide.
+      + `cargo test`. No `#[allow]` without a reason: a comment on it, or its entry in an
+      exception list (`AGENTS.md` invariants, code rules) — not both. `unsafe` is denied crate-wide.
 - [ ] `DECISIONS.md` updated for any non-obvious choice.
 - [ ] Docs (`README.md`, `AGENTS.md`) updated if documented behaviour changed.
 - [ ] Comments follow the comment rule below.
@@ -80,7 +81,8 @@ Microsoft's [Pragmatic Rust Guidelines](https://microsoft.github.io/rust-guideli
   (*enforced*); `expect()` states the invariant it relies on (`M-PANIC-MESSAGE`). A `&str` is not
   sliced at a byte offset that input controls (#204).
 - **A function fits on a screen and takes at most five parameters** — more is a missing type
-  (*enforced*: `too_many_lines`, `too-many-arguments-threshold`).
+  (*enforced*: `too_many_lines`, `too-many-arguments-threshold`). Exception: `emit_output` and
+  `verdict` in `main.rs` (#192).
 - **A test checks behaviour, not the code's own arithmetic** (`M-TAUTOLOGICAL-TESTS`), is named as
   the sentence it proves, and fails against the code before the change.
 
