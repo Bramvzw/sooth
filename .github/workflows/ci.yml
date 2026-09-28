@@ -46,13 +46,13 @@ jobs:
         run: RUSTDOCFLAGS="-D warnings" cargo doc --no-deps
 
   msrv:
-    name: Build on MSRV (1.80)
+    name: Build on MSRV (1.85)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      # The action exports RUSTUP_TOOLCHAIN=1.80.0, which overrides the
+      # The action exports RUSTUP_TOOLCHAIN=1.85.0, which overrides the
       # rust-toolchain.toml pin — exactly what this job needs.
-      - uses: dtolnay/rust-toolchain@02615d347998f2a395863137815cac5be587e500 # 1.80.0
+      - uses: dtolnay/rust-toolchain@3230091d7ef9483f601620abacc570c22cf44d22 # 1.85.0
       - uses: Swatinem/rust-cache@258712b0b7b1ddf8bddc9fc3b0faca682b2736c3 # v2
       - name: Verify the crate builds on its declared minimum Rust version
         run: cargo check --all-targets

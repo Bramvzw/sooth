@@ -45,7 +45,8 @@ One task per module. Do not add empty placeholder modules ahead of the code that
 
 What keeps the layers apart is mostly what a module does *not* do. *Enforced* means `make check`
 fails when it breaks (`[lints.clippy]` in `Cargo.toml`, `clippy.toml`); an exception is an
-`#[allow]` with its reason, and every exception below has an issue that removes it.
+`#[expect]` — which fails the build once the exception is gone — and every exception below has
+an issue that removes it.
 
 - **Only `report.rs` prints.** No other module writes to stdout or stderr. *Enforced.*
   Exceptions: `main.rs` until the commands move out (#191, #192); `quarantine.rs` (#200).

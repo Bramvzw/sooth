@@ -189,8 +189,10 @@ pub fn selected_paths(preset: Preset, files: &[String]) -> Vec<String> {
 /// `PHPUnit`'s major version, probed from `program --version`. `None` when
 /// the probe fails or the banner is not `PHPUnit`'s — the caller decides
 /// how loud to be about not knowing.
-// The PHPUnit version probe runs the runner itself.
-#[allow(clippy::disallowed_methods)]
+#[expect(
+    clippy::disallowed_methods,
+    reason = "The PHPUnit version probe runs the runner itself."
+)]
 pub fn phpunit_major(program: &str) -> Option<u32> {
     let output = std::process::Command::new(program)
         .arg("--version")

@@ -112,9 +112,10 @@ pub struct RunArgs {
     /// `--json` prints it as sooth's final stdout line; `--json=PATH` writes
     /// it to a file and keeps the human report on stdout (note the `=`;
     /// `--json PATH` with a space is rejected).
-    // Option<Option<_>> is clap's canonical shape for a flag with an
-    // optional value: None = absent, Some(None) = bare, Some(Some(p)) = path.
-    #[allow(clippy::option_option)]
+    #[expect(
+        clippy::option_option,
+        reason = "Option<Option<_>> is clap's canonical shape for a flag with an optional value: None = absent, Some(None) = bare, Some(Some(p)) = path."
+    )]
     #[arg(long, value_name = "PATH", num_args = 0..=1, require_equals = true)]
     pub json: Option<Option<PathBuf>>,
 
@@ -128,8 +129,10 @@ pub struct RunArgs {
     /// against BASE (default: `@{upstream}`, else `origin/HEAD`), repeated
     /// `--runs` times. A handful of tests 20 times is seconds, and catches a
     /// flake where it is born. Needs --preset and an explicit --runs.
-    // Option<Option<_>> is clap's flag-with-optional-value shape, as --json.
-    #[allow(clippy::option_option)]
+    #[expect(
+        clippy::option_option,
+        reason = "Option<Option<_>> is clap's flag-with-optional-value shape, as --json."
+    )]
     #[arg(long, value_name = "BASE", num_args = 0..=1, require_equals = true)]
     pub changed: Option<Option<String>>,
 

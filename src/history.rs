@@ -218,8 +218,10 @@ pub fn resolve_commit(dir: &Path, given: &str) -> Result<String, CommitError> {
     git(dir, &["rev-parse", "--verify", "--quiet", &revision]).ok_or(CommitError::Unknown)
 }
 
-// Every git call goes through this one helper.
-#[allow(clippy::disallowed_methods)]
+#[expect(
+    clippy::disallowed_methods,
+    reason = "Every git call goes through this one helper."
+)]
 pub(crate) fn git(dir: &Path, args: &[&str]) -> Option<String> {
     let output = Command::new("git")
         .arg("-C")
@@ -390,9 +392,10 @@ fn extract_u64(line: &str, key: &str) -> Option<u64> {
     rest[..end].parse().ok()
 }
 
-// Outer Option is parse success, inner is JSON null: both layers carry
-// meaning, so the clippy default does not apply.
-#[allow(clippy::option_option)]
+#[expect(
+    clippy::option_option,
+    reason = "Outer Option is parse success, inner is JSON null: both layers carry meaning, so the clippy default does not apply."
+)]
 fn extract_bool_or_null(line: &str, key: &str) -> Option<Option<bool>> {
     let rest = value_after(line, key)?;
     if rest.starts_with("true") {
@@ -406,7 +409,7 @@ fn extract_bool_or_null(line: &str, key: &str) -> Option<Option<bool>> {
     }
 }
 
-#[allow(clippy::option_option)] // same two-layer meaning as above
+#[expect(clippy::option_option, reason = "same two-layer meaning as above")]
 fn extract_string_or_null(line: &str, key: &str) -> Option<Option<String>> {
     let rest = value_after(line, key)?;
     if rest.starts_with("null") {
@@ -442,8 +445,10 @@ fn extract_string_or_null(line: &str, key: &str) -> Option<Option<String>> {
 }
 
 #[cfg(test)]
-// The identity test builds a real repository to read.
-#[allow(clippy::disallowed_methods)]
+#[expect(
+    clippy::disallowed_methods,
+    reason = "The identity test builds a real repository to read."
+)]
 mod tests {
     use super::{
         append, code_identity, current_environment, load, resolve_commit, CommitError, Observation,

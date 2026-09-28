@@ -151,6 +151,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- The minimum supported Rust version is 1.85 (was 1.80). It already was in
+  practice: `clap` 4.6 requires 1.85, so a 1.80–1.84 toolchain could not
+  build sooth despite the declared 1.80.
 - `--verify` compares the failure's signature, not just pass/fail: a re-run
   that fails with a different kind or exception class than the suite saw is
   no longer `real (reproduced on re-run)` but `failed differently on re-run

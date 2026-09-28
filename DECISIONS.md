@@ -143,7 +143,7 @@ install`. Caveat that bit us: toolchain actions (`dtolnay/rust-toolchain` and
 friends) export `RUSTUP_TOOLCHAIN`, and that environment variable overrides
 `rust-toolchain.toml` — with the action at `@stable`, CI silently ran rolling
 stable despite the pin. The main CI jobs therefore avoid toolchain actions;
-the MSRV job keeps one (`@1.80.0`) precisely because that override is what an
+the MSRV job keeps one (pinned to the MSRV) precisely because that override is what an
 MSRV check needs.
 
 ## Exit codes distinguish "the tests failed" from "sooth failed"
@@ -880,7 +880,21 @@ greps the source: clippy resolves paths, so an aliased or fully qualified
 call is caught where a grep would miss it, and the check costs no code of
 ours.
 
-An exception is an `#[allow]` on the narrowest item that needs it.
-`#[expect]` would fail once the exception is no longer needed, but it
-needs Rust 1.81 and the MSRV is 1.80; until the MSRV moves, each
-exception names the issue that removes it instead.
+An exception is an `#[expect]` on the narrowest item that needs it, and
+`#[allow]` is denied (`clippy::allow_attributes`): an expectation that no
+longer fires fails the build, so an exception cannot outlive the code that
+needed it. `#[expect]` needs Rust 1.81; the MSRV is past that (see below).
+
+## The MSRV is what the dependencies require
+
+`rust-version` is a promise: a toolchain at least that old builds sooth. It
+had quietly stopped being true — `clap` 4.6 (Dependabot, #79 onward)
+declares `rust-version = "1.85"`, and `cargo check` on 1.80 fails on
+`clap_lex`'s edition-2024 manifest, while the declared MSRV stayed 1.80.
+
+The MSRV is therefore the highest `rust-version` in the locked dependency
+tree, 1.85 today, not a number chosen apart from it. Holding an older one
+would mean pinning `clap` below 4.6 and fencing it off from Dependabot —
+standing maintenance, and missed fixes, for users on a toolchain older than
+February 2025. A dependency update that raises the floor raises the MSRV in
+the same PR.

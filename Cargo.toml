@@ -2,7 +2,7 @@
 name = "sooth"
 version = "0.1.0"
 edition = "2021"
-rust-version = "1.80"
+rust-version = "1.85"
 description = "The truth about your tests — a local, single-binary observer that runs your test command and proves which tests are flaky. No server, no telemetry."
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/bramvzw/sooth"
@@ -23,6 +23,8 @@ path = "src/main.rs"
 # forbid, not deny: cannot be overridden with an #[allow] anywhere,
 # so "this binary contains no unsafe" is a guarantee, not a default.
 unsafe_code = "forbid"
+# A lint exception that no longer fires fails the build, locally as in CI.
+unfulfilled_lint_expectations = "deny"
 
 [lints.clippy]
 all = { level = "deny", priority = -1 }
@@ -30,10 +32,12 @@ all = { level = "deny", priority = -1 }
 # there — a plain local `cargo clippy` should agree with CI.
 pedantic = { level = "deny", priority = -1 }
 # The layering invariants in AGENTS.md: only report.rs prints, only the
-# modules clippy.toml names spawn processes. Each exception is an #[allow].
+# modules clippy.toml names spawn processes. Each exception is an #[expect].
 print_stdout = "deny"
 print_stderr = "deny"
 disallowed_methods = "deny"
 # The code rules in CONTRIBUTING.md: a bug panics with a message (`expect`),
 # input never reaches a bare `unwrap`.
 unwrap_used = "deny"
+# Exceptions are #[expect], which fails once it is no longer needed.
+allow_attributes = "deny"
