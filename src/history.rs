@@ -193,6 +193,31 @@ pub fn code_identity(dir: &Path) -> CodeIdentity {
     }
 }
 
+/// Why a given commit cannot be stored as the sha local runs record.
+#[derive(Debug, PartialEq, Eq)]
+pub enum CommitError {
+    /// A branch or revision name: it resolves to where it points now, not
+    /// to the commit the reports came from.
+    NotASha,
+    /// An abbreviation the repository in `dir` does not know.
+    Unknown,
+}
+
+/// The full, lowercase sha for a commit given by hand, as `code_identity`
+/// records it. The history compares commits exactly, so an abbreviation is
+/// resolved against the repository in `dir` rather than stored as typed.
+pub fn resolve_commit(dir: &Path, given: &str) -> Result<String, CommitError> {
+    if given.is_empty() || !given.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err(CommitError::NotASha);
+    }
+    let sha = given.to_ascii_lowercase();
+    if matches!(sha.len(), 40 | 64) {
+        return Ok(sha);
+    }
+    let revision = format!("{sha}^{{commit}}");
+    git(dir, &["rev-parse", "--verify", "--quiet", &revision]).ok_or(CommitError::Unknown)
+}
+
 pub(crate) fn git(dir: &Path, args: &[&str]) -> Option<String> {
     let output = Command::new("git")
         .arg("-C")
@@ -416,7 +441,9 @@ fn extract_string_or_null(line: &str, key: &str) -> Option<Option<String>> {
 
 #[cfg(test)]
 mod tests {
-    use super::{append, code_identity, current_environment, load, Observation};
+    use super::{
+        append, code_identity, current_environment, load, resolve_commit, CommitError, Observation,
+    };
     use crate::junit::TestStatus;
     use std::path::PathBuf;
     use std::process::Command;
@@ -648,6 +675,25 @@ mod tests {
         let loaded = load(&temp_path("missing"));
         assert!(loaded.observations.is_empty());
         assert_eq!(loaded.skipped_lines, 0);
+    }
+
+    #[test]
+    fn a_full_sha_is_lowercased_without_asking_git() {
+        let nowhere = std::env::temp_dir().join("sooth-no-such-dir");
+        let sha = "8B8C4FCCC51BA94134C2EEE12F7C1BEE5E5ECF1A";
+        assert_eq!(resolve_commit(&nowhere, sha), Ok(sha.to_ascii_lowercase()));
+    }
+
+    #[test]
+    fn a_branch_or_revision_name_is_not_a_sha() {
+        let nowhere = std::env::temp_dir().join("sooth-no-such-dir");
+        for given in ["", "main", "HEAD", "HEAD~1", "v1.0", "--version"] {
+            assert_eq!(
+                resolve_commit(&nowhere, given),
+                Err(CommitError::NotASha),
+                "{given:?}"
+            );
+        }
     }
 
     #[test]

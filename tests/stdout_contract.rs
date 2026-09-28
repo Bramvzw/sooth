@@ -1467,6 +1467,28 @@ fn an_abbreviated_commit_is_stored_as_the_full_sha_and_an_unknown_one_is_refused
         stderr.contains("`--commit deadbee` names no commit"),
         "got: {stderr:?}"
     );
+
+    std::fs::remove_dir_all(dir.join(".sooth")).expect("reset history");
+    let output = import(&full.to_ascii_uppercase());
+    assert_eq!(output.status.code(), Some(0));
+    let history = std::fs::read_to_string(dir.join(".sooth/history.jsonl")).expect("history");
+    assert!(
+        history.contains(&format!(r#""commit":"{full}""#)),
+        "a full sha in capitals must be stored as local runs record it, got: {history:?}"
+    );
+
+    // A branch resolves to where it points now, not to the commit CI ran on.
+    let output = import("HEAD");
+    assert_eq!(
+        output.status.code(),
+        Some(2),
+        "a revision name must be refused"
+    );
+    let stderr = String::from_utf8(output.stderr).expect("stderr should be UTF-8");
+    assert!(
+        stderr.contains("`--commit HEAD` is not a sha"),
+        "got: {stderr:?}"
+    );
 }
 
 #[test]

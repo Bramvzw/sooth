@@ -674,37 +674,27 @@ fn file_outcomes(
     }
 }
 
-/// The full sha for what `--commit` names. CI shows abbreviated shas, so an
-/// abbreviation is resolved against the repository in the working directory;
-/// `None` when it names nothing there. Stored as given it could never match
-/// a local observation, so the import would count in totals and prove
-/// nothing, silently.
-fn full_commit(commit: &str) -> Option<String> {
-    let is_full = matches!(commit.len(), 40 | 64) && commit.bytes().all(|b| b.is_ascii_hexdigit());
-    if is_full {
-        return Some(commit.to_owned());
-    }
-    let revision = format!("{commit}^{{commit}}");
-    history::git(
-        std::path::Path::new("."),
-        &["rev-parse", "--verify", "--quiet", &revision],
-    )
+/// `--commit` as the sha local runs record, or the refusal already printed.
+fn imported_commit(given: &str) -> Result<String, ExitCode> {
+    history::resolve_commit(std::path::Path::new("."), given).map_err(|error| {
+        let why = match error {
+            history::CommitError::NotASha => {
+                "is not a sha — pass the commit CI ran on, not a branch or revision name"
+            }
+            history::CommitError::Unknown => {
+                "names no commit this repository knows — pass the full sha, or fetch it first"
+            }
+        };
+        eprintln!("sooth: `--commit {given}` {why}");
+        ExitCode::from(EXIT_SOOTH_ERROR)
+    })
 }
 
 fn import(args: &cli::ImportArgs) -> ExitCode {
     let style = report::Style::resolved(args.color);
-    let commit = match &args.commit {
-        None => None,
-        Some(given) => {
-            let Some(full) = full_commit(given) else {
-                eprintln!(
-                    "sooth: `--commit {given}` names no commit this repository knows — \
-                     pass the full sha, or fetch it first"
-                );
-                return ExitCode::from(EXIT_SOOTH_ERROR);
-            };
-            Some(full)
-        }
+    let commit = match args.commit.as_deref().map(imported_commit).transpose() {
+        Ok(commit) => commit,
+        Err(code) => return code,
     };
     let ledger_path = std::path::Path::new(history::IMPORTED_PATH);
     let mut seen = history::imported_hashes(ledger_path);
