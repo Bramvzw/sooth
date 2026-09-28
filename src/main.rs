@@ -674,8 +674,28 @@ fn file_outcomes(
     }
 }
 
+/// `--commit` as the sha local runs record, or the refusal already printed.
+fn imported_commit(given: &str) -> Result<String, ExitCode> {
+    history::resolve_commit(std::path::Path::new("."), given).map_err(|error| {
+        let why = match error {
+            history::CommitError::NotASha => {
+                "is not a sha — pass the commit CI ran on, not a branch or revision name"
+            }
+            history::CommitError::Unknown => {
+                "names no commit this repository knows — pass the full sha, or fetch it first"
+            }
+        };
+        eprintln!("sooth: `--commit {given}` {why}");
+        ExitCode::from(EXIT_SOOTH_ERROR)
+    })
+}
+
 fn import(args: &cli::ImportArgs) -> ExitCode {
     let style = report::Style::resolved(args.color);
+    let commit = match args.commit.as_deref().map(imported_commit).transpose() {
+        Ok(commit) => commit,
+        Err(code) => return code,
+    };
     let ledger_path = std::path::Path::new(history::IMPORTED_PATH);
     let mut seen = history::imported_hashes(ledger_path);
     let mut incoming: Vec<Incoming> = Vec::new();
@@ -707,10 +727,10 @@ fn import(args: &cli::ImportArgs) -> ExitCode {
             .map(|(id, status)| history::Observation {
                 id,
                 status,
-                commit: args.commit.clone(),
+                commit: commit.clone(),
                 // --commit asserts a clean checkout of that commit; without
                 // it the code state is unknowable, not clean.
-                dirty: args.commit.as_ref().map(|_| false),
+                dirty: commit.as_ref().map(|_| false),
                 environment: Some(args.env.clone()),
                 at_epoch_secs,
             })
