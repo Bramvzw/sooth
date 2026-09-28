@@ -1,7 +1,9 @@
 //! Presentation layer: the colored human report and the machine JSON.
 
-// The one module that prints (AGENTS.md).
-#![allow(clippy::print_stdout)]
+#![expect(
+    clippy::print_stdout,
+    reason = "The one module that prints (AGENTS.md)."
+)]
 
 use std::fmt::Write as _;
 use std::time::Duration;
