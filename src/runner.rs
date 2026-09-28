@@ -45,6 +45,8 @@ impl RunOutcome {
 ///
 /// Returns the underlying I/O error if the command cannot be spawned (for
 /// example when the program is not found on `PATH`).
+// Spawning the wrapped test command is what this module is for.
+#[allow(clippy::disallowed_methods)]
 pub fn run_once(command: &[String], envs: &[(String, String)]) -> std::io::Result<RunOutcome> {
     let (program, rest) = command
         .split_first()

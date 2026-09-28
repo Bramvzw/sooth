@@ -868,3 +868,19 @@ one green isolation run says more than any signature.
 The third case the issue names — failed alone with the *same* signature
 while the suite's normal order was green — is order-dependence and belongs
 to #111 (v0.3), not to verification.
+
+## Layering invariants are clippy lints, not a tidy test
+
+The invariants in `AGENTS.md` are phrased as absences — only `report.rs`
+prints, only three modules spawn processes — because an absence cannot be
+read off the code. The two that break most easily are enforced by clippy
+the way cargo enforces its own (`print_stdout`, `print_stderr`,
+`disallowed_methods` with a `clippy.toml`), not by a hand-written test that
+greps the source: clippy resolves paths, so an aliased or fully qualified
+call is caught where a grep would miss it, and the check costs no code of
+ours.
+
+An exception is an `#[allow]` on the narrowest item that needs it.
+`#[expect]` would fail once the exception is no longer needed, but it
+needs Rust 1.81 and the MSRV is 1.80; until the MSRV moves, each
+exception names the issue that removes it instead.

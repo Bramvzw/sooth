@@ -1,5 +1,7 @@
 //! What `sooth run` puts on stdout is a public contract (see the `--json`
 //! entry in `DECISIONS.md`), so it is pinned against the real binary.
+// A contract test drives the real binary and git.
+#![allow(clippy::disallowed_methods)]
 #![cfg(unix)] // the wrapped commands are `true` and `sh`, which are Unix-only
 
 use std::ffi::OsStr;

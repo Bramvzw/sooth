@@ -1,5 +1,8 @@
 //! Presentation layer: the colored human report and the machine JSON.
 
+// The one module that prints (AGENTS.md).
+#![allow(clippy::print_stdout)]
+
 use std::fmt::Write as _;
 use std::time::Duration;
 

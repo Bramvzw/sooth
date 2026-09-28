@@ -218,6 +218,8 @@ pub fn resolve_commit(dir: &Path, given: &str) -> Result<String, CommitError> {
     git(dir, &["rev-parse", "--verify", "--quiet", &revision]).ok_or(CommitError::Unknown)
 }
 
+// Every git call goes through this one helper.
+#[allow(clippy::disallowed_methods)]
 pub(crate) fn git(dir: &Path, args: &[&str]) -> Option<String> {
     let output = Command::new("git")
         .arg("-C")
@@ -440,6 +442,8 @@ fn extract_string_or_null(line: &str, key: &str) -> Option<Option<String>> {
 }
 
 #[cfg(test)]
+// The identity test builds a real repository to read.
+#[allow(clippy::disallowed_methods)]
 mod tests {
     use super::{
         append, code_identity, current_environment, load, resolve_commit, CommitError, Observation,
