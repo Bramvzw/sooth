@@ -15,9 +15,10 @@ Everything below exists except `analyzers/slow.rs` and `analyzers/order.rs`; one
 
 ```
 src/
-├── cli.rs        # EXISTS — clap definitions: `run` and `explain`, --preset, --runs, --json[=PATH], --slowest, --junit, --color, --verify
+├── cli.rs        # EXISTS — clap definitions: `run`, `explain`, `import`, `history` and their flags
 ├── runner.rs      # EXISTS — spawns the test subprocess (with env injection), captures exit status + wall time
 ├── junit.rs       # EXISTS — tolerant JUnit-XML union schema (parse_str/parse_file)
+├── phpunit_log.rs # EXISTS — failures from a PHPUnit console log, for `import --log phpunit`
 ├── preset.rs      # EXISTS — presets inject reporter flags/env, manage the temp report, and own per-runner selection knowledge (is_test_file, selected_paths)
 ├── gate.rs        # EXISTS — pre-push gate selection: which test files changed against a base (--changed)
 ├── history.rs     # EXISTS — local run history (.sooth/history.jsonl) + git code identity
@@ -39,6 +40,25 @@ uses just `0` and `2`.
 
 One task per module. Do not add empty placeholder modules ahead of the code that fills them —
 `clippy -D warnings` treats unused modules as dead code.
+
+## Architecture invariants
+
+What keeps the layers apart is mostly what a module does *not* do. *Enforced* means `make check`
+fails when it breaks (`[lints.clippy]` in `Cargo.toml`, `clippy.toml`); an exception is an
+`#[allow]` with its reason, and every exception below has an issue that removes it.
+
+- **Only `report.rs` prints.** No other module writes to stdout or stderr. *Enforced.*
+  Exceptions: `main.rs` until the commands move out (#191, #192); `quarantine.rs` (#200).
+- **Only `runner.rs`, `preset.rs` and `history.rs` spawn processes** — the test command, the
+  PHPUnit version probe, and git. *Enforced.*
+- **`analyzers/` does no I/O:** no files, no processes, no git, no printing. It classifies values
+  it is handed. *By review* for files; the rest is enforced.
+- **Domain modules do not depend on `report.rs` or `main.rs`.** *By review.* Exception:
+  `history.rs` borrows `report::json_escape` (#200).
+- **`junit.rs` depends on no other sooth module**, so the parser can be tested and fuzzed alone.
+  *By review.*
+
+Split a file when it holds more than one of these layers, not at a line count.
 
 ## Commit convention
 

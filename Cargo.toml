@@ -29,3 +29,8 @@ all = { level = "deny", priority = -1 }
 # deny, not warn: CI runs `-D warnings`, so pedantic already fails the build
 # there — a plain local `cargo clippy` should agree with CI.
 pedantic = { level = "deny", priority = -1 }
+# The layering invariants in AGENTS.md: only report.rs prints, only the
+# modules clippy.toml names spawn processes. Each exception is an #[allow].
+print_stdout = "deny"
+print_stderr = "deny"
+disallowed_methods = "deny"
