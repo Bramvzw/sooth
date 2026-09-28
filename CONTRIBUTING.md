@@ -34,8 +34,9 @@ with `(#n)` only when it adds clarity; `Closes #n` in the PR body is enough.
 - [ ] Behaviour change has a test covering it.
 - [ ] A line was added under `## [Unreleased]` in `CHANGELOG.md`.
 - [ ] `make check` is green: `cargo fmt --check` + `cargo clippy --all-targets -- -D warnings`
-      + `cargo test`. No `#[allow]` without a reason: a comment on it, or its entry in an
-      exception list (`AGENTS.md` invariants, code rules) — not both. `unsafe` is denied crate-wide.
+      + `cargo test`. A lint exception is an `#[expect]` (`#[allow]` is denied), with its reason in
+      one place: `reason = "…"` on it, or its entry in an exception list (`AGENTS.md`
+      invariants, code rules). `unsafe` is denied crate-wide.
 - [ ] `DECISIONS.md` updated for any non-obvious choice.
 - [ ] Docs (`README.md`, `AGENTS.md`) updated if documented behaviour changed.
 - [ ] Comments follow the comment rule below.
