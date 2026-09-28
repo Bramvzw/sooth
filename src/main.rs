@@ -46,7 +46,6 @@ fn main() -> ExitCode {
 /// the slowest tests. `--junit` points at a report the command already writes;
 /// `--preset` injects the right reporter flags and manages a temp report
 /// itself. Without either, the output is the plain per-run report.
-// Prints outside report.rs until the commands move out of main.rs (#191, #192).
 #[allow(clippy::print_stderr)]
 fn run(args: &cli::RunArgs) -> ExitCode {
     if let Some(reason) = rejected_flag(args) {
@@ -174,7 +173,6 @@ fn run(args: &cli::RunArgs) -> ExitCode {
 /// The command to spawn, its environment, and where its report comes from:
 /// the preset injects flags and manages a temp report, `--junit` points at
 /// the user's own file.
-// Prints outside report.rs until the commands move out of main.rs (#191, #192).
 #[allow(clippy::print_stderr)]
 fn prepared_command(
     args: &cli::RunArgs,
@@ -219,7 +217,6 @@ type GatedRun = (Vec<String>, Option<gate::Selection>);
 /// The command with the gate's selection appended, plus the selection for
 /// the report. `Ok(None)` is the gate's happy fast path: nothing changed,
 /// nothing to prove, nothing spawned — its output is already emitted.
-// Prints outside report.rs until the commands move out of main.rs (#191, #192).
 #[allow(clippy::print_stderr)]
 fn gated_command(args: &cli::RunArgs, style: report::Style) -> Result<Option<GatedRun>, ExitCode> {
     let Some(base) = &args.changed else {
@@ -272,7 +269,6 @@ fn gated_command(args: &cli::RunArgs, style: report::Style) -> Result<Option<Gat
 /// The empty gate's output, honoring every output mode's contract: bare
 /// `--json` emits the document (zero runs), `--json=PATH` writes it and
 /// keeps the human line on stdout.
-// Prints outside report.rs until the commands move out of main.rs (#191, #192).
 #[allow(clippy::print_stdout)]
 fn empty_gate(args: &cli::RunArgs, selection: &gate::Selection) -> Result<(), ExitCode> {
     let analyses = Analyses {
@@ -301,7 +297,6 @@ fn empty_gate(args: &cli::RunArgs, selection: &gate::Selection) -> Result<(), Ex
 }
 
 /// Write the JSON document to `path`; a failure is sooth's own (exit 2).
-// Prints outside report.rs until the commands move out of main.rs (#191, #192).
 #[allow(clippy::print_stderr)]
 fn write_json_file(path: &std::path::Path, json: String) -> Result<(), ExitCode> {
     std::fs::write(path, json + "\n").map_err(|err| {
@@ -387,7 +382,6 @@ fn quarantine_pardon(
 
 /// The stderr note when the runner's exit and the report disagree, in
 /// either direction. The exit code is settled elsewhere; this explains it.
-// Prints outside report.rs until the commands move out of main.rs (#191, #192).
 #[allow(clippy::print_stderr)]
 fn print_disagreement(runs_failed: bool, report_failures: usize, has_reports: bool) {
     if report_failures > 0 && !runs_failed {
@@ -405,7 +399,6 @@ fn print_disagreement(runs_failed: bool, report_failures: usize, has_reports: bo
 
 /// Re-run only the failed tests and classify them. Every failure mode
 /// degrades to a warning and `None`; the exit code is never changed.
-// Prints outside report.rs until the commands move out of main.rs (#191, #192).
 #[allow(clippy::print_stderr)]
 fn verify_failures(
     args: &cli::RunArgs,
@@ -485,7 +478,6 @@ impl HistoryPass {
 /// Record this invocation's runs into the local history and classify the
 /// accumulated observations. Every failure degrades to a stderr warning:
 /// the passive layer must never change the run's outcome.
-// Prints outside report.rs until the commands move out of main.rs (#191, #192).
 #[allow(clippy::print_stderr)]
 fn record_history(args: &cli::RunArgs, reports: &[junit::JunitReport]) -> Option<HistoryPass> {
     if args.no_history || reports.is_empty() {
@@ -533,7 +525,6 @@ fn record_history(args: &cli::RunArgs, reports: &[junit::JunitReport]) -> Option
 }
 
 /// Load the history file, warning once about lines it could not read.
-// Prints outside report.rs until the commands move out of main.rs (#191, #192).
 #[allow(clippy::print_stderr)]
 fn load_history(path: &std::path::Path) -> history::Loaded {
     let loaded = history::load(path);
@@ -550,7 +541,6 @@ fn load_history(path: &std::path::Path) -> history::Loaded {
 /// Handle `sooth explain`: label every failure in a JUnit-XML report against
 /// the accumulated evidence. Runs nothing, records nothing (see
 /// `DECISIONS.md`); exits 0 when the report could be read, 2 when it could not.
-// Prints outside report.rs until the commands move out of main.rs (#191, #192).
 #[allow(clippy::print_stderr, clippy::print_stdout)]
 fn explain(args: &cli::ExplainArgs) -> ExitCode {
     let style = report::Style::resolved(args.color);
@@ -655,7 +645,6 @@ type FileYield = Option<(
 
 /// The outcomes one import file yields — `Ok(None)` is a green console log,
 /// which names no tests. Parse failures print here and become exit 2.
-// Prints outside report.rs until the commands move out of main.rs (#191, #192).
 #[allow(clippy::print_stderr, clippy::print_stdout)]
 fn file_outcomes(
     content: &str,
@@ -697,7 +686,6 @@ fn file_outcomes(
 }
 
 /// `--commit` as the sha local runs record, or the refusal already printed.
-// Prints outside report.rs until the commands move out of main.rs (#191, #192).
 #[allow(clippy::print_stderr)]
 fn imported_commit(given: &str) -> Result<String, ExitCode> {
     history::resolve_commit(std::path::Path::new("."), given).map_err(|error| {
@@ -714,7 +702,6 @@ fn imported_commit(given: &str) -> Result<String, ExitCode> {
     })
 }
 
-// Prints outside report.rs until the commands move out of main.rs (#191, #192).
 #[allow(clippy::print_stderr, clippy::print_stdout)]
 fn import(args: &cli::ImportArgs) -> ExitCode {
     let style = report::Style::resolved(args.color);
@@ -816,7 +803,6 @@ fn import(args: &cli::ImportArgs) -> ExitCode {
 
 /// `sooth history` looks at the evidence without adding to it: nothing runs,
 /// so the observer principle leaves nothing to record.
-// Prints outside report.rs until the commands move out of main.rs (#191, #192).
 #[allow(clippy::print_stdout)]
 fn history_command(args: &cli::HistoryArgs) -> ExitCode {
     let style = report::Style::resolved(args.color);
@@ -865,8 +851,7 @@ fn epoch_secs(time: std::time::SystemTime) -> Option<u64> {
 /// Print the run's output in the shape the flags ask for. Returns an exit
 /// code only when emitting itself failed (the JSON file could not be
 /// written).
-// Prints outside report.rs until the commands move out of main.rs (#191, #192).
-#[allow(clippy::print_stdout)]
+#[allow(clippy::print_stdout, clippy::too_many_arguments)]
 fn emit_output(
     args: &cli::RunArgs,
     outcomes: &[runner::RunOutcome],
@@ -934,6 +919,7 @@ fn emit_output(
 
 /// The closing verdict line, pardon-aware: a pardoned run explains why it
 /// exits 0 instead of claiming a clean pass.
+#[allow(clippy::too_many_arguments)]
 fn verdict(
     analyses: &Analyses<'_>,
     outcomes: &[runner::RunOutcome],
@@ -1030,7 +1016,6 @@ impl ReportSource {
 
 /// One run's report: freshness-checked (user files only), loaded, and — on
 /// the error path — annotated with crash context and cleaned up (presets).
-// Prints outside report.rs until the commands move out of main.rs (#191, #192).
 #[allow(clippy::print_stderr)]
 fn load_run_report(
     source: &ReportSource,

@@ -12,7 +12,6 @@ pub const FILE_NAME: &str = ".sooth-quarantine";
 /// The quarantined ids, degrading to an empty set: a missing file is the
 /// normal day-one state; an unreadable one warns and leaves every failure
 /// unrecognized (and, with `--fail-on-flaky`, unpardoned).
-// A domain module printing its own warning (#200).
 #[allow(clippy::print_stderr)]
 pub fn load_or_empty(path: &Path) -> BTreeSet<String> {
     match std::fs::read_to_string(path) {

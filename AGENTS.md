@@ -57,6 +57,13 @@ fails when it breaks (`[lints.clippy]` in `Cargo.toml`, `clippy.toml`); an excep
   `history.rs` borrows `report::json_escape` (#200).
 - **`junit.rs` depends on no other sooth module**, so the parser can be tested and fuzzed alone.
   *By review.*
+- **Dependencies point one way and never form a cycle:** `main` → `analyzers/` → domain modules
+  (the analyzers read domain types; no domain module reads an analyzer), with `report.rs` reading
+  both and read by `main` alone. *By review.* Exception: two cycles
+  through `history.rs` → `report.rs` (#200).
+- **Commands orchestrate, modules decide.** A command wires modules together; a decision with
+  domain meaning lives in the module that owns the concept. *By review.* Exception: the pardon,
+  the verify loop and the prior-evidence arithmetic in `main.rs` (#189).
 
 Split a file when it holds more than one of these layers, not at a line count.
 

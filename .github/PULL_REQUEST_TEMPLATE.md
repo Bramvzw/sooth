@@ -16,3 +16,4 @@ Closes #
 - [ ] `make check` is green (fmt + `clippy -D warnings` + test)
 - [ ] `DECISIONS.md` updated if a non-obvious choice was made
 - [ ] Docs updated if documented behaviour changed
+- [ ] Code rules in `CONTRIBUTING.md` followed; the new test fails without the change
