@@ -22,6 +22,7 @@ src/
 ├── preset.rs      # EXISTS — presets inject reporter flags/env, manage the temp report, and own per-runner selection knowledge (is_test_file, selected_paths)
 ├── gate.rs        # EXISTS — pre-push gate selection: which test files changed against a base (--changed)
 ├── history.rs     # EXISTS — local run history (.sooth/history.jsonl) + git code identity
+├── json.rs        # EXISTS — JSON string escaping shared by the history file and the --json report
 ├── verify.rs      # EXISTS — failure re-verification: classify failed tests after re-running only them
 ├── quarantine.rs  # EXISTS — committed .sooth-quarantine list that --fail-on-flaky pardons
 ├── report.rs      # EXISTS — colored human report + versioned machine JSON
@@ -49,19 +50,17 @@ fails when it breaks (`[lints.clippy]` in `Cargo.toml`, `clippy.toml`); an excep
 an issue that removes it.
 
 - **Only `report.rs` prints.** No other module writes to stdout or stderr. *Enforced.*
-  Exceptions: `main.rs` until the commands move out (#191, #192); `quarantine.rs` (#200).
+  Exception: `main.rs` until the commands move out (#191, #192).
 - **Only `runner.rs`, `preset.rs` and `history.rs` spawn processes** — the test command, the
   PHPUnit version probe, and git. *Enforced.*
 - **`analyzers/` does no I/O:** no files, no processes, no git, no printing. It classifies values
   it is handed. *By review* for files; the rest is enforced.
-- **Domain modules do not depend on `report.rs` or `main.rs`.** *By review.* Exception:
-  `history.rs` borrows `report::json_escape` (#200).
+- **Domain modules do not depend on `report.rs` or `main.rs`.** *By review.*
 - **`junit.rs` depends on no other sooth module**, so the parser can be tested and fuzzed alone.
   *By review.*
 - **Dependencies point one way and never form a cycle:** `main` → `analyzers/` → domain modules
   (the analyzers read domain types; no domain module reads an analyzer), with `report.rs` reading
-  both and read by `main` alone. *By review.* Exception: two cycles
-  through `history.rs` → `report.rs` (#200).
+  both and read by `main` alone. *By review.*
 - **Commands orchestrate, modules decide.** A command wires modules together; a decision with
   domain meaning lives in the module that owns the concept. *By review.* Exception: the pardon,
   the verify loop and the prior-evidence arithmetic in `main.rs` (#189).

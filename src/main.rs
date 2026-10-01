@@ -9,6 +9,7 @@ mod analyzers;
 mod cli;
 mod gate;
 mod history;
+mod json;
 mod junit;
 mod phpunit_log;
 mod preset;
@@ -117,7 +118,7 @@ fn run(args: &cli::RunArgs) -> ExitCode {
     // The list labels known flakes on any red run; only --fail-on-flaky
     // lets it steer the exit.
     let quarantine = if suite_red {
-        quarantine::load_or_empty(std::path::Path::new(quarantine::FILE_NAME))
+        load_quarantine()
     } else {
         std::collections::BTreeSet::new()
     };
@@ -350,6 +351,20 @@ fn explain_failures(
     Some(analyzers::explain::explain(&failed, passes, quarantine))
 }
 
+/// The quarantine list, degrading to empty: an unreadable file warns and
+/// leaves every failure unrecognized (and, with `--fail-on-flaky`,
+/// unpardoned).
+fn load_quarantine() -> std::collections::BTreeSet<String> {
+    let path = std::path::Path::new(quarantine::FILE_NAME);
+    quarantine::load(path).unwrap_or_else(|err| {
+        report::warn(&format!(
+            "could not read `{}`: {err} — no failure will be recognized as a known flake",
+            path.display()
+        ));
+        std::collections::BTreeSet::new()
+    })
+}
+
 /// The pardon decision itself: all-or-nothing over every run.
 fn quarantine_pardon(
     quarantine: &std::collections::BTreeSet<String>,
@@ -553,7 +568,7 @@ fn explain(args: &cli::ExplainArgs) -> ExitCode {
     };
     let loaded = load_history(std::path::Path::new(history::HISTORY_PATH));
     let analysis = analyzers::history::analyze(&loaded.observations);
-    let quarantine = quarantine::load_or_empty(std::path::Path::new(quarantine::FILE_NAME));
+    let quarantine = load_quarantine();
     // Explain runs nothing, so only the history has anything to contribute.
     let passes = analyzers::explain::Passes {
         history: Some(&analysis),
