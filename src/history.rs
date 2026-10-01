@@ -9,8 +9,8 @@ use std::path::Path;
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use crate::json;
 use crate::junit::TestStatus;
-use crate::report::json_escape;
 
 /// The history file, relative to the directory sooth runs from.
 pub const HISTORY_PATH: &str = ".sooth/history.jsonl";
@@ -260,19 +260,19 @@ fn to_line(observation: &Observation) -> String {
     let commit = observation
         .commit
         .as_deref()
-        .map_or_else(|| "null".to_owned(), |c| format!("\"{}\"", json_escape(c)));
+        .map_or_else(|| "null".to_owned(), |c| format!("\"{}\"", json::escape(c)));
     let dirty = observation
         .dirty
         .map_or_else(|| "null".to_owned(), |d| d.to_string());
     let environment = observation
         .environment
         .as_deref()
-        .map_or_else(|| "null".to_owned(), |e| format!("\"{}\"", json_escape(e)));
+        .map_or_else(|| "null".to_owned(), |e| format!("\"{}\"", json::escape(e)));
     format!(
         r#"{{"at":{},"commit":{commit},"dirty":{dirty},"env":{environment},"status":"{}","id":"{}"}}"#,
         observation.at_epoch_secs,
         status_str(observation.status),
-        json_escape(&observation.id)
+        json::escape(&observation.id)
     )
 }
 

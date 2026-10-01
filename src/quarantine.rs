@@ -9,22 +9,18 @@ use std::path::Path;
 /// the gitignored `.sooth/` history.
 pub const FILE_NAME: &str = ".sooth-quarantine";
 
-/// The quarantined ids, degrading to an empty set: a missing file is the
-/// normal day-one state; an unreadable one warns and leaves every failure
-/// unrecognized (and, with `--fail-on-flaky`, unpardoned).
-#[expect(clippy::print_stderr)]
-pub fn load_or_empty(path: &Path) -> BTreeSet<String> {
+/// The quarantined ids. A missing file is the normal day-one state and reads
+/// as empty.
+///
+/// # Errors
+///
+/// Any other failure to read the file; what that means for the run is the
+/// caller's to decide.
+pub fn load(path: &Path) -> io::Result<BTreeSet<String>> {
     match std::fs::read_to_string(path) {
-        Ok(content) => parse(&content),
-        Err(err) if err.kind() == io::ErrorKind::NotFound => BTreeSet::new(),
-        Err(err) => {
-            eprintln!(
-                "sooth: could not read `{}`: {err} — no failure will be recognized as a \
-                 known flake",
-                path.display()
-            );
-            BTreeSet::new()
-        }
+        Ok(content) => Ok(parse(&content)),
+        Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(BTreeSet::new()),
+        Err(err) => Err(err),
     }
 }
 
@@ -43,7 +39,7 @@ fn parse(content: &str) -> BTreeSet<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{load_or_empty, parse};
+    use super::{load, parse};
     use std::path::Path;
 
     #[test]
@@ -64,6 +60,14 @@ mod tests {
 
     #[test]
     fn a_missing_file_is_an_empty_quarantine() {
-        assert!(load_or_empty(Path::new("/nonexistent/sooth-quarantine")).is_empty());
+        assert!(load(Path::new("/nonexistent/sooth-quarantine"))
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn an_unreadable_file_is_an_error_not_an_empty_quarantine() {
+        // A directory exists but cannot be read as a list.
+        assert!(load(&std::env::temp_dir()).is_err());
     }
 }

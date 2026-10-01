@@ -417,6 +417,41 @@ fn verify_with_an_unselectable_preset_is_rejected_up_front_with_exit_two() {
 }
 
 #[test]
+fn an_unreadable_quarantine_warns_and_pardons_nothing() {
+    let (cwd, mut command) = sooth_in("quarantine-unreadable");
+    // A directory where the list should be: present, but not readable as a file.
+    std::fs::create_dir(cwd.join(".sooth-quarantine")).expect("quarantine dir should create");
+    let (report, write_report) = fresh_report(&cwd);
+    let output = command
+        .args([
+            "run",
+            "--junit",
+            &report.display().to_string(),
+            "--fail-on-flaky",
+            "--color",
+            "never",
+            "--",
+            "sh",
+            "-c",
+            &write_report,
+        ])
+        .output()
+        .expect("sooth should run");
+
+    let stderr = String::from_utf8(output.stderr).expect("stderr should be UTF-8");
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "an unreadable list pardons nothing, got: {stderr:?}"
+    );
+    assert!(
+        stderr.contains("sooth: could not read `.sooth-quarantine`")
+            && stderr.contains("no failure will be recognized as a known flake"),
+        "got: {stderr:?}"
+    );
+}
+
+#[test]
 fn a_quarantined_failure_is_pardoned_with_fail_on_flaky() {
     let (cwd, mut command) = sooth_in("quarantine-hit");
     std::fs::write(
