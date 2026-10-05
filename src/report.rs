@@ -2,18 +2,24 @@
 
 #![expect(
     clippy::print_stdout,
+    clippy::print_stderr,
     reason = "The one module that prints (AGENTS.md)."
 )]
 
-use std::fmt::Write as _;
 use std::time::Duration;
 
 use crate::analyzers::{explain, flaky, history};
 use crate::cli::ColorChoice;
 use crate::gate;
+use crate::json;
 use crate::junit;
 use crate::runner::RunOutcome;
 use crate::verify;
+
+/// A warning on stderr: sooth carries on and the exit code is unchanged.
+pub fn warn(message: &str) {
+    eprintln!("sooth: {message}");
+}
 
 /// Version of the `--json` shape. Fields are only added within a version;
 /// this number is bumped when the shape changes incompatibly.
@@ -660,7 +666,7 @@ pub fn to_json(outcomes: &[RunOutcome], summary: &JunitSummary, analyses: &Analy
         .slowest
         .iter()
         .map(|(name, duration)| {
-            let name = json_escape(name);
+            let name = json::escape(name);
             format!(
                 r#"{{"name":"{name}","duration_seconds":{}}}"#,
                 duration.as_secs_f64()
@@ -678,7 +684,7 @@ pub fn to_json(outcomes: &[RunOutcome], summary: &JunitSummary, analyses: &Analy
             .map(|flip| {
                 format!(
                     r#"{{"name":"{}","flipped_after_run":{},"started_green":{}}}"#,
-                    json_escape(&flip.outcomes.id),
+                    json::escape(&flip.outcomes.id),
                     flip.flipped_after_run,
                     flip.started_green
                 )
@@ -690,7 +696,7 @@ pub fn to_json(outcomes: &[RunOutcome], summary: &JunitSummary, analyses: &Analy
             .map(|test| {
                 format!(
                     r#"{{"name":"{}","absent_runs":{}}}"#,
-                    json_escape(&test.id),
+                    json::escape(&test.id),
                     test.absent_runs
                 )
             })
@@ -722,7 +728,7 @@ pub fn to_json(outcomes: &[RunOutcome], summary: &JunitSummary, analyses: &Analy
     let gate = gate.map_or(String::new(), |selection| {
         format!(
             r#","gate":{{"base":"{}","files":[{}]}}"#,
-            json_escape(&selection.base),
+            json::escape(&selection.base),
             json_ids(&selection.files)
         )
     });
@@ -749,7 +755,7 @@ pub fn explanation_json(
     format!(
         r#"{{"schema_version":{JSON_SCHEMA_VERSION},"sooth_version":"{}","report":"{}","explanation":{}}}"#,
         env!("CARGO_PKG_VERSION"),
-        json_escape(&report_path.display().to_string()),
+        json::escape(&report_path.display().to_string()),
         explanation_object(explanations)
     )
 }
@@ -760,7 +766,7 @@ fn explanation_object(explanations: &[explain::Explanation]) -> String {
     let entries: Vec<String> = explanations
         .iter()
         .map(|explanation| {
-            let name = json_escape(&explanation.id);
+            let name = json::escape(&explanation.id);
             let quarantined = explanation.quarantined;
             match &explanation.verdict {
                 explain::Verdict::KnownFlake {
@@ -777,7 +783,7 @@ fn explanation_object(explanations: &[explain::Explanation]) -> String {
                     failed_runs,
                 } => format!(
                     r#"{{"name":"{name}","verdict":"failing_since","quarantined":{quarantined},"commit":"{}","failed_runs":{failed_runs}}}"#,
-                    json_escape(commit)
+                    json::escape(commit)
                 ),
                 explain::Verdict::Unknown => {
                     let verdict = if quarantined { "quarantined" } else { "new" };
@@ -809,9 +815,9 @@ fn verification_object(verdict: &verify::Verdict) -> String {
         .map(|failure| {
             format!(
                 r#"{{"name":"{}","suite":"{}","isolation":"{}"}}"#,
-                json_escape(&failure.id),
-                json_escape(&failure.suite),
-                json_escape(&failure.isolation)
+                json::escape(&failure.id),
+                json::escape(&failure.suite),
+                json::escape(&failure.isolation)
             )
         })
         .collect();
@@ -834,11 +840,11 @@ fn history_object(pass: &history::Analysis) -> String {
         .map(|test| {
             let confined = test.failures_confined_to.as_deref().map_or_else(
                 || "null".to_owned(),
-                |environment| format!(r#""{}""#, json_escape(environment)),
+                |environment| format!(r#""{}""#, json::escape(environment)),
             );
             format!(
                 r#"{{"name":"{}","failed_runs":{},"observed_runs":{},"failures_confined_to":{confined}}}"#,
-                json_escape(&test.outcomes.id),
+                json::escape(&test.outcomes.id),
                 test.outcomes.failed,
                 test.outcomes.observed()
             )
@@ -850,8 +856,8 @@ fn history_object(pass: &history::Analysis) -> String {
         .map(|test| {
             format!(
                 r#"{{"name":"{}","commit":"{}","failed_runs":{}}}"#,
-                json_escape(&test.id),
-                json_escape(&test.commit),
+                json::escape(&test.id),
+                json::escape(&test.commit),
                 test.failed_runs
             )
         })
@@ -871,7 +877,7 @@ fn outcome_entries(tests: &[flaky::TestOutcomes]) -> String {
         .map(|test| {
             format!(
                 r#"{{"name":"{}","failed_runs":{},"observed_runs":{}}}"#,
-                json_escape(&test.id),
+                json::escape(&test.id),
                 test.failed,
                 test.observed()
             )
@@ -883,34 +889,14 @@ fn outcome_entries(tests: &[flaky::TestOutcomes]) -> String {
 /// A comma-joined JSON array body of escaped id strings.
 fn json_ids(ids: &[String]) -> String {
     ids.iter()
-        .map(|id| format!(r#""{}""#, json_escape(id)))
+        .map(|id| format!(r#""{}""#, json::escape(id)))
         .collect::<Vec<_>>()
         .join(",")
 }
 
-/// Escape a string for inclusion in a hand-rolled JSON string literal.
-pub(crate) fn json_escape(value: &str) -> String {
-    let mut escaped = String::with_capacity(value.len());
-    for character in value.chars() {
-        match character {
-            '"' => escaped.push_str("\\\""),
-            '\\' => escaped.push_str("\\\\"),
-            '\n' => escaped.push_str("\\n"),
-            '\r' => escaped.push_str("\\r"),
-            '\t' => escaped.push_str("\\t"),
-            control if control.is_control() => {
-                // `escaped` is a plain `String`; `write!` never fails for it.
-                let _ = write!(escaped, "\\u{:04x}", control as u32);
-            }
-            other => escaped.push(other),
-        }
-    }
-    escaped
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{json_escape, to_json, verdict_line, Analyses, JunitSummary, Style};
+    use super::{to_json, verdict_line, Analyses, JunitSummary, Style};
     use crate::analyzers::{explain, flaky};
     use crate::cli::ColorChoice;
     use crate::junit::{JunitReport, TestCase, TestStatus};
@@ -1553,15 +1539,5 @@ mod tests {
         );
         // The empty gate's document: zero runs is a result, not an omission.
         assert!(json.contains(r#""runs":[]"#), "got: {json}");
-    }
-
-    #[test]
-    fn json_escape_handles_quotes_backslashes_and_control_characters() {
-        assert_eq!(
-            json_escape(r#"quote " backslash \ "#),
-            r#"quote \" backslash \\ "#
-        );
-        assert_eq!(json_escape("tab\tnewline\n"), "tab\\tnewline\\n");
-        assert_eq!(json_escape("bell\u{7}"), "bell\\u0007");
     }
 }
