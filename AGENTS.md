@@ -45,22 +45,25 @@ One task per module. Do not add empty placeholder modules ahead of the code that
 ## Architecture invariants
 
 What keeps the layers apart is mostly what a module does *not* do. *Enforced* means `make check`
-fails when it breaks (`[lints.clippy]` in `Cargo.toml`, `clippy.toml`); an exception is an
-`#[expect]` — which fails the build once the exception is gone — and every exception below has
-an issue that removes it.
+fails when it breaks (`[lints.clippy]` in `Cargo.toml`, `clippy.toml`, `tests/architecture.rs`);
+an exception is an `#[expect]` or an entry in the test's `EXCEPTIONS` — either fails the build
+once the exception is gone — and every exception below has an issue that removes it.
 
 - **Only `report.rs` prints.** No other module writes to stdout or stderr. *Enforced.*
   Exception: `main.rs` until the commands move out (#191, #192).
 - **Only `runner.rs`, `preset.rs` and `history.rs` spawn processes** — the test command, the
   PHPUnit version probe, and git. *Enforced.*
 - **`analyzers/` does no I/O:** no files, no processes, no git, no printing. It classifies values
-  it is handed. *By review* for files; the rest is enforced.
-- **Domain modules do not depend on `report.rs` or `main.rs`.** *By review.*
+  it is handed. *Enforced*, except file access through `Path` methods (`exists`, `metadata`),
+  which is *by review*.
+- **Domain modules do not depend on `report.rs` or `main.rs`.** *Enforced.*
 - **`junit.rs` depends on no other sooth module**, so the parser can be tested and fuzzed alone.
-  *By review.*
+  *Enforced.*
+- **`cli.rs` depends on no other sooth module**; every layer may name its types (`Preset`,
+  `ColorChoice`). *Enforced.*
 - **Dependencies point one way and never form a cycle:** `main` → `analyzers/` → domain modules
   (the analyzers read domain types; no domain module reads an analyzer), with `report.rs` reading
-  both and read by `main` alone. *By review.*
+  both and read by `main` alone. *Enforced.*
 - **Commands orchestrate, modules decide.** A command wires modules together; a decision with
   domain meaning lives in the module that owns the concept. *By review.* Exception: the pardon,
   the verify loop and the prior-evidence arithmetic in `main.rs` (#189).

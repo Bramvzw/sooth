@@ -869,7 +869,7 @@ The third case the issue names — failed alone with the *same* signature
 while the suite's normal order was green — is order-dependence and belongs
 to #111 (v0.3), not to verification.
 
-## Layering invariants are clippy lints, not a tidy test
+## Layering invariants are clippy lints where clippy can check them
 
 The invariants in `AGENTS.md` are phrased as absences — only `report.rs`
 prints, only three modules spawn processes — because an absence cannot be
@@ -884,6 +884,14 @@ An exception is an `#[expect]` on the narrowest item that needs it, and
 `#[allow]` is denied (`clippy::allow_attributes`): an expectation that no
 longer fires fails the build, so an exception cannot outlive the code that
 needed it. `#[expect]` needs Rust 1.81; the MSRV is past that (see below).
+
+Which module may depend on which has no clippy lint, so that part is a
+test after all: `tests/architecture.rs` reads the `crate::` and `super::`
+paths in each file's non-test source and checks them against the layers.
+Outside the crate root a module can name a sibling no other way, which is
+what makes a text scan sound here where it was not for calls. An import has
+no item to hang an `#[expect]` on, so the exceptions are a list in the test,
+which fails once one is no longer needed, as an `#[expect]` would.
 
 ## The MSRV is what the dependencies require
 
