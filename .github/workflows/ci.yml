@@ -31,7 +31,7 @@ jobs:
         run: rustup toolchain install
 
       - name: Cache cargo registry and build artifacts
-        uses: Swatinem/rust-cache@258712b0b7b1ddf8bddc9fc3b0faca682b2736c3 # v2
+        uses: Swatinem/rust-cache@c8037a86dde8214a8310e9f54a8fc61ab362aa31 # v2
 
       - name: Check formatting
         run: cargo fmt --check
@@ -53,6 +53,6 @@ jobs:
       # The action exports RUSTUP_TOOLCHAIN=1.85.0, which overrides the
       # rust-toolchain.toml pin — exactly what this job needs.
       - uses: dtolnay/rust-toolchain@3230091d7ef9483f601620abacc570c22cf44d22 # 1.85.0
-      - uses: Swatinem/rust-cache@258712b0b7b1ddf8bddc9fc3b0faca682b2736c3 # v2
+      - uses: Swatinem/rust-cache@c8037a86dde8214a8310e9f54a8fc61ab362aa31 # v2
       - name: Verify the crate builds on its declared minimum Rust version
         run: cargo check --all-targets
