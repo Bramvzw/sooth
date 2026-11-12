@@ -231,6 +231,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A run no longer cites itself as earlier evidence. The history now
+  records which invocation made each observation (`"run"` in
+  `history.jsonl`), and proves flaky only from a pass in one invocation and
+  a failure in another, and "failing since" only from a streak across two
+  invocations. A first `sooth run --runs 3` that goes fail, pass, fail no
+  longer reads `known flake (2 of 3 in history)` next to "no observations
+  from earlier runs yet". Rates still count every run.
 - `sooth import --help` and the README no longer claim that `--log phpunit`
   reads `php artisan test` output. Laravel prints that through Collision, a
   different format that the parser refuses.

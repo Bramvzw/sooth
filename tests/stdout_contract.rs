@@ -1030,6 +1030,50 @@ fn a_red_run_labels_its_failures_against_the_accumulated_history() {
 }
 
 #[test]
+fn a_first_run_never_cites_its_own_runs_as_known() {
+    let Some(dir) = scratch_repo("own-evidence") else {
+        return;
+    };
+    let report = dir.outside("report.xml");
+    let count = dir.outside("count");
+    // Three runs in one invocation on one clean commit: fail, pass, fail.
+    let script = format!(
+        "n=$(cat '{count}' 2>/dev/null || echo 0); n=$((n+1)); echo $n > '{count}'; \
+         if [ $n -eq 2 ]; then printf '<testsuite><testcase classname=\"c\" name=\"wob\"/></testsuite>' > '{report}'; \
+         else printf '<testsuite><testcase classname=\"c\" name=\"wob\"><failure/></testcase></testsuite>' > '{report}'; exit 1; fi",
+        count = count.display(),
+        report = report.display()
+    );
+    let output = Command::new(env!("CARGO_BIN_EXE_sooth"))
+        .current_dir(&dir)
+        .args([
+            "run",
+            "--runs",
+            "3",
+            "--junit",
+            &report.display().to_string(),
+            "--color",
+            "never",
+            "--",
+            "sh",
+            "-c",
+            &script,
+        ])
+        .output()
+        .expect("sooth should run");
+    let stdout = String::from_utf8(output.stdout).expect("stdout should be UTF-8");
+
+    assert!(
+        !stdout.contains("known flake"),
+        "a first run cited its own observations as earlier evidence: {stdout:?}"
+    );
+    assert!(
+        stdout.contains("c::wob") && stdout.contains("new (nothing in history)"),
+        "the failure must read as new before any earlier run: {stdout:?}"
+    );
+}
+
+#[test]
 fn the_very_first_run_says_its_failures_read_as_new_for_lack_of_history() {
     let Some(dir) = scratch_repo("explain-first") else {
         return;

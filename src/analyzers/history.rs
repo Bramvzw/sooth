@@ -49,6 +49,30 @@ impl Analysis {
     }
 }
 
+/// Which invocation an observation belongs to. A line without one stands
+/// alone, so legacy histories keep the per-line evidence they always had.
+#[derive(PartialEq, Eq, PartialOrd, Ord)]
+enum Invocation<'a> {
+    Run(&'a str),
+    Line(usize),
+}
+
+/// The invocations that saw a test pass and fail on one clean commit.
+#[derive(Default)]
+struct Outcomes<'a> {
+    passed_in: BTreeSet<Invocation<'a>>,
+    failed_in: BTreeSet<Invocation<'a>>,
+}
+
+impl Outcomes<'_> {
+    /// A pass in one invocation and a failure in another.
+    fn prove_flaky(&self) -> bool {
+        !self.passed_in.is_empty()
+            && !self.failed_in.is_empty()
+            && self.passed_in.union(&self.failed_in).nth(1).is_some()
+    }
+}
+
 fn failed(observation: &Observation) -> bool {
     matches!(observation.status, TestStatus::Failed | TestStatus::Error)
 }
@@ -115,22 +139,28 @@ pub fn analyze(observations: &[Observation]) -> Analysis {
             continue;
         }
 
-        // Flaky evidence: one clean commit with both outcomes.
-        let mut per_clean_commit: BTreeMap<&str, (bool, bool)> = BTreeMap::new();
-        for observation in &signal {
+        // Flaky evidence: one clean commit with both outcomes, from at least
+        // two invocations — a pass in one, a failure in another. Mixed
+        // outcomes inside one invocation are the active pass's to judge.
+        let mut per_clean_commit: BTreeMap<&str, Outcomes> = BTreeMap::new();
+        for (line, observation) in signal.iter().enumerate() {
             if observation.dirty != Some(false) {
                 continue;
             }
             if let Some(commit) = &observation.commit {
-                let (pass, fail) = per_clean_commit.entry(commit).or_default();
+                let invocation = observation
+                    .invocation
+                    .as_deref()
+                    .map_or(Invocation::Line(line), Invocation::Run);
+                let outcomes = per_clean_commit.entry(commit).or_default();
                 if failed(observation) {
-                    *fail = true;
+                    outcomes.failed_in.insert(invocation);
                 } else {
-                    *pass = true;
+                    outcomes.passed_in.insert(invocation);
                 }
             }
         }
-        if per_clean_commit.values().any(|(pass, fail)| *pass && *fail) {
+        if per_clean_commit.values().any(Outcomes::prove_flaky) {
             analysis.flaky.push(HistoricFlake {
                 outcomes: TestOutcomes {
                     id: id.to_owned(),
@@ -142,11 +172,20 @@ pub fn analyze(observations: &[Observation]) -> Analysis {
             continue;
         }
 
-        // Regression pointer: a trailing failure streak of at least two,
-        // anchored on the streak's earliest *clean* red — dirty reds still
-        // count in the streak, they just cannot carry the address.
+        // Regression pointer: a trailing failure streak across at least two
+        // invocations, anchored on the streak's earliest *clean* red — dirty
+        // reds still count in the streak, they just cannot carry the address.
         let streak: Vec<&&Observation> = signal.iter().rev().take_while(|o| failed(o)).collect();
-        if streak.len() < 2 {
+        let streak_invocations: BTreeSet<Invocation> = streak
+            .iter()
+            .enumerate()
+            .map(|(line, o)| {
+                o.invocation
+                    .as_deref()
+                    .map_or(Invocation::Line(line), Invocation::Run)
+            })
+            .collect();
+        if streak_invocations.len() < 2 {
             continue;
         }
         let anchor = streak
@@ -188,8 +227,59 @@ mod tests {
             commit: commit.map(str::to_owned),
             dirty,
             environment: None,
+            invocation: None,
             at_epoch_secs: 0,
         }
+    }
+
+    fn in_run(id: &str, status: TestStatus, commit: &str, run: &str) -> Observation {
+        Observation {
+            invocation: Some(run.to_owned()),
+            ..clean(id, status, commit)
+        }
+    }
+
+    #[test]
+    fn mixed_outcomes_inside_one_invocation_prove_nothing_in_the_history() {
+        // One `--runs 3` on one clean commit: fail, pass, fail. The active
+        // pass judges that sequence; the history counts it as one piece of
+        // evidence, so it cannot prove flaky on its own.
+        let history = [
+            in_run("c::t", TestStatus::Failed, "aaa", "r1"),
+            in_run("c::t", TestStatus::Passed, "aaa", "r1"),
+            in_run("c::t", TestStatus::Failed, "aaa", "r1"),
+        ];
+        assert!(analyze(&history).flaky.is_empty());
+    }
+
+    #[test]
+    fn a_failure_streak_inside_one_invocation_is_no_regression_yet() {
+        let history = [
+            in_run("c::t", TestStatus::Passed, "aaa", "r1"),
+            in_run("c::t", TestStatus::Failed, "bbb", "r2"),
+            in_run("c::t", TestStatus::Failed, "bbb", "r2"),
+        ];
+        assert!(analyze(&history).failing_since.is_empty());
+
+        let history = [
+            in_run("c::t", TestStatus::Passed, "aaa", "r1"),
+            in_run("c::t", TestStatus::Failed, "bbb", "r2"),
+            in_run("c::t", TestStatus::Failed, "bbb", "r3"),
+        ];
+        assert_eq!(analyze(&history).failing_since[0].commit, "bbb");
+    }
+
+    #[test]
+    fn a_pass_and_a_failure_in_two_invocations_prove_flaky() {
+        let history = [
+            in_run("c::t", TestStatus::Passed, "aaa", "r1"),
+            in_run("c::t", TestStatus::Passed, "aaa", "r1"),
+            in_run("c::t", TestStatus::Failed, "aaa", "r2"),
+        ];
+        let analysis = analyze(&history);
+        assert_eq!(analysis.flaky.len(), 1);
+        assert_eq!(analysis.flaky[0].outcomes.passed, 2);
+        assert_eq!(analysis.flaky[0].outcomes.failed, 1);
     }
 
     fn clean(id: &str, status: TestStatus, commit: &str) -> Observation {
