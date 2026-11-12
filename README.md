@@ -10,8 +10,9 @@ instant, single binary. No server, no dashboard, no AI, no accounts.
 sooth run --preset pytest -- pytest
 ```
 
-> **v0.2.0 is out** — `cargo install sooth`. Flaky detection has landed: run history, failure
-> re-verification and `--runs N`. Slow-test and order-dependence analysis are next.
+> **v0.3.0 is out** — a prebuilt binary, no Rust needed (see [Install](#install)), and Laravel's
+> `php artisan test` and Pest work under `--preset phpunit`. Flaky detection (run history,
+> failure re-verification, `--runs N`) landed in v0.2. Slow-test and order-dependence analysis are next.
 > See `ROADMAP.md` for the full plan and `DECISIONS.md` for why it's built this way.
 
 ## Usage
@@ -297,7 +298,9 @@ known (see above), but it pardons nothing and steers no exit code.
       prints a summary (total, pass/fail/skip, slowest N) + `--json`. Released.
 - [x] **v0.2** — flaky detection: failure-rate ranking fed by fixed-order repeats *and* a local
       run history that accumulates observations from runs you make anyway (zero extra wall-time). Released.
-- [ ] **v0.3** — refined slow-test analysis + order-dependence *detection* (no culprit bisection).
+- [x] **v0.3** — Laravel: `php artisan test` and Pest under the phpunit preset; prebuilt binaries
+      and `install.sh`, no Rust needed. Released.
+- [ ] **v0.4** — refined slow-test analysis + order-dependence *detection* (no culprit bisection).
 - [ ] **v1.0** — polish, distribution, launch.
 - [ ] **spike** (post-v1, timeboxed) — network-egress detection: flag tests that hit the real
       network instead of a mock.

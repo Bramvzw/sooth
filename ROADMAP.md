@@ -8,7 +8,8 @@ day-to-day breakdown per version.
 |---|---|
 | **v0.1** | Skeleton: `sooth run -- <cmd>` runs the command once, parses the JUnit XML it produced, prints a summary (total, pass/fail/skip, slowest N) + `--json`. Built-in presets for pytest, PHPUnit, Jest, Go. |
 | **v0.2** | **Flaky detection** — a layered model, all feeding one failure-rate ranking: a local run-history file accumulating observations from runs that happen anyway (passive, zero extra wall-time; each observation stamped with its code identity — mixed outcomes on one clean commit prove flaky, green→red at a commit boundary reports "failing since", never flaky); failure re-verification (on a red run, re-run only the failed tests to split them into real vs flaky-or-order-dependent in seconds instead of N× the suite); and fixed-order `--runs N` as the targeted lab instrument. See `DECISIONS.md`. The core value. |
-| **v0.3** | **Slow-test analysis** refined + **order-dependence: detection only** (flag "result differs between orderings", no culprit bisection). |
+| **v0.3** | **Laravel and installing without Rust** — `php artisan test` (Pest or PHPUnit, `--parallel` included) and `vendor/bin/pest` under the phpunit preset; prebuilt binaries for macOS and Linux on every release, with `install.sh`. Released ahead of the analysis work because the first users are Laravel developers (see `DECISIONS.md`). |
+| **v0.4** | **Slow-test analysis** refined + **order-dependence: detection only** (flag "result differs between orderings", no culprit bisection). |
 | **v1.0** | Polish + distribution + launch — on the core, not gated on network egress. Includes the PR-subset flake check (repeat only new/changed tests). |
 | **spike** (post-v1) | **Network egress** detection — a separate, timeboxed R&D effort (see `DECISIONS.md`). Ships as its own release if it succeeds; does not block v1.0. |
 
