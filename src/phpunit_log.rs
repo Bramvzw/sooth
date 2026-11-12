@@ -17,38 +17,126 @@ pub struct ParsedLog {
 /// Parse a `PHPUnit` console log, tolerating ANSI colors, CRLF line ends,
 /// the `job\tstep\t` columns of `gh run view --log`, and per-line
 /// timestamps. A log without a recognizable `PHPUnit` summary is refused,
-/// never guessed at.
+/// never guessed at. Each summary settles the listings before it: a green
+/// one names no failures, so any listing it closes was echoed test output;
+/// a red one must name every failure and error its counts report, or the
+/// log is refused as incomplete.
 pub fn parse_str(content: &str) -> Result<ParsedLog, String> {
     let mut parsed = ParsedLog {
         failures: BTreeMap::new(),
         at: None,
     };
     let mut anchored = false;
-    let mut block: Option<TestStatus> = None;
+    let mut block: Option<Block> = None;
+    let mut pending: BTreeMap<String, TestStatus> = BTreeMap::new();
+    let mut verdict: Option<Verdict> = None;
     for raw in content.lines() {
         let line = clean(raw, &mut parsed.at);
         if let Some(listed) = block_header(&line) {
             block = match listed {
-                Listing::Counted(status) => Some(status),
+                Listing::Counted(status, count) => Some(Block {
+                    status,
+                    next: 1,
+                    count,
+                }),
                 Listing::Ignored => None,
             };
             continue;
         }
-        if is_summary(&line) {
+        if let Some(kind) = verdict_line(&line) {
             anchored = true;
             block = None;
+            if let Some(earlier) = verdict.replace(kind) {
+                settle(earlier, None, &mut pending, &mut parsed.failures)?;
+            }
             continue;
         }
-        if let Some(status) = block {
-            if let Some(id) = numbered_identity(&line) {
-                parsed.failures.insert(id, status);
+        if let Some(counts) = counts_line(&line) {
+            anchored = true;
+            block = None;
+            settle(
+                verdict.take().unwrap_or(Verdict::Red),
+                Some(counts),
+                &mut pending,
+                &mut parsed.failures,
+            )?;
+            continue;
+        }
+        if let Some(open) = block.as_mut() {
+            if let Some((number, id)) = numbered_identity(&line) {
+                if number == open.next && number <= open.count {
+                    open.next += 1;
+                    pending.insert(id, open.status);
+                }
             }
         }
+    }
+    if let Some(last) = verdict {
+        settle(last, None, &mut pending, &mut parsed.failures)?;
     }
     if !anchored {
         return Err("no PHPUnit summary line found — is this a PHPUnit console log?".to_owned());
     }
     Ok(parsed)
+}
+
+/// An open `There were N failures:` listing: entries are numbered from 1.
+struct Block {
+    status: TestStatus,
+    next: u32,
+    count: u32,
+}
+
+#[derive(Clone, Copy)]
+enum Verdict {
+    Green,
+    Red,
+}
+
+/// `Failures: N` and `Errors: N` from a `Tests: …, Assertions: …` line.
+struct Counts {
+    failures: usize,
+    errors: usize,
+}
+
+/// Close the listings a summary ends: keep them under a red verdict when
+/// they are complete, drop them under a green one.
+fn settle(
+    verdict: Verdict,
+    counts: Option<Counts>,
+    pending: &mut BTreeMap<String, TestStatus>,
+    failures: &mut BTreeMap<String, TestStatus>,
+) -> Result<(), String> {
+    let listed = std::mem::take(pending);
+    if matches!(verdict, Verdict::Green) {
+        return Ok(());
+    }
+    let named = |status| listed.values().filter(|s| **s == status).count();
+    match counts {
+        Some(counts) => {
+            let (failed, errored) = (named(TestStatus::Failed), named(TestStatus::Error));
+            if failed < counts.failures || errored < counts.errors {
+                return Err(format!(
+                    "the summary reports {} failure(s) and {} error(s) but the log names {} — is \
+                     it truncated? sooth records only failures it can name",
+                    counts.failures,
+                    counts.errors,
+                    failed + errored
+                ));
+            }
+            if counts.failures + counts.errors == 0 {
+                return Ok(());
+            }
+        }
+        None if listed.is_empty() => {
+            return Err(
+                "the log says it failed but names no failing test — is it truncated?".to_owned(),
+            );
+        }
+        None => {}
+    }
+    failures.extend(listed);
+    Ok(())
 }
 
 /// The message half of a log line: past the `gh` columns, ANSI, and the
@@ -101,51 +189,65 @@ fn leading_timestamp(line: &str) -> Option<(&str, &str)> {
 /// What a listing header opens: entries counted under a status, or entries
 /// that carry no run signal (risky, warnings, deprecations).
 enum Listing {
-    Counted(TestStatus),
+    Counted(TestStatus, u32),
     Ignored,
 }
 
 fn block_header(line: &str) -> Option<Listing> {
-    let listed = line
-        .strip_prefix("There was 1 ")
-        .or_else(|| line.strip_prefix("There were "))?;
-    let listed = listed
-        .trim_start_matches(|ch: char| ch.is_ascii_digit())
-        .trim_start();
+    let (count, listed) = if let Some(rest) = line.strip_prefix("There was 1 ") {
+        (1, rest)
+    } else {
+        let rest = line.strip_prefix("There were ")?;
+        let (count, rest) = rest.split_once(' ')?;
+        (count.parse().ok()?, rest)
+    };
     if !listed.ends_with(':') {
         return None;
     }
     if listed.starts_with("failure") {
-        return Some(Listing::Counted(TestStatus::Failed));
+        return Some(Listing::Counted(TestStatus::Failed, count));
     }
     if listed.starts_with("error") {
-        return Some(Listing::Counted(TestStatus::Error));
+        return Some(Listing::Counted(TestStatus::Error, count));
     }
     Some(Listing::Ignored)
 }
 
-fn is_summary(line: &str) -> bool {
-    line.starts_with("OK (")
-        || line.starts_with("OK, but ")
-        || line == "FAILURES!"
-        || line == "ERRORS!"
-        || line == "WARNINGS!"
-        || (line.starts_with("Tests: ") && line.contains("Assertions: "))
+fn verdict_line(line: &str) -> Option<Verdict> {
+    if line.starts_with("OK (") || line.starts_with("OK, but ") || line == "WARNINGS!" {
+        return Some(Verdict::Green);
+    }
+    (line == "FAILURES!" || line == "ERRORS!").then_some(Verdict::Red)
+}
+
+/// `Tests: 12, Assertions: 30, Errors: 1, Failures: 2.` → the two counts
+/// that name tests; a count the line omits is zero.
+fn counts_line(line: &str) -> Option<Counts> {
+    if !(line.starts_with("Tests: ") && line.contains("Assertions: ")) {
+        return None;
+    }
+    let count = |label: &str| {
+        line.trim_end_matches('.')
+            .split(", ")
+            .find_map(|field| field.strip_prefix(label)?.parse().ok())
+            .unwrap_or(0)
+    };
+    Some(Counts {
+        failures: count("Failures: "),
+        errors: count("Errors: "),
+    })
 }
 
 /// `1) Fully\Qualified\ClassTest::method[ with data set "x"]` → the `JUnit`
 /// identity. Only the class half is dotted; the name half stays verbatim.
-fn numbered_identity(line: &str) -> Option<String> {
-    let digits = line.bytes().take_while(u8::is_ascii_digit).count();
-    if digits == 0 {
-        return None;
-    }
-    let entry = line.get(digits..)?.strip_prefix(") ")?;
+fn numbered_identity(line: &str) -> Option<(u32, String)> {
+    let (number, entry) = line.split_once(") ")?;
+    let number = number.parse().ok()?;
     let (class, name) = entry.split_once("::")?;
     if class.is_empty() || class.contains(' ') {
         return None;
     }
-    Some(format!("{}::{name}", class.replace('\\', ".")))
+    Some((number, format!("{}::{name}", class.replace('\\', "."))))
 }
 
 #[cfg(test)]
@@ -229,6 +331,61 @@ mod tests {
     fn without_a_phpunit_summary_the_file_is_refused() {
         let err = parse_str("collected 3 items\n3 passed in 0.12s\n").unwrap_err();
         assert!(err.contains("PHPUnit"), "got: {err}");
+    }
+
+    #[test]
+    fn a_green_summary_discards_an_echoed_failure_listing() {
+        let log = "There was 1 failure:\n\n\
+                   1) App\\Domain\\OrderTest::test_totals_are_summed\n\
+                   ...\n\
+                   OK (12 tests, 30 assertions)\n";
+        let parsed = parse_str(log).expect("a green log parses");
+        assert!(parsed.failures.is_empty(), "got: {:?}", parsed.failures);
+    }
+
+    #[test]
+    fn a_red_summary_without_its_failure_listing_is_refused() {
+        let log = "FAILURES!\nTests: 12, Assertions: 30, Failures: 1.\n";
+        let err = parse_str(log).unwrap_err();
+        assert!(err.contains("names 0"), "got: {err}");
+    }
+
+    #[test]
+    fn a_red_verdict_without_counts_or_identities_is_refused() {
+        let err = parse_str("..F.\nFAILURES!\n").unwrap_err();
+        assert!(err.contains("names no failing test"), "got: {err}");
+    }
+
+    #[test]
+    fn fewer_identities_than_the_summary_counts_are_refused() {
+        let log = "There were 2 failures:\n\n\
+                   1) C\\DTest::test_a\nnope\n\n\
+                   FAILURES!\nTests: 9, Assertions: 9, Failures: 2.\n";
+        let err = parse_str(log).unwrap_err();
+        assert!(err.contains("2 failure(s)"), "got: {err}");
+    }
+
+    #[test]
+    fn an_identity_out_of_sequence_is_echoed_output_not_a_failure() {
+        let log = "There was 1 failure:\n\n\
+                   1) C\\DTest::test_cli\n\
+                   Expected output:\n\
+                   1) Other\\EchoedTest::test_y\n\n\
+                   FAILURES!\nTests: 3, Assertions: 3, Failures: 1.\n";
+        let parsed = parse_str(log).expect("parses");
+        assert_eq!(
+            parsed.failures.keys().collect::<Vec<_>>(),
+            ["C.DTest::test_cli"]
+        );
+    }
+
+    #[test]
+    fn errors_and_failures_are_checked_against_their_own_counts() {
+        let log = "There was 1 error:\n\n1) C\\DTest::test_a\nboom\n\n--\n\n\
+                   There was 1 failure:\n\n1) C\\DTest::test_b\nnope\n\n\
+                   ERRORS!\nTests: 4, Assertions: 4, Errors: 1, Failures: 1.\n";
+        let parsed = parse_str(log).expect("parses");
+        assert_eq!(parsed.failures.len(), 2);
     }
 
     #[test]
