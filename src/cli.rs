@@ -59,7 +59,9 @@ pub struct ImportArgs {
 /// Console-log formats `import --log` can read.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum LogFormat {
-    /// `PHPUnit` console output, as `php artisan test` prints it too.
+    /// `PHPUnit`'s own console output (`vendor/bin/phpunit`, paratest). Not
+    /// `php artisan test`: Laravel prints its results through Collision, in a
+    /// different format.
     Phpunit,
 }
 
