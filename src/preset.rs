@@ -190,19 +190,34 @@ pub fn selected_paths(preset: Preset, files: &[String]) -> Vec<String> {
     }
 }
 
-/// `PHPUnit`'s major version, probed from `program --version`. `None` when
-/// the probe fails or the banner is not `PHPUnit`'s — the caller decides
-/// how loud to be about not knowing.
+/// `PHPUnit`'s major version, probed from `program --version`. Pest prints
+/// its own banner, so for a program named `pest` the `phpunit` next to it —
+/// the one Pest runs on — is asked instead. `None` when the probe fails or
+/// no `PHPUnit` banner comes back — the caller decides how loud to be about
+/// not knowing.
+pub fn phpunit_major(program: &str) -> Option<u32> {
+    probe_phpunit_major(Path::new(program)).or_else(|| {
+        let phpunit = pest_sibling(Path::new(program))?;
+        probe_phpunit_major(&phpunit)
+    })
+}
+
 #[expect(
     clippy::disallowed_methods,
     reason = "The PHPUnit version probe runs the runner itself."
 )]
-pub fn phpunit_major(program: &str) -> Option<u32> {
+fn probe_phpunit_major(program: &Path) -> Option<u32> {
     let output = std::process::Command::new(program)
         .arg("--version")
         .output()
         .ok()?;
     parse_phpunit_major(&String::from_utf8_lossy(&output.stdout))
+}
+
+/// `vendor/bin/pest` → `vendor/bin/phpunit`: Composer installs the `PHPUnit`
+/// Pest depends on into the same bin directory.
+fn pest_sibling(program: &Path) -> Option<PathBuf> {
+    (program.file_name()? == "pest").then(|| program.with_file_name("phpunit"))
 }
 
 /// The major out of a `PHPUnit 9.6.11 by Sebastian Bergmann …` banner.
@@ -483,6 +498,21 @@ mod tests {
         // A foreign banner is not knowing, never a guess.
         assert_eq!(parse_phpunit_major("Pest 2.34.1\n"), None);
         assert_eq!(parse_phpunit_major(""), None);
+    }
+
+    #[test]
+    fn pest_is_asked_about_through_the_phpunit_next_to_it() {
+        use super::pest_sibling;
+        assert_eq!(
+            pest_sibling(Path::new("vendor/bin/pest")),
+            Some(Path::new("vendor/bin/phpunit").to_path_buf())
+        );
+        assert_eq!(
+            pest_sibling(Path::new("pest")),
+            Some(Path::new("phpunit").to_path_buf())
+        );
+        assert_eq!(pest_sibling(Path::new("vendor/bin/phpunit")), None);
+        assert_eq!(pest_sibling(Path::new("vendor/bin/pest-like")), None);
     }
 
     #[test]

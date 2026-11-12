@@ -2232,6 +2232,59 @@ fn an_unreadable_phpunit_version_warns_but_does_not_block_the_gate() {
 }
 
 #[test]
+fn a_pest_gate_reads_the_phpunit_version_pest_runs_on() {
+    use std::os::unix::fs::PermissionsExt;
+    let Some(dir) = scratch_repo("gate-pest") else {
+        return;
+    };
+    // Pest prints its own banner; the PHPUnit it runs on is its sibling.
+    let bin = dir.join("vendor/bin");
+    std::fs::create_dir_all(&bin).expect("mkdir");
+    let fixture = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/gate_runner.sh");
+    std::fs::copy(fixture, bin.join("pest")).expect("copy runner");
+    std::fs::write(
+        bin.join("phpunit"),
+        "#!/bin/sh\necho 'PHPUnit 12.5.33 by Sebastian Bergmann and contributors.'\n",
+    )
+    .expect("write phpunit");
+    for name in ["pest", "phpunit"] {
+        std::fs::set_permissions(bin.join(name), std::fs::Permissions::from_mode(0o755))
+            .expect("chmod");
+    }
+    std::fs::write(dir.join("ATest.php"), "<?php\n").expect("write");
+    std::fs::write(dir.join("BTest.php"), "<?php\n").expect("write");
+    let output = Command::new(env!("CARGO_BIN_EXE_sooth"))
+        .current_dir(&dir)
+        .env(
+            "SOOTH_TEST_PHPUNIT_VERSION",
+            "\n  Pest Testing Framework 4.7.8.\n",
+        )
+        .args([
+            "run",
+            "--changed=HEAD",
+            "--runs",
+            "2",
+            "--no-history",
+            "--preset",
+            "phpunit",
+            "--color",
+            "never",
+            "--",
+            "vendor/bin/pest",
+        ])
+        .output()
+        .expect("sooth should run");
+    let stderr = String::from_utf8(output.stderr).expect("stderr should be UTF-8");
+
+    assert_eq!(output.status.code(), Some(0), "got: {stderr:?}");
+    assert!(
+        !stderr.contains("could not read a PHPUnit version"),
+        "Pest's PHPUnit is next to it, so there was nothing to warn about: {stderr:?}"
+    );
+    assert!(dir.join("ran-tests").exists(), "the gate must have run");
+}
+
+#[test]
 fn a_single_file_gate_on_old_phpunit_proceeds_without_a_word() {
     let Some(dir) = scratch_repo("gate-old-single") else {
         return;

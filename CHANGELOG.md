@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Pest works under `--preset phpunit -- vendor/bin/pest`: runs, `--runs`,
+  `--verify` and the gate, checked against Pest 4. The gate no longer warns
+  that it cannot read a PHPUnit version: for a program named `pest` it asks
+  the `phpunit` next to it, the one Pest runs on.
 - Prebuilt binaries for macOS and Linux, x86_64 and arm64, attached to
   every GitHub release, and an `install.sh` that downloads the right one,
   checks its SHA-256 and installs it to `~/.local/bin`. Installing sooth no
