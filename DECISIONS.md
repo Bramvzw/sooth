@@ -374,8 +374,10 @@ is strict about proof:
   regression pointer, never a flaky label.
 - Observations on dirty or unknown code count in the totals but are never
   evidence: the code they ran on is unknowable afterwards. One new red
-  observation concludes nothing; the verdict converges over subsequent runs
-  (or instantly via active `--runs N`).
+  observation concludes nothing; the history's verdict converges over
+  subsequent invocations. `--runs N` answers instantly, but through the
+  active pass, not the history (see "One invocation is one piece of
+  evidence").
 
 Git stays optional — no git, no repo, no problem: identity degrades to
 unknown and sooth simply makes no identity-bound claims. No new dependency,
@@ -907,3 +909,38 @@ would mean pinning `clap` below 4.6 and fencing it off from Dependabot —
 standing maintenance, and missed fixes, for users on a toolchain older than
 February 2025. A dependency update that raises the floor raises the MSRV in
 the same PR.
+
+## One invocation is one piece of evidence
+
+The N runs of one `sooth run --runs N` were stored as N observations with
+one commit, one `dirty` flag and one `at`, and the history pass had no idea
+they belonged together. Two things went wrong (#161):
+
+- A first-ever `--runs 3` that went fail, pass, fail read `known flake (2 of
+  3 in history)` next to `no observations from earlier runs yet`. The
+  history was answering "did sooth know this already" with the run it was
+  explaining.
+- For a monotone sequence the active pass refuses to call flaky (see "The
+  flaky pass reads the shape of the sequence"), the history pass said
+  *proven flaky* in the same report, from the same runs, and kept saying it.
+
+So every observation carries the invocation that made it (`"run"` in
+`history.jsonl`: one `sooth run`, or one imported file), and the history's
+claims need more than one invocation:
+
+- **Flaky** needs a pass in one invocation and a failure in another, on the
+  same clean commit. Mixed outcomes inside one invocation are the active
+  pass's to judge, with the shape rules it already has.
+- **Failing since** needs its trailing red streak to span at least two
+  invocations.
+- **Counts stay per run.** `failed 4 of 9 observed runs` keeps every run:
+  the rate is a measurement, and only the proof needs independent
+  invocations.
+
+Lines written before the field existed have no invocation and each stands
+alone, so an existing history keeps the evidence it had.
+
+Collapsing the N runs into one stored observation was rejected: it throws
+away the per-run counts, and which status would the collapsed observation
+carry for fail, pass, fail? Keeping the runs and asking the proof to span
+invocations loses nothing.

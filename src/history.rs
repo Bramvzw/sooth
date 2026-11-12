@@ -45,7 +45,23 @@ pub struct Observation {
     /// recorded this, which stay usable — they just cannot support a claim
     /// about one environment.
     pub environment: Option<String>,
+    /// The sooth invocation that made this observation: one `sooth run`
+    /// (all of its `--runs`) or one imported file. The history counts an
+    /// invocation as one piece of evidence (see `DECISIONS.md`). `None` for
+    /// lines written before sooth recorded it; each such line stands alone.
+    pub invocation: Option<String>,
     pub at_epoch_secs: u64,
+}
+
+/// The invocation id of this `sooth run`: unique per process and second.
+pub fn run_invocation(at_epoch_secs: u64) -> String {
+    format!("run-{at_epoch_secs}-{}", std::process::id())
+}
+
+/// The invocation id of an imported file: the same file always gets the
+/// same id, and the ledger keeps it from being imported twice anyway.
+pub fn import_invocation(content_hash: u64) -> String {
+    format!("import-{content_hash:016x}")
 }
 
 /// Where this run is happening. `CI` is set by GitHub Actions, GitLab,
@@ -282,8 +298,12 @@ fn to_line(observation: &Observation) -> String {
         .environment
         .as_deref()
         .map_or_else(|| "null".to_owned(), |e| format!("\"{}\"", json::escape(e)));
+    let invocation = observation
+        .invocation
+        .as_deref()
+        .map_or_else(|| "null".to_owned(), |r| format!("\"{}\"", json::escape(r)));
     format!(
-        r#"{{"at":{},"commit":{commit},"dirty":{dirty},"env":{environment},"status":"{}","id":"{}"}}"#,
+        r#"{{"at":{},"commit":{commit},"dirty":{dirty},"env":{environment},"run":{invocation},"status":"{}","id":"{}"}}"#,
         observation.at_epoch_secs,
         status_str(observation.status),
         json::escape(&observation.id)
@@ -403,12 +423,15 @@ fn parse_line(line: &str) -> Option<Observation> {
     // Absent, not null: lines written before environments were recorded are
     // ordinary observations of an unknown environment, never corrupt ones.
     let environment = extract_string_or_null(line, "env").flatten();
+    // Absent for the same reason: older lines each stand alone.
+    let invocation = extract_string_or_null(line, "run").flatten();
     Some(Observation {
         id,
         status,
         commit,
         dirty,
         environment,
+        invocation,
         at_epoch_secs,
     })
 }
@@ -505,6 +528,7 @@ mod tests {
             commit: Some("abc123".to_owned()),
             dirty: Some(false),
             environment: Some("local".to_owned()),
+            invocation: Some("run-1700000000-1".to_owned()),
             at_epoch_secs: 1_700_000_000,
         }
     }
@@ -646,6 +670,7 @@ mod tests {
         assert_eq!(loaded.skipped_lines, 0, "a legacy line read as corrupt");
         assert_eq!(loaded.observations.len(), 1);
         assert_eq!(loaded.observations[0].environment, None);
+        assert_eq!(loaded.observations[0].invocation, None);
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 
