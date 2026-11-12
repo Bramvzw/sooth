@@ -321,6 +321,16 @@ repo that you own and move yourself. See `SECURITY.md`.
 
 ## Install
 
+A prebuilt binary for macOS and Linux (x86_64 and arm64), no Rust needed:
+
+```
+curl -fsSL https://raw.githubusercontent.com/Bramvzw/sooth/main/install.sh | sh
+```
+
+It installs to `~/.local/bin` (`SOOTH_INSTALL_DIR` changes that, `SOOTH_VERSION=v0.2.0` pins a
+release) and checks the archive's SHA-256 before installing. The archives are also attached to
+every [GitHub release](https://github.com/Bramvzw/sooth/releases). With a Rust toolchain:
+
 ```
 cargo install sooth
 ```

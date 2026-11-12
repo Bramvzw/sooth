@@ -1,0 +1,102 @@
+name: Binaries
+
+# Prebuilt binaries for people without a Rust toolchain (see DECISIONS.md,
+# "Prebuilt binaries ship with every release"). Three ways in:
+# - a pull request that touches the build only builds, so a broken target
+#   shows up before a release depends on it;
+# - the release workflow calls it with the tag, after the approved publish,
+#   and every archive is attached to that tag's GitHub release;
+# - workflow_dispatch with a tag backfills the binaries of an existing release.
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/binaries.yml
+      - Cargo.toml
+      - Cargo.lock
+      - rust-toolchain.toml
+      - install.sh
+  workflow_call:
+    inputs:
+      tag:
+        description: The release tag to attach the binaries to.
+        required: true
+        type: string
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: The existing release tag to attach the binaries to (e.g. v0.2.0).
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # musl: one static binary that runs on any Linux, CI containers included.
+          - target: x86_64-unknown-linux-musl
+            runner: ubuntu-24.04
+          - target: aarch64-unknown-linux-musl
+            runner: ubuntu-24.04-arm
+          - target: aarch64-apple-darwin
+            runner: macos-15
+          - target: x86_64-apple-darwin
+            runner: macos-15
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: write # attach the archive to the release
+    env:
+      TAG: ${{ inputs.tag }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ inputs.tag || github.sha }}
+
+      - name: Install musl tools
+        if: contains(matrix.target, 'linux-musl')
+        run: sudo apt-get update -q && sudo apt-get install -yq musl-tools
+
+      # A bare `rustup` reads rust-toolchain.toml, so the binary is built with
+      # the same pinned compiler CI tests with.
+      - name: Install Rust toolchain and target (pinned by rust-toolchain.toml)
+        run: |
+          rustup toolchain install
+          rustup target add ${{ matrix.target }}
+
+      - name: Build
+        run: cargo build --release --locked --target ${{ matrix.target }}
+
+      - name: Smoke test
+        # The x86_64 macOS binary runs under Rosetta on the arm64 runner.
+        run: target/${{ matrix.target }}/release/sooth --version
+
+      - name: Package
+        id: package
+        run: |
+          version="${TAG:-dev}"
+          name="sooth-${version#v}-${{ matrix.target }}"
+          mkdir "$name"
+          cp target/${{ matrix.target }}/release/sooth README.md LICENSE-MIT LICENSE-APACHE "$name/"
+          tar -czf "$name.tar.gz" "$name"
+          shasum -a 256 "$name.tar.gz" > "$name.tar.gz.sha256"
+          echo "archive=$name.tar.gz" >> "$GITHUB_OUTPUT"
+
+      - name: Attach to the release
+        if: inputs.tag != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ARCHIVE: ${{ steps.package.outputs.archive }}
+        # bin/release.sh creates the GitHub release right after pushing the
+        # tag, so it normally exists; wait for it rather than create a second.
+        run: |
+          for _ in $(seq 1 30); do
+            gh release view "$TAG" >/dev/null 2>&1 && break
+            sleep 10
+          done
+          gh release upload "$TAG" "$ARCHIVE" "$ARCHIVE.sha256" --clobber

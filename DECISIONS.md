@@ -944,3 +944,33 @@ Collapsing the N runs into one stored observation was rejected: it throws
 away the per-run counts, and which status would the collapsed observation
 carry for fail, pass, fail? Keeping the runs and asking the proof to span
 invocations loses nothing.
+
+## Prebuilt binaries ship with every release, ahead of v1.0
+
+The roadmap put distribution at the v1.0 launch. It came forward because the
+first users sooth is built for are PHP and Laravel developers, and most of
+them have no Rust toolchain: `cargo install sooth` is a dead end for exactly
+the people the beachhead names. A tool nobody can install gets no feedback,
+and the feedback is what v0.3 and v1.0 need.
+
+Every release now carries static binaries for macOS and Linux, x86_64 and
+arm64 (`.github/workflows/binaries.yml`), and `install.sh` downloads the one
+for the machine, checks its SHA-256 against the published checksum, and
+installs it. What shaped it:
+
+- **Hand-written, not `cargo-dist`.** cargo-dist generates a large workflow
+  of actions pinned by tag, owns the GitHub release, and wants to be
+  regenerated on upgrade. Here every action is pinned to a SHA, and
+  `bin/release.sh` already creates the release with its notes. Four targets
+  in one matrix are cheaper to own than a generator.
+- **Built after the approved publish.** The binaries job needs the publish
+  job, so a tag nobody approved gets neither a crate nor binaries. A pull
+  request that touches the build runs the same matrix without uploading.
+- **musl on Linux.** One static binary runs on any distribution and in CI
+  containers, with no glibc version to match.
+- **No Homebrew tap yet.** A tap is a second repository whose formula must be
+  updated on every release, which means a write token for it in CI, the one
+  long-lived secret the release pipeline does not have. It waits until
+  users ask for it.
+- **No Windows build.** sooth is tested on Unix only; shipping an untested
+  binary would break the "tell the truth" promise on day one.
