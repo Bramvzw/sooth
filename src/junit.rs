@@ -290,7 +290,7 @@ impl OpenTestCase {
                 .map_err(|err| JunitError::Xml(err.to_string()))?;
             match attribute.key.local_name().as_ref() {
                 b"name" => name = value.into_owned(),
-                b"classname" => classname = Some(value.into_owned()),
+                b"classname" if !value.is_empty() => classname = Some(value.into_owned()),
                 b"time" => duration = parse_seconds(&value),
                 _ => {}
             }
@@ -413,6 +413,15 @@ mod tests {
         .unwrap();
         assert_eq!(report.test_cases[0].qualified_name(), "A.B::t");
         assert_eq!(report.test_cases[1].qualified_name(), "loose");
+    }
+
+    #[test]
+    fn an_empty_classname_is_no_classname() {
+        // jest-junit writes `classname=""` for a test outside any `describe`.
+        let report =
+            parse_str(r#"<testsuite><testcase classname="" name="wobbly"/></testsuite>"#).unwrap();
+        assert_eq!(report.test_cases[0].classname, None);
+        assert_eq!(report.test_cases[0].qualified_name(), "wobbly");
     }
 
     #[test]
