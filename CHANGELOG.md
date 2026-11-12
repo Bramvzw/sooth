@@ -231,6 +231,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The jest preset writes clean test identities: `wobbly` and
+  `Cart totals::adds up` instead of ` wobbly:: wobbly` and
+  `Cart totals adds up::Cart totals adds up`. With the old names `--verify`
+  selected nothing and called every jest failure `unverified`. An empty
+  `classname` in any JUnit report now counts as no classname. **Identities
+  of jest tests change**, so earlier jest observations in `.sooth/` no
+  longer match. The README now says jest needs `jest-junit` installed.
 - `sooth run --changed --preset jest` runs the selected test files again.
   jest read the first selected path as another `--reporters` value and every
   jest gate exited 2; the paths now follow a `--`.

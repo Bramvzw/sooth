@@ -306,6 +306,8 @@ known (see above), but it pardons nothing and steers no exit code.
 producing that report isn't free for every runner. Instead:
 
 - **Built-in presets** (inject the right reporter flags automatically): pytest, PHPUnit, Jest, Go.
+  Two runners need a reporter package in the project, because they do not ship one: Jest needs
+  `jest-junit` as a devDependency, and Go needs `gotestsum` as the test command.
 - **Bring your own JUnit XML** for everything else — point `sooth` at the report file your runner
   already produces.
 

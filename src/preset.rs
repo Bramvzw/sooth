@@ -245,12 +245,19 @@ fn injection(preset: Preset, report: &Path) -> Injection {
         },
         // jest-junit reads its output path from the environment. The default
         // reporter is kept so the console output the user knows is unchanged.
+        // jest-junit's default templates are `{classname} {title}` for both
+        // attributes, which gives a test outside any `describe` a leading
+        // space that `-t` then cannot match.
         Preset::Jest => Injection {
             args: vec![
                 "--reporters=default".to_owned(),
                 "--reporters=jest-junit".to_owned(),
             ],
-            envs: vec![("JEST_JUNIT_OUTPUT_FILE".to_owned(), report)],
+            envs: vec![
+                ("JEST_JUNIT_OUTPUT_FILE".to_owned(), report),
+                ("JEST_JUNIT_CLASSNAME".to_owned(), "{classname}".to_owned()),
+                ("JEST_JUNIT_TITLE".to_owned(), "{title}".to_owned()),
+            ],
         },
         Preset::Go => Injection {
             args: vec![format!("--junitfile={report}")],
@@ -337,7 +344,11 @@ mod tests {
         );
         assert_eq!(
             envs,
-            vec![("JEST_JUNIT_OUTPUT_FILE".to_owned(), "/tmp/r.xml".to_owned())]
+            vec![
+                ("JEST_JUNIT_OUTPUT_FILE".to_owned(), "/tmp/r.xml".to_owned()),
+                ("JEST_JUNIT_CLASSNAME".to_owned(), "{classname}".to_owned()),
+                ("JEST_JUNIT_TITLE".to_owned(), "{title}".to_owned()),
+            ]
         );
     }
 
