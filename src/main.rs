@@ -238,7 +238,7 @@ fn gated_command(args: &cli::RunArgs, style: report::Style) -> Result<Option<Gat
     // selection would gate one file while claiming them all (#139). Probed
     // only when that can happen; too old refuses, unknown warns.
     if preset == cli::Preset::Phpunit && selection.files.len() > 1 {
-        match preset::phpunit_major(&args.command[0]) {
+        match preset::phpunit_major(&args.command) {
             Some(major) if major < 10 => {
                 eprintln!(
                     "sooth: the gate selected {} test files, but PHPUnit {major} runs only \
@@ -251,7 +251,7 @@ fn gated_command(args: &cli::RunArgs, style: report::Style) -> Result<Option<Gat
             None => eprintln!(
                 "sooth: could not read a PHPUnit version from `{} --version` — if it is \
                  older than 10, only the first of the {} selected files will run",
-                args.command[0],
+                preset::version_probe(&args.command).display(),
                 selection.files.len()
             ),
             Some(_) => {}
@@ -1081,7 +1081,7 @@ fn load_report(
             return Err(format!(
                 "the test command wrote no JUnit-XML report — is the reporter available, \
                  and is `{program}` the test runner itself rather than a wrapper like \
-                 `python -m`, `npm` or `php artisan`?"
+                 `python -m` or `npm`?"
             ));
         }
     }
