@@ -362,11 +362,14 @@ fn regression_mark(style: Style) -> String {
 /// The identity with its namespace prefix dimmed: every byte stays — grep
 /// and copy-paste keep working — the eye lands on `ClassTest::method`.
 fn identity(id: &str, style: Style) -> String {
-    let class_end = id.find("::").unwrap_or(id.len());
-    let Some(prefix_end) = id[..class_end].rfind('.') else {
+    let class = id.split_once("::").map_or(id, |(class, _)| class);
+    let Some((namespace, _)) = class.rsplit_once('.') else {
         return id.to_owned();
     };
-    format!("{}{}", style.dim(&id[..=prefix_end]), &id[prefix_end + 1..])
+    let Some(rest) = id.strip_prefix(namespace).and_then(|r| r.strip_prefix('.')) else {
+        return id.to_owned();
+    };
+    format!("{}{rest}", style.dim(&format!("{namespace}.")))
 }
 
 /// The run's failures, each labeled with what sooth already knew about it.
@@ -535,7 +538,10 @@ fn explanation_headline(counts: &explain::Counts) -> String {
 
 /// The short form of a commit, as git itself abbreviates it.
 fn short_commit(commit: &str) -> &str {
-    &commit[..commit.len().min(7)]
+    commit
+        .char_indices()
+        .nth(7)
+        .map_or(commit, |(end, _)| commit.split_at(end).0)
 }
 
 /// What a "new" label rests on, when it rests on nothing: `None` is a
@@ -905,6 +911,14 @@ mod tests {
 
     fn plain() -> Style {
         Style::from_parts(ColorChoice::Never, false, false)
+    }
+
+    #[test]
+    fn short_commit_is_the_first_seven_characters_not_bytes() {
+        assert_eq!(super::short_commit("abdeb31c0ffee"), "abdeb31");
+        assert_eq!(super::short_commit("abc"), "abc");
+        // A history file is user-editable: a commit can hold anything.
+        assert_eq!(super::short_commit("ééééééééé"), "ééééééé");
     }
 
     fn outcome(success: bool) -> RunOutcome {

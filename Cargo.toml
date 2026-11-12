@@ -39,5 +39,7 @@ disallowed_methods = "deny"
 # The code rules in CONTRIBUTING.md: a bug panics with a message (`expect`),
 # input never reaches a bare `unwrap`.
 unwrap_used = "deny"
+# Slicing a &str by byte offset panics inside a multi-byte character.
+string_slice = "deny"
 # Exceptions are #[expect], which fails once it is no longer needed.
 allow_attributes = "deny"

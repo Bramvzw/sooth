@@ -116,7 +116,7 @@ pub fn record_imported(path: &Path, entries: &[(u64, String)]) -> std::io::Resul
 /// Anything unparsable is `None` — the caller falls back to the file mtime.
 pub fn iso8601_to_epoch(text: &str) -> Option<u64> {
     let text = text.trim();
-    if text.len() < 19 || &text[10..11] != "T" {
+    if text.len() < 19 || text.get(10..11) != Some("T") {
         return None;
     }
     let number = |range: std::ops::Range<usize>| text.get(range)?.parse::<i64>().ok();
@@ -142,13 +142,9 @@ pub fn iso8601_to_epoch(text: &str) -> Option<u64> {
     // Skip fractional seconds, then apply an explicit zone; a bare local
     // time is taken as written — minutes of skew do not matter to a pass
     // whose window spans weeks.
-    let mut rest = &text[19..];
+    let mut rest = text.get(19..)?;
     if let Some(stripped) = rest.strip_prefix('.') {
-        let digits = stripped.len()
-            - stripped
-                .trim_start_matches(|c: char| c.is_ascii_digit())
-                .len();
-        rest = &stripped[digits..];
+        rest = stripped.trim_start_matches(|c: char| c.is_ascii_digit());
     }
     if let Some(zone) = rest.strip_prefix('+').or_else(|| rest.strip_prefix('-')) {
         let sign = if rest.starts_with('-') { -1 } else { 1 };
@@ -335,7 +331,7 @@ fn load_tail(path: &Path, max_bytes: u64) -> Loaded {
     }
     let text = String::from_utf8_lossy(&bytes);
     let text: &str = if truncated {
-        text.find('\n').map_or("", |cut| &text[cut + 1..])
+        text.split_once('\n').map_or("", |(_, rest)| rest)
     } else {
         &text
     };
@@ -380,16 +376,15 @@ fn parse_line(line: &str) -> Option<Observation> {
 
 fn value_after<'line>(line: &'line str, key: &str) -> Option<&'line str> {
     let marker = format!("\"{key}\":");
-    let start = line.find(&marker)? + marker.len();
-    Some(&line[start..])
+    line.split_once(&marker).map(|(_, rest)| rest)
 }
 
 fn extract_u64(line: &str, key: &str) -> Option<u64> {
     let rest = value_after(line, key)?;
-    let end = rest
-        .find(|c: char| !c.is_ascii_digit())
-        .unwrap_or(rest.len());
-    rest[..end].parse().ok()
+    rest.split(|c: char| !c.is_ascii_digit())
+        .next()?
+        .parse()
+        .ok()
 }
 
 #[expect(
@@ -637,6 +632,14 @@ mod tests {
         assert_eq!(epoch("2026-01-01T24:00:00"), None);
         assert_eq!(epoch("2026-01-01T10:60:00"), None);
         assert_eq!(epoch("2026-01-01T10:00:60"), None);
+    }
+
+    #[test]
+    fn iso8601_is_none_for_a_multi_byte_character_where_the_t_belongs() {
+        use super::iso8601_to_epoch as epoch;
+        // `é` spans bytes 10 and 11: the `T` check must not cut inside it.
+        assert_eq!(epoch("0123456789é0123456789"), None);
+        assert_eq!(epoch("2026-08-08Té0:00:00"), None);
     }
 
     #[test]

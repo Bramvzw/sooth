@@ -1487,7 +1487,7 @@ fn an_abbreviated_commit_is_stored_as_the_full_sha_and_an_unknown_one_is_refused
     };
 
     // What every CI screen shows — must combine with local observations.
-    let output = import(&full[..7]);
+    let output = import(full.get(..7).expect("a full sha is 40 hex characters"));
     assert_eq!(output.status.code(), Some(0));
     let history = std::fs::read_to_string(dir.join(".sooth/history.jsonl")).expect("history");
     assert!(
