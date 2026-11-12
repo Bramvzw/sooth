@@ -64,14 +64,38 @@ fn create_private_dir(dir: &Path) -> io::Result<()> {
 ///
 /// The injected arguments go directly after the program name on purpose: they
 /// must precede any `--` separator the runner itself understands (gotestsum
-/// splits its own flags from `go test`'s at `--`).
+/// splits its own flags from `go test`'s at `--`). The one wrapper sooth
+/// knows is Laravel's `artisan test`, see [`injection_point`].
 pub fn inject(command: &[String], preset: Preset, report: &Path) -> Spawn {
     let Injection { args, envs } = injection(preset, report);
+    let point = injection_point(command, preset);
     let mut full = Vec::with_capacity(command.len() + args.len());
-    full.push(command[0].clone());
+    full.extend(command[..point].iter().cloned());
     full.extend(args);
-    full.extend(command[1..].iter().cloned());
+    full.extend(command[point..].iter().cloned());
     (full, envs)
+}
+
+/// Where the injected arguments go: after the program, or under
+/// `php artisan test` / `./artisan test` after the subcommand — Laravel
+/// forwards what follows it to Pest or `PHPUnit`, while `php` would parse
+/// `--log-junit` as an option of its own.
+fn injection_point(command: &[String], preset: Preset) -> usize {
+    match (preset, artisan_test(command)) {
+        (Preset::Phpunit, Some(artisan)) => artisan + 2,
+        _ => 1,
+    }
+}
+
+/// The index of `artisan` in an `artisan test` command: the program itself,
+/// or the script `php` runs.
+fn artisan_test(command: &[String]) -> Option<usize> {
+    let artisan = command.iter().take(2).position(|arg| {
+        Path::new(arg)
+            .file_name()
+            .is_some_and(|name| name == "artisan")
+    })?;
+    (command.get(artisan + 1).map(String::as_str) == Some("test")).then_some(artisan)
 }
 
 /// The full command to re-run only the tests named `names` under `preset`,
@@ -87,11 +111,12 @@ pub fn inject_selected(
 ) -> Option<Spawn> {
     let selection = selection_args(preset, names)?;
     let Injection { args, envs } = injection(preset, report);
+    let point = injection_point(command, preset);
     let mut full = Vec::with_capacity(command.len() + args.len() + selection.len());
-    full.push(command[0].clone());
+    full.extend(command[..point].iter().cloned());
     full.extend(args);
     full.extend(selection);
-    full.extend(command[1..].iter().cloned());
+    full.extend(command[point..].iter().cloned());
     Some((full, envs))
 }
 
@@ -190,16 +215,27 @@ pub fn selected_paths(preset: Preset, files: &[String]) -> Vec<String> {
     }
 }
 
-/// `PHPUnit`'s major version, probed from `program --version`. Pest prints
-/// its own banner, so for a program named `pest` the `phpunit` next to it —
-/// the one Pest runs on — is asked instead. `None` when the probe fails or
-/// no `PHPUnit` banner comes back — the caller decides how loud to be about
-/// not knowing.
-pub fn phpunit_major(program: &str) -> Option<u32> {
-    probe_phpunit_major(Path::new(program)).or_else(|| {
-        let phpunit = pest_sibling(Path::new(program))?;
+/// `PHPUnit`'s major version, probed from `<version_probe> --version`. Pest
+/// prints its own banner, so for a program named `pest` the `phpunit` next
+/// to it — the one Pest runs on — is asked instead. `None` when the probe
+/// fails or no `PHPUnit` banner comes back — the caller decides how loud to
+/// be about not knowing.
+pub fn phpunit_major(command: &[String]) -> Option<u32> {
+    let program = version_probe(command);
+    probe_phpunit_major(&program).or_else(|| {
+        let phpunit = pest_sibling(&program)?;
         probe_phpunit_major(&phpunit)
     })
+}
+
+/// The program whose `--version` names the `PHPUnit` that will run: the
+/// command's program, or under `artisan test` the project's
+/// `vendor/bin/phpunit` — `artisan test --version` prints Laravel's version.
+pub fn version_probe(command: &[String]) -> PathBuf {
+    match artisan_test(command) {
+        Some(artisan) => Path::new(&command[artisan]).with_file_name("vendor/bin/phpunit"),
+        None => PathBuf::from(&command[0]),
+    }
 }
 
 #[expect(
@@ -314,6 +350,77 @@ mod tests {
 
     fn command(parts: &[&str]) -> Vec<String> {
         parts.iter().map(|part| (*part).to_owned()).collect()
+    }
+
+    #[test]
+    fn under_php_artisan_test_the_flags_follow_the_subcommand() {
+        // `php --log-junit …` is PHP's own option parser; Laravel forwards
+        // what comes after `artisan test` to Pest or PHPUnit.
+        let (full, _) = inject(
+            &command(&["php", "artisan", "test", "--parallel"]),
+            Preset::Phpunit,
+            Path::new("/tmp/r.xml"),
+        );
+        assert_eq!(
+            full,
+            command(&[
+                "php",
+                "artisan",
+                "test",
+                "--log-junit",
+                "/tmp/r.xml",
+                "--parallel"
+            ])
+        );
+        let (full, _) = inject(
+            &command(&["./artisan", "test"]),
+            Preset::Phpunit,
+            Path::new("/tmp/r.xml"),
+        );
+        assert_eq!(
+            full,
+            command(&["./artisan", "test", "--log-junit", "/tmp/r.xml"])
+        );
+    }
+
+    #[test]
+    fn a_verify_re_run_under_artisan_selects_after_the_subcommand_too() {
+        let (full, _) = inject_selected(
+            &command(&["php", "artisan", "test"]),
+            Preset::Phpunit,
+            Path::new("/tmp/r.xml"),
+            &["test_x".to_owned()],
+        )
+        .expect("phpunit can select");
+        assert_eq!(
+            full,
+            command(&[
+                "php",
+                "artisan",
+                "test",
+                "--log-junit",
+                "/tmp/r.xml",
+                "--filter",
+                "/::(test_x)/"
+            ])
+        );
+    }
+
+    #[test]
+    fn artisan_is_asked_about_through_the_projects_phpunit() {
+        use super::version_probe;
+        assert_eq!(
+            version_probe(&command(&["php", "artisan", "test"])),
+            Path::new("vendor/bin/phpunit").to_path_buf()
+        );
+        assert_eq!(
+            version_probe(&command(&["php", "app/artisan", "test"])),
+            Path::new("app/vendor/bin/phpunit").to_path_buf()
+        );
+        assert_eq!(
+            version_probe(&command(&["vendor/bin/phpunit"])),
+            Path::new("vendor/bin/phpunit").to_path_buf()
+        );
     }
 
     #[test]

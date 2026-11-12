@@ -298,7 +298,8 @@ assumes the program *is* the runner. Wrappers (`python -m pytest`, `npm test`,
 break — so the `--preset` help text says the command must be the runner
 itself, and a preset run that produces no report fails with an actionable
 hint rather than a bare parse error about a temp path. Wrapper detection can
-come later if real-world issues show it is needed.
+come later if real-world issues show it is needed. (It did, once: see
+"Laravel's `artisan test` is the one wrapper the phpunit preset knows".)
 
 ## `--json` shares stdout with the runner: last-line contract or a file
 
@@ -974,3 +975,30 @@ installs it. What shaped it:
   users ask for it.
 - **No Windows build.** sooth is tested on Unix only; shipping an untested
   binary would break the "tell the truth" promise on day one.
+
+## Laravel's `artisan test` is the one wrapper the phpunit preset knows
+
+The beachhead is PHP and Laravel, and a Laravel developer runs `php artisan
+test`, not `vendor/bin/phpunit`. Under the rule "the command must be the
+runner itself" sooth refused the command its first users type every day, and
+the documented way around it (paratest with `--runner` and an environment
+variable) was not something anyone would adopt.
+
+Checked against Laravel 13 with Pest 4: `artisan test` forwards every option
+after the subcommand to Pest or PHPUnit, `--log-junit` included, and with
+`--parallel` paratest merges the workers into one report. The only thing that
+broke was where sooth put the flag: right after the program, so `php` read
+`--log-junit` as its own option. So, for the phpunit preset only:
+
+- **Injection point.** When the program is `artisan`, or the script `php`
+  runs is `artisan`, and the next argument is `test`, the reporter flags and
+  a `--verify` selection go after `test`. Everything else is unchanged.
+- **Version probe.** `artisan test --version` prints Laravel's version, so
+  the gate asks the project's `vendor/bin/phpunit` (next to `artisan`), the
+  one that will actually run. For a program named `pest` it asks the
+  `phpunit` beside it, for the same reason: Pest prints its own banner.
+
+This is recognising one well-known command shape, not general wrapper
+detection: `npm test`, `composer test` or `python -m pytest` can hide any
+command, and guessing what they run would break the "never guess" rule.
+`artisan test` is one fixed command with documented forwarding.

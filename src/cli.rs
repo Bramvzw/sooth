@@ -99,7 +99,9 @@ pub struct RunArgs {
     /// Built-in preset for a known test runner: injects the right reporter
     /// flags and reads the report it writes (mutually exclusive with --junit).
     /// The command after `--` must be the runner itself (pytest, phpunit,
-    /// jest, gotestsum) — not a wrapper like `python -m pytest` or `npm test`.
+    /// pest, jest, gotestsum) — not a wrapper like `python -m pytest` or `npm
+    /// test`. The exception is Laravel's `php artisan test`, which the phpunit
+    /// preset understands.
     #[arg(long, value_enum, conflicts_with = "junit")]
     pub preset: Option<Preset>,
 

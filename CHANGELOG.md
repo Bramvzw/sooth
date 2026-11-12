@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `sooth run --preset phpunit -- php artisan test` works, with Pest or
+  PHPUnit and with `--parallel`: the preset puts its reporter flags and the
+  `--verify` selection after `artisan test` instead of after `php`, and the
+  gate reads the PHPUnit version from the project's `vendor/bin/phpunit`.
 - Pest works under `--preset phpunit -- vendor/bin/pest`: runs, `--runs`,
   `--verify` and the gate, checked against Pest 4. The gate no longer warns
   that it cannot read a PHPUnit version: for a program named `pest` it asks

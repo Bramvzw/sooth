@@ -29,13 +29,14 @@ sooth run --preset pytest --json=sooth.json -- pytest
 ```
 
 The command after `--` must be the test runner itself — not a wrapper like
-`python -m pytest` or `npm test`. Laravel's `php artisan test --parallel` is
-such a wrapper; invoke paratest directly instead (it merges the per-worker
-reports itself):
+`python -m pytest` or `npm test`. The one exception is Laravel: the phpunit
+preset knows `php artisan test` and puts its flags after the subcommand, so
+Pest, PHPUnit and `--parallel` all work the way you run them every day:
 
 ```
-LARAVEL_PARALLEL_TESTING=1 sooth run --preset phpunit -- \
-  vendor/bin/paratest '--runner=\Illuminate\Testing\ParallelRunner' [phpunit args...]
+sooth run --preset phpunit -- php artisan test
+sooth run --preset phpunit -- php artisan test --parallel
+sooth run --preset phpunit -- vendor/bin/pest
 ```
 
 Exit codes: `0` — the runner and its report agree everything passed; `1` —
