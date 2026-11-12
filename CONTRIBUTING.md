@@ -107,5 +107,7 @@ make setup   # point git at the tracked hooks (run once after cloning)
 make release [bump=minor|major]   # rolls [Unreleased], tags vX.Y.Z, pushes
 ```
 
-The tag triggers the release workflow, which publishes the crate from CI using
-a scoped token stored as a secret — never publish from a laptop.
+The tag triggers the release workflow. Its `publish` job runs in the `release`
+environment and waits there for the maintainer's approval; only then does it
+mint a short-lived crates.io token via OIDC trusted publishing and publish.
+There is no stored token, and never publish from a laptop.

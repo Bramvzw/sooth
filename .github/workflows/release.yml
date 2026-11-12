@@ -7,11 +7,18 @@ on:
 
 permissions:
   contents: read
-  id-token: write # mint the short-lived crates.io token via OIDC
 
 jobs:
   publish:
     runs-on: ubuntu-latest
+    # A tag push is not covered by branch protection, and OIDC leaves no
+    # secret to steal, so this environment's required reviewer is the one
+    # authorisation step before crates.io. The crates.io trusted publisher
+    # is bound to it.
+    environment: release
+    permissions:
+      contents: read
+      id-token: write # mint the short-lived crates.io token via OIDC
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
