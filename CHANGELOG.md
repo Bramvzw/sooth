@@ -231,6 +231,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `sooth import --help` and the README no longer claim that `--log phpunit`
+  reads `php artisan test` output. Laravel prints that through Collision, a
+  different format that the parser refuses.
 - The jest preset writes clean test identities: `wobbly` and
   `Cart totals::adds up` instead of ` wobbly:: wobbly` and
   `Cart totals adds up::Cart totals adds up`. With the old names `--verify`

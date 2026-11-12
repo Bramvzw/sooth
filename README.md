@@ -118,7 +118,8 @@ No JUnit artifacts in your pipeline (yet)? The console logs your CI already
 keeps name every failure with full test identity, and GitHub retains them
 for 90 days by default (organisations can shorten that — check yours). `sooth import --log phpunit` reads them — failures only: a log
 reduces passes to anonymous dots, and sooth records witnessed facts, never
-deductions. Backfill months of CI failures without changing a line of your
+deductions. It reads PHPUnit's own output (`vendor/bin/phpunit`, paratest);
+a log from `php artisan test` is Collision's format and is refused. Backfill months of CI failures without changing a line of your
 project:
 
 ```bash
