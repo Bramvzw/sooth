@@ -242,14 +242,32 @@ pub fn append(path: &Path, observations: &[Observation]) -> std::io::Result<()> 
     }
     let mut file = fs::OpenOptions::new()
         .create(true)
+        .read(true)
         .append(true)
         .open(path)?;
     let mut buffer = String::new();
+    if ends_mid_line(&mut file)? {
+        buffer.push('\n');
+    }
     for observation in observations {
         buffer.push_str(&to_line(observation));
         buffer.push('\n');
     }
     file.write_all(buffer.as_bytes())
+}
+
+/// A crash mid-append leaves a last line without its newline; a record
+/// written straight after it would be glued onto the fragment.
+fn ends_mid_line(file: &mut fs::File) -> std::io::Result<bool> {
+    use std::io::{Read as _, Seek as _, SeekFrom};
+
+    if file.metadata()?.len() == 0 {
+        return Ok(false);
+    }
+    file.seek(SeekFrom::End(-1))?;
+    let mut last = [0_u8; 1];
+    file.read_exact(&mut last)?;
+    Ok(last != [b'\n'])
 }
 
 fn to_line(observation: &Observation) -> String {
@@ -341,9 +359,11 @@ fn load_tail(path: &Path, max_bytes: u64) -> Loaded {
         if line.trim().is_empty() {
             continue;
         }
-        match parse_line(line) {
-            Some(observation) => observations.push(observation),
-            None => skipped_lines += 1,
+        for record in records(line) {
+            match parse_line(&record) {
+                Some(observation) => observations.push(observation),
+                None => skipped_lines += 1,
+            }
         }
     }
     Loaded {
@@ -352,10 +372,29 @@ fn load_tail(path: &Path, max_bytes: u64) -> Loaded {
     }
 }
 
+/// The records on one line: one, unless a crash glued a record onto a
+/// fragment. Every record starts with `RECORD_START`, which cannot occur
+/// inside a value — `json::escape` escapes its quotes.
+fn records(line: &str) -> Vec<String> {
+    let mut parts = line.split(RECORD_START);
+    let before_first = parts.next().unwrap_or_default();
+    let mut records: Vec<String> = parts.map(|rest| format!("{RECORD_START}{rest}")).collect();
+    if !before_first.trim().is_empty() {
+        records.insert(0, before_first.to_owned());
+    }
+    records
+}
+
+const RECORD_START: &str = r#"{"at":"#;
+
 /// Parse one line of the flat schema `to_line` writes. Key lookup takes the
 /// first occurrence, which is unambiguous because `id` — the only value that
 /// can contain arbitrary text — is written last.
 fn parse_line(line: &str) -> Option<Observation> {
+    let line = line.trim();
+    if !line.starts_with(RECORD_START) || !line.ends_with("\"}") {
+        return None;
+    }
     let at_epoch_secs = extract_u64(line, "at")?;
     let commit = extract_string_or_null(line, "commit")?;
     let dirty = extract_bool_or_null(line, "dirty")?;
@@ -468,6 +507,55 @@ mod tests {
             environment: Some("local".to_owned()),
             at_epoch_secs: 1_700_000_000,
         }
+    }
+
+    #[test]
+    fn a_record_glued_onto_a_truncated_one_is_kept_and_the_fragment_counted() {
+        let path = temp_path("glued");
+        let pass = |at| {
+            format!(
+                r#"{{"at":{at},"commit":"aaa","dirty":false,"env":null,"status":"passed","id":"c::t"}}"#
+            )
+        };
+        let truncated = r#"{"at":3,"commit":"bbb","dirty":false,"env":null,"status":"fail"#;
+        let red =
+            r#"{"at":4,"commit":"bbb","dirty":false,"env":null,"status":"failed","id":"c::t"}"#;
+        std::fs::create_dir_all(path.parent().unwrap()).expect("temp dir");
+        std::fs::write(
+            &path,
+            format!("{}\n{}\n{truncated}{red}\n", pass(1), pass(2)),
+        )
+        .expect("write history");
+
+        let loaded = load(&path);
+        assert_eq!(loaded.skipped_lines, 1);
+        let ids: Vec<_> = loaded
+            .observations
+            .iter()
+            .map(|o| (o.id.as_str(), o.at_epoch_secs))
+            .collect();
+        assert_eq!(ids, [("c::t", 1), ("c::t", 2), ("c::t", 4)]);
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn an_append_after_a_crash_mid_line_starts_on_a_line_of_its_own() {
+        let path = temp_path("crash");
+        std::fs::create_dir_all(path.parent().unwrap()).expect("temp dir");
+        std::fs::write(
+            &path,
+            r#"{"at":3,"commit":"bbb","dirty":false,"env":null,"stat"#,
+        )
+        .expect("write history");
+        append(&path, &[observation("c::a", TestStatus::Failed)]).expect("append");
+
+        let loaded = load(&path);
+        assert_eq!(loaded.skipped_lines, 1);
+        assert_eq!(
+            loaded.observations,
+            [observation("c::a", TestStatus::Failed)]
+        );
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 
     #[test]

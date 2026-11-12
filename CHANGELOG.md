@@ -231,6 +231,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A crash in the middle of writing `history.jsonl` no longer merges two
+  observations into one phantom. The next run starts on a fresh line, and a
+  file that already holds a glued line is read back as the complete record
+  it contains plus one unreadable fragment, which the usual warning reports.
 - A multi-byte character no longer crashes sooth (exit 101). `sooth import`
   panicked on a `timestamp` with one at byte 10, and every command that
   shows a short commit panicked on a non-ASCII commit in a hand-edited
