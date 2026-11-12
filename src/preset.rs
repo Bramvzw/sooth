@@ -180,8 +180,12 @@ pub fn selected_paths(preset: Preset, files: &[String]) -> Vec<String> {
             dirs
         }
         // jest reads positional arguments as regexes matched against test
-        // paths: unescaped, `app/(shop)/cart.test.tsx` matches nothing.
-        Preset::Jest => files.iter().map(|file| regex_escape(file)).collect(),
+        // paths: unescaped, `app/(shop)/cart.test.tsx` matches nothing. The
+        // `--` ends the injected `--reporters`, a yargs array option that
+        // would otherwise take the first path as its next value.
+        Preset::Jest => std::iter::once("--".to_owned())
+            .chain(files.iter().map(|file| regex_escape(file)))
+            .collect(),
         Preset::Phpunit | Preset::Pytest => files.to_vec(),
     }
 }
@@ -503,7 +507,10 @@ mod tests {
         let files = vec!["app/(shop)/cart.test.tsx".to_owned()];
         assert_eq!(
             selected_paths(Preset::Jest, &files),
-            vec![r"app\/\(shop\)\/cart\.test\.tsx".to_owned()]
+            vec![
+                "--".to_owned(),
+                r"app\/\(shop\)\/cart\.test\.tsx".to_owned()
+            ]
         );
     }
 
