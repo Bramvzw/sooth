@@ -684,6 +684,15 @@ a prerequisite and becomes the gold standard for those who also want rates.
   as a PHPUnit log: exit 2, loudly. A green log is valid and records
   nothing, and says so. Sooth does not guess — a fabricated identity in the
   history is worse than a refused file.
+- **The summary settles the listings before it.** A `N) Class::method` line
+  is only evidence when the summary agrees. Under a green summary (`OK (…`,
+  `OK, but …`, `WARNINGS!`) there were no failures, so a listing that summary
+  closes is echoed test output and is dropped. Under a red one the listing
+  must name at least as many failures and errors as the `Tests:` line
+  counts; fewer means a truncated or regrouped log, which is refused (exit 2)
+  rather than recorded as partial or announced as green. Inside a listing,
+  entries must count up from 1 to the header's N — an identity out of that
+  sequence is output the test printed, not an entry.
 - **Framework-scoped, like the presets.** The failure-block format is
   PHPUnit's; other runners get their own parser when a real codebase needs
   one, not before. The identity is converted to the JUnit form (backslashes

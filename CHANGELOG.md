@@ -231,6 +231,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `sooth import --log phpunit` records only failures the summary confirms.
+  A green log that echoes PHPUnit-shaped text (`1) Class::method`) no longer
+  records a failure for a test that passed, and a red log whose failure
+  listing is missing or incomplete — a truncated or regrouped CI log — is
+  refused (exit 2) instead of being announced as green.
 - A crash in the middle of writing `history.jsonl` no longer merges two
   observations into one phantom. The next run starts on a fresh line, and a
   file that already holds a glued line is read back as the complete record
