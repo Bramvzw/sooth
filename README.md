@@ -295,7 +295,7 @@ known (see above), but it pardons nothing and steers no exit code.
 - [x] **v0.1** — `sooth run -- <cmd>` runs your suite once, parses the JUnit XML it produced, and
       prints a summary (total, pass/fail/skip, slowest N) + `--json`. Released.
 - [x] **v0.2** — flaky detection: failure-rate ranking fed by fixed-order repeats *and* a local
-      run history that accumulates observations from runs you make anyway (zero extra wall-time).
+      run history that accumulates observations from runs you make anyway (zero extra wall-time). Released.
 - [ ] **v0.3** — refined slow-test analysis + order-dependence *detection* (no culprit bisection).
 - [ ] **v1.0** — polish, distribution, launch.
 - [ ] **spike** (post-v1, timeboxed) — network-egress detection: flag tests that hit the real
