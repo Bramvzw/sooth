@@ -231,6 +231,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A multi-byte character no longer crashes sooth (exit 101). `sooth import`
+  panicked on a `timestamp` with one at byte 10, and every command that
+  shows a short commit panicked on a non-ASCII commit in a hand-edited
+  `history.jsonl`. Both now degrade the way the rest of the parsing does:
+  an unparsable timestamp falls back to the file time, and a commit is cut
+  at seven characters instead of seven bytes. Slicing a string by byte
+  offset is now denied by clippy, so the class cannot return.
 - `sooth import --commit` with an abbreviated sha — the form every CI
   screen shows — is resolved against the local repository and stored as
   the full sha, so imported observations actually combine with local ones.

@@ -204,15 +204,15 @@ pub fn phpunit_major(program: &str) -> Option<u32> {
 /// The major out of a `PHPUnit 9.6.11 by Sebastian Bergmann …` banner.
 fn parse_phpunit_major(banner: &str) -> Option<u32> {
     let rest = banner.trim_start().strip_prefix("PHPUnit ")?;
-    let digits = &rest[..rest
-        .find(|c: char| !c.is_ascii_digit())
-        .unwrap_or(rest.len())];
-    digits.parse().ok()
+    rest.split(|c: char| !c.is_ascii_digit())
+        .next()?
+        .parse()
+        .ok()
 }
 
 /// The name without its `[parameters]` suffix (brackets break a `-k` expression).
 fn base_name(name: &str) -> &str {
-    name.find('[').map_or(name, |i| &name[..i])
+    name.split_once('[').map_or(name, |(base, _)| base)
 }
 
 /// Escape regex metacharacters so an identity matches literally.
