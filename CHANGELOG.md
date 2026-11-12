@@ -231,6 +231,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `sooth run --changed --preset jest` runs the selected test files again.
+  jest read the first selected path as another `--reporters` value and every
+  jest gate exited 2; the paths now follow a `--`.
 - `sooth import --log phpunit` records only failures the summary confirms.
   A green log that echoes PHPUnit-shaped text (`1) Class::method`) no longer
   records a failure for a test that passed, and a red log whose failure
