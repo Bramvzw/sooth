@@ -56,3 +56,13 @@ jobs:
         env:
           CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
         run: cargo publish
+
+  # After the approved publish, so a release nobody approved gets no binaries
+  # either.
+  binaries:
+    needs: publish
+    permissions:
+      contents: write # attach the archives to the release
+    uses: ./.github/workflows/binaries.yml
+    with:
+      tag: ${{ github.ref_name }}

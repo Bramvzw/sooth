@@ -33,8 +33,8 @@ brings it in scope:
 
 - `cargo-deny` (license/CVE audit) — once there are more dependencies; starts
   non-blocking.
-- `cargo-dist` + Homebrew tap + `install.sh` — at v1.0 launch (distribution,
-  not milestone 1).
+- Homebrew tap — once there are users asking for it. Prebuilt binaries and
+  `install.sh` came forward to v0.2 (see `DECISIONS.md`).
 - 3-OS CI matrix — once the network-egress spike starts (the day-1 product is
   portable and Linux-only CI is sufficient until then).
 - `CODE_OF_CONDUCT.md` / issue templates — once there is a first external

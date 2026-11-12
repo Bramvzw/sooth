@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Prebuilt binaries for macOS and Linux, x86_64 and arm64, attached to
+  every GitHub release, and an `install.sh` that downloads the right one,
+  checks its SHA-256 and installs it to `~/.local/bin`. Installing sooth no
+  longer needs a Rust toolchain.
+
 ## [0.2.0] - 2026-11-12
 
 ### Added
