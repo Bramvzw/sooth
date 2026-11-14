@@ -524,21 +524,31 @@ pub fn is_test_file(preset: Preset, path: &str) -> bool {
             Some(stem) => stem.starts_with("test_") || stem.ends_with("_test"),
             None => false,
         },
-        // jest's default testMatch is `**/__tests__/**/*.[jt]s?(x)` plus
-        // `.test.`/`.spec.` names anywhere.
-        Preset::Jest => {
-            name.contains(".test.")
-                || name.contains(".spec.")
-                || (path.split('/').any(|part| part == "__tests__") && has_jest_extension(name))
-        }
+        // jest's default testMatch: a source file under `__tests__/`, or
+        // one named `[*.]test.<ext>` / `[*.]spec.<ext>` anywhere. The
+        // extension counts: `a.test.js.snap` and `a.test.json` are a
+        // snapshot and a fixture, and jest finds no tests in them.
+        Preset::Jest => name.rsplit_once('.').is_some_and(|(stem, extension)| {
+            let named_as_a_test = ["test", "spec"].iter().any(|kind| {
+                stem == *kind
+                    || stem
+                        .strip_suffix(kind)
+                        .is_some_and(|rest| rest.ends_with('.'))
+            });
+            is_jest_source(extension)
+                && (named_as_a_test || path.split('/').any(|part| part == "__tests__"))
+        }),
         Preset::Go => name.ends_with("_test.go"),
     }
 }
 
-/// The extensions jest's default testMatch runs.
-fn has_jest_extension(name: &str) -> bool {
-    name.rsplit_once('.')
-        .is_some_and(|(_, extension)| matches!(extension, "js" | "jsx" | "ts" | "tsx"))
+/// The extensions jest's default testMatch runs: `[jt]s?(x)`, and since
+/// jest 30 their `m`/`c` module forms.
+fn is_jest_source(extension: &str) -> bool {
+    matches!(
+        extension,
+        "js" | "jsx" | "ts" | "tsx" | "mjs" | "cjs" | "mts" | "cts"
+    )
 }
 
 /// The runner arguments selecting exactly the test files `files` — paths,
@@ -645,9 +655,10 @@ fn injection(preset: Preset, report: &Path) -> Injection {
         },
         // jest-junit reads its output path from the environment. The default
         // reporter is kept so the console output the user knows is unchanged.
-        // jest-junit's default templates are `{classname} {title}` for both
-        // attributes, which gives a test outside any `describe` a leading
-        // space that `-t` then cannot match.
+        // The templates make the identity `<file> <describes>::<title>`: the
+        // file, because two files may each have a `renders` test; the title
+        // on its own, because `-t` selects by it (jest-junit's default
+        // `{classname} {title}` for both attributes names neither).
         Preset::Jest => Injection {
             args: vec![
                 "--reporters=default".to_owned(),
@@ -655,7 +666,10 @@ fn injection(preset: Preset, report: &Path) -> Injection {
             ],
             envs: vec![
                 ("JEST_JUNIT_OUTPUT_FILE".to_owned(), report),
-                ("JEST_JUNIT_CLASSNAME".to_owned(), "{classname}".to_owned()),
+                (
+                    "JEST_JUNIT_CLASSNAME".to_owned(),
+                    "{filepath} {classname}".to_owned(),
+                ),
                 ("JEST_JUNIT_TITLE".to_owned(), "{title}".to_owned()),
             ],
         },
@@ -1311,7 +1325,10 @@ mod tests {
             envs,
             vec![
                 ("JEST_JUNIT_OUTPUT_FILE".to_owned(), "/tmp/r.xml".to_owned()),
-                ("JEST_JUNIT_CLASSNAME".to_owned(), "{classname}".to_owned()),
+                (
+                    "JEST_JUNIT_CLASSNAME".to_owned(),
+                    "{filepath} {classname}".to_owned(),
+                ),
                 ("JEST_JUNIT_TITLE".to_owned(), "{title}".to_owned()),
             ]
         );
@@ -1493,6 +1510,30 @@ mod tests {
         assert!(!is_test_file(Preset::Jest, "src/cart.ts"));
         assert!(is_test_file(Preset::Go, "pkg/cart/cart_test.go"));
         assert!(!is_test_file(Preset::Go, "pkg/cart/cart.go"));
+    }
+
+    #[test]
+    fn jest_counts_a_file_as_a_test_only_with_a_source_extension() {
+        for path in [
+            "src/cart.test.mjs",
+            "src/cart.spec.cts",
+            "test.js",
+            "src/spec.tsx",
+        ] {
+            assert!(is_test_file(Preset::Jest, path), "{path}");
+        }
+        for path in [
+            // A snapshot-only change is not a changed test.
+            "__tests__/__snapshots__/a.test.js.snap",
+            "src/cart.test.json",
+            "src/__tests__/data.snap",
+            // `.test.` in the middle names nothing.
+            "src/cart.test.helpers.md",
+            "src/contest.js",
+            "src/latest.ts",
+        ] {
+            assert!(!is_test_file(Preset::Jest, path), "{path}");
+        }
     }
 
     #[test]

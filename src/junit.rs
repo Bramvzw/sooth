@@ -289,8 +289,14 @@ impl OpenTestCase {
                 .normalized_value(XmlVersion::Implicit1_0)
                 .map_err(|err| JunitError::Xml(err.to_string()))?;
             match attribute.key.local_name().as_ref() {
-                b"name" => name = value.into_owned(),
-                b"classname" if !value.is_empty() => classname = Some(value.into_owned()),
+                // Trimmed: whitespace at either end is a template's
+                // leftover (jest-junit's `{classname} {title}` without a
+                // `describe`), never part of what the test is called, and
+                // a runner cannot be pointed at a name that starts with it.
+                b"name" => value.trim().clone_into(&mut name),
+                b"classname" if !value.trim().is_empty() => {
+                    classname = Some(value.trim().to_owned());
+                }
                 b"time" => duration = parse_seconds(&value),
                 _ => {}
             }
@@ -412,6 +418,19 @@ mod tests {
         )
         .unwrap();
         assert_eq!(report.test_cases[0].qualified_name(), "A.B::t");
+        assert_eq!(report.test_cases[1].qualified_name(), "loose");
+    }
+
+    #[test]
+    fn whitespace_around_a_name_is_a_templates_leftover_not_the_name() {
+        // jest-junit joins `{classname} {title}`; without a `describe` the
+        // classname is empty and the join leaves a space behind.
+        let report = parse_str(
+            r#"<testsuite><testcase classname="a.test.js " name=" wobbly"/><testcase classname="  " name="loose "/></testsuite>"#,
+        )
+        .unwrap();
+        assert_eq!(report.test_cases[0].qualified_name(), "a.test.js::wobbly");
+        assert_eq!(report.test_cases[1].classname, None);
         assert_eq!(report.test_cases[1].qualified_name(), "loose");
     }
 
