@@ -778,8 +778,16 @@ Choices that keep it honest:
 - **A failed git listing refuses, never gates nothing.** `git diff` or
   `ls-files` failing (an index lock, a corrupt repo) is exit 2, not an empty
   selection — the same reasoning as the `--runs 1` refusal. The listings run
-  with `core.quotepath=false` and `--relative` and skip deletions, so the
-  selection is what the runner, spawned in the cwd, can actually open.
+  with `-z` and `--relative` and skip deletions, so the selection is what
+  the runner, spawned in the cwd, can actually open. (`-z` replaced
+  `core.quotepath=false`, which stops git quoting non-ASCII bytes but not a
+  quote or a backslash: such a file left the selection without a word,
+  #182.)
+- **A selected path is handed over as a path.** PHPUnit and pytest get
+  `./<path>`, so a test file named `--bootstrap=xTest.php` cannot read as
+  an option (#170); git's paths are always relative, which makes the prefix
+  always right. jest gets its paths behind a `--` and, being regexes
+  matched against absolute paths, unprefixed; go gets `./<dir>` already.
 - **The empty gate spawns nothing.** No changed tests → one line, exit 0,
   no runner started: a pre-push hook must cost nothing on the pushes that
   change no tests. It still honors `--json`: nothing ran is a result, so

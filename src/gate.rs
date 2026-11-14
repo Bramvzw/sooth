@@ -36,17 +36,17 @@ pub fn resolve(explicit: Option<&str>, preset: Preset, dir: &Path) -> Result<Sel
     let merge_base = history::git(dir, &["merge-base", &base, "HEAD"])
         .ok_or_else(|| format!("`--changed={base}` is not a ref git knows here"))?;
 
-    // quotepath off, or a non-ASCII path comes back C-quoted and silently
-    // drops out of the selection; --relative keeps tracked paths in the same
-    // cwd-relative form `ls-files` uses, so the runner (spawned in the cwd)
-    // can open what the diff names; deleted files select nothing — there is
-    // nothing left to run.
-    let diffed = history::git(
+    // -z, or git C-quotes a path holding a non-ASCII byte, a quote or a
+    // backslash, and the quoted form silently drops out of the selection;
+    // --relative keeps tracked paths in the same cwd-relative form
+    // `ls-files` uses, so the runner (spawned in the cwd) can open what the
+    // diff names; deleted files select nothing — there is nothing left to
+    // run.
+    let diffed = history::git_raw(
         dir,
         &[
-            "-c",
-            "core.quotepath=false",
             "diff",
+            "-z",
             "--relative",
             "--name-only",
             "--diff-filter=d",
@@ -54,21 +54,13 @@ pub fn resolve(explicit: Option<&str>, preset: Preset, dir: &Path) -> Result<Sel
         ],
     )
     .ok_or_else(|| format!("`--changed` could not diff against {base}: git failed here"))?;
-    let untracked = history::git(
-        dir,
-        &[
-            "-c",
-            "core.quotepath=false",
-            "ls-files",
-            "--others",
-            "--exclude-standard",
-        ],
-    )
-    .ok_or("`--changed` could not list untracked files: git failed here")?;
+    let untracked = history::git_raw(dir, &["ls-files", "-z", "--others", "--exclude-standard"])
+        .ok_or("`--changed` could not list untracked files: git failed here")?;
 
     let mut changed: Vec<String> = diffed
-        .lines()
-        .chain(untracked.lines())
+        .split('\0')
+        .chain(untracked.split('\0'))
+        .filter(|path| !path.is_empty())
         .map(str::to_owned)
         .collect();
     changed.sort_unstable();
