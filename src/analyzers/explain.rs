@@ -75,6 +75,19 @@ pub struct Explanation {
     pub quarantined: bool,
 }
 
+impl Explanation {
+    /// On the quarantine list, while the history says it is no flake: a
+    /// regression, or a test never seen passing. The pardon is the team's
+    /// to give; the report must not repeat "flake" after it.
+    pub fn listed_but_not_a_flake(&self) -> bool {
+        self.quarantined
+            && matches!(
+                self.verdict,
+                Verdict::FailingSince { .. } | Verdict::NeverPassed { .. }
+            )
+    }
+}
+
 /// How the failures divide over the verdicts — a partition, so the five
 /// counts (not `red_flakes`, a subset of `known_flakes`) sum to the failure
 /// count.
