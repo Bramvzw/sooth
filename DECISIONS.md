@@ -885,7 +885,11 @@ difference (a report without `type` attributes compares on kind alone),
 and the failure *message* is deliberately not compared — messages embed
 volatile data (ids, faker values), so a message comparison would read real
 reproductions as different. A pass on re-run still outranks everything:
-one green isolation run says more than any signature.
+one green isolation run says more than any signature. Among failing
+re-runs, one exact reproduction is a reproduction (#172): `failed
+differently` is only for a failure that *no* re-run reproduced. The first
+version let a single differing re-run win, which threw away a reproduction
+sooth had in hand — the one direction this entry says it must never lean.
 
 The third case the issue names — failed alone with the *same* signature
 while the suite's normal order was green — is order-dependence and belongs

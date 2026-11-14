@@ -16,6 +16,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `--verify`: one exact reproduction is a reproduction. A failure that one
+  re-run reproduced exactly and the other failed differently (a teardown
+  error, say) was labelled `failed differently … not a reproduction`; it
+  now reads `real`. `failed differently` is left for a failure no re-run
+  reproduced.
 - `--verify` never re-runs the whole suite for a failure it cannot name. A
   failed test case without a `name` built a selector that matched every
   test, and the failure was then labelled from that unrestricted run. Such
