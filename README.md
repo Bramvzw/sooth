@@ -30,15 +30,23 @@ sooth run --preset pytest --json=sooth.json -- pytest
 ```
 
 The command after `--` must be the test runner itself — not a wrapper like
-`python -m pytest` or `npm test`. The one exception is Laravel: the phpunit
-preset knows `php artisan test` and puts its flags after the subcommand, so
-Pest, PHPUnit and `--parallel` all work the way you run them every day:
+`python -m pytest` or `npm test`. Laravel is the exception: the phpunit
+preset knows `php artisan test` and Composer scripts, and puts its flags
+where each of them forwards arguments, so Pest, PHPUnit and `--parallel` all
+work the way you run them every day:
 
 ```
 sooth run --preset phpunit -- php artisan test
 sooth run --preset phpunit -- php artisan test --parallel
 sooth run --preset phpunit -- vendor/bin/pest
+sooth run --preset phpunit -- composer test
 ```
+
+A Composer script works when it passes its arguments on to the runner, the
+way `composer test -- --filter=X` does. Composer appends them to *every*
+command of a script, so the skeleton Laravel 12 shipped needs
+`@no_additional_args` on its `config:clear` line, as Laravel 13's has;
+until then sooth says so and you can wrap `php artisan test` instead.
 
 Exit codes: `0` — the runner and its report agree everything passed; `1` —
 the suite failed; `2` — sooth itself failed (your CI can tell a red suite

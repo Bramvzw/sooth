@@ -307,8 +307,9 @@ assumes the program *is* the runner. Wrappers (`python -m pytest`, `npm test`,
 break — so the `--preset` help text says the command must be the runner
 itself, and a preset run that produces no report fails with an actionable
 hint rather than a bare parse error about a temp path. Wrapper detection can
-come later if real-world issues show it is needed. (It did, once: see
-"Laravel's `artisan test` is the one wrapper the phpunit preset knows".)
+come later if real-world issues show it is needed. (It did, twice: see
+"Laravel's `artisan test` is the one wrapper the phpunit preset knows" and
+"A Composer script gets sooth's arguments after `--`".)
 
 ## `--json` shares stdout with the runner: last-line contract or a file
 
@@ -1023,7 +1024,9 @@ broke was where sooth put the flag: right after the program, so `php` read
 This is recognising one well-known command shape, not general wrapper
 detection: `npm test`, `composer test` or `python -m pytest` can hide any
 command, and guessing what they run would break the "never guess" rule.
-`artisan test` is one fixed command with documented forwarding.
+`artisan test` is one fixed command with documented forwarding. (Composer
+scripts followed, without a guess: see "A Composer script gets sooth's
+arguments after `--`".)
 
 ## The identity is the code the run started on, and sooth's own files are not changes
 
@@ -1118,3 +1121,42 @@ ignores `.sooth/` by either mechanism is left untouched. Committing the
 line to `.gitignore` stays a fine team choice — sooth just never depends
 on it. It is the only file outside `.sooth/` that sooth writes, and it is
 one line in the clone's own metadata.
+
+## A Composer script gets sooth's arguments after `--`
+
+`composer test` is the script the Laravel skeleton ships, and many teams run
+their suites only through such scripts (`composer test-central`, a script
+per tenant type). Under "the command must be the runner itself" sooth put
+`--log-junit` right after `composer`, which Composer read as its own option:
+the run died before a test started (#232, and #104 before it).
+
+The artisan entry above ruled Composer out because a script "can hide any
+command, and guessing what it runs would break the never-guess rule". That
+rule stands, and nothing here guesses:
+
+- **What runs is the user's word.** `--preset phpunit` says the script ends
+  in PHPUnit, Pest or paratest. Sooth never reads `composer.json` and never
+  infers a preset from the word `composer`.
+- **Where arguments go is Composer's documented behaviour.** Options in
+  front of a `--` are Composer's; what follows it is appended to the
+  script's commands. So when the phpunit preset's program is `composer` (or
+  `php composer.phar`), the reporter flags, a `--verify` selection and the
+  gate's files go after the `--` — the user's own, or one sooth appends.
+  Only the program position counts: `phpunit tests/composer` is a path.
+- **Version probe.** `composer --version` prints Composer's version, so the
+  gate asks the project's `vendor/bin/phpunit`, as under `artisan test`.
+
+The limit, said out loud: Composer appends the arguments to *every* command
+of a script unless one is marked `@no_additional_args`. Laravel 13's
+skeleton marks its `config:clear` line; Laravel 12's does not, so there
+`config:clear --log-junit …` fails and no report is written. Sooth cannot
+route around that without rewriting the user's script, so the run ends in
+the existing loud "no report" error — which, for this shape, names
+`@no_additional_args` and the way out (wrap the runner itself) instead of
+asking whether `composer` is the test runner.
+
+With a second wrapper, what sooth knows about a command moved into one
+place: `preset::Plan`, resolved once per run from the command and the
+preset. Injection, the `--verify` selection, the gate's files, the version
+probe and the wording of a missing report all ask it, so a further command
+shape is one entry in one `match` rather than a check in three files (#247).

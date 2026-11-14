@@ -2751,6 +2751,144 @@ fn php_artisan_test_gets_the_reporter_flags_after_its_subcommand() {
     );
 }
 
+/// A fake `composer` in `dir` that, like Composer, reads every option in
+/// front of `--` as its own and hands what follows `--` to the script — here
+/// `first_command`, then a runner that notes its arguments in `runner-args`.
+fn write_fake_composer(dir: &std::path::Path, first_command: &str) {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::write(
+        dir.join("composer"),
+        format!(
+            concat!(
+                "#!/bin/sh\n",
+                "script=\"\"\n",
+                "while [ $# -gt 0 ]; do\n",
+                "  case \"$1\" in\n",
+                "    --) shift; break ;;\n",
+                "    -*) echo \"The \\\"$1\\\" option does not exist.\" >&2; exit 1 ;;\n",
+                "    *) [ -z \"$script\" ] || {{ echo \"composer: stray argument $1\" >&2; exit 1; }}\n",
+                "       script=\"$1\"; shift ;;\n",
+                "  esac\n",
+                "done\n",
+                "[ \"$script\" = test ] || {{ echo \"Command \\\"$script\\\" is not defined.\" >&2; exit 1; }}\n",
+                "{first_command} \"$@\" || exit 1\n",
+                "exec ./runner \"$@\"\n",
+            ),
+            first_command = first_command
+        ),
+    )
+    .expect("write composer");
+    std::fs::write(
+        dir.join("runner"),
+        concat!(
+            "#!/bin/sh\n",
+            "printf '%s\\n' \"$@\" > runner-args\n",
+            "report=\"\"; prev=\"\"\n",
+            "for a in \"$@\"; do\n",
+            "  if [ \"$prev\" = \"--log-junit\" ]; then report=\"$a\"; fi\n",
+            "  prev=\"$a\"\n",
+            "done\n",
+            "printf '<testsuite><testcase classname=\"a\" name=\"ok\"/></testsuite>' > \"$report\"\n",
+        ),
+    )
+    .expect("write runner");
+    let bin = dir.join("vendor/bin");
+    std::fs::create_dir_all(&bin).expect("mkdir");
+    std::fs::write(
+        bin.join("phpunit"),
+        "#!/bin/sh\necho 'PHPUnit 12.5.33 by Sebastian Bergmann and contributors.'\n",
+    )
+    .expect("write phpunit");
+    for path in [
+        dir.join("composer"),
+        dir.join("runner"),
+        bin.join("phpunit"),
+    ] {
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    }
+}
+
+#[test]
+fn a_composer_script_gets_the_reporter_flags_after_a_double_dash() {
+    let Some(dir) = scratch_repo("composer") else {
+        return;
+    };
+    // `true` stands for a first command marked `@no_additional_args`.
+    write_fake_composer(&dir, "true ||");
+    std::fs::write(dir.join("ATest.php"), "<?php\n").expect("write");
+    std::fs::write(dir.join("BTest.php"), "<?php\n").expect("write");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_sooth"))
+        .current_dir(&dir)
+        .args([
+            "run",
+            "--changed=HEAD",
+            "--runs",
+            "2",
+            "--no-history",
+            "--preset",
+            "phpunit",
+            "--color",
+            "never",
+            "--",
+            "./composer",
+            "test",
+        ])
+        .output()
+        .expect("sooth should run");
+    let stdout = String::from_utf8(output.stdout).expect("stdout should be UTF-8");
+    let stderr = String::from_utf8(output.stderr).expect("stderr should be UTF-8");
+
+    assert_eq!(output.status.code(), Some(0), "got: {stdout:?} {stderr:?}");
+    assert!(stdout.contains("2 of 2 runs"), "got: {stdout:?}");
+    let runner_args = std::fs::read_to_string(dir.join("runner-args")).expect("the runner ran");
+    assert!(
+        runner_args.starts_with("--log-junit\n") && runner_args.ends_with("ATest.php\nBTest.php\n"),
+        "the script gets the flags, then the gate's files: {runner_args:?}"
+    );
+    assert!(
+        !stderr.contains("could not read a PHPUnit version"),
+        "the project's vendor/bin/phpunit names the version: {stderr:?}"
+    );
+}
+
+#[test]
+fn a_composer_script_that_cannot_take_the_flags_is_told_what_composer_does() {
+    let Some(dir) = scratch_repo("composer-every-command") else {
+        return;
+    };
+    // The first command of the script gets the arguments too, and refuses
+    // them: Composer appends them to every command of a script.
+    write_fake_composer(&dir, "false");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_sooth"))
+        .current_dir(&dir)
+        .args([
+            "run",
+            "--no-history",
+            "--preset",
+            "phpunit",
+            "--color",
+            "never",
+            "--",
+            "./composer",
+            "test",
+        ])
+        .output()
+        .expect("sooth should run");
+    let stderr = String::from_utf8(output.stderr).expect("stderr should be UTF-8");
+
+    assert_eq!(output.status.code(), Some(2), "got: {stderr:?}");
+    assert!(
+        stderr.contains("wrote no JUnit-XML report") && stderr.contains("@no_additional_args"),
+        "got: {stderr:?}"
+    );
+    assert!(
+        !stderr.contains("the test runner itself"),
+        "sooth knows `composer` is not the runner: {stderr:?}"
+    );
+}
+
 #[test]
 fn a_single_file_gate_on_old_phpunit_proceeds_without_a_word() {
     let Some(dir) = scratch_repo("gate-old-single") else {
