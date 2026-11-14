@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `sooth run -- php artisan test` is enough: without `--preset` or
+  `--junit`, the preset is read from a command that names its runner —
+  `pytest`, `phpunit`, `pest`, `paratest`, `gotestsum`, or Laravel's
+  `artisan test` — and sooth says so in one line (`sooth: using `--preset
+  phpunit`, inferred from `php artisan test``). `--changed`, `--verify`
+  and `--json` then work without the flag too. Never assumed: `jest` (its
+  preset needs the `jest-junit` package), a script or wrapper such as
+  `composer test`, `npm test` or `sail artisan test`, and a command that
+  already asks for its own report (`--log-junit build.xml`, or through
+  `PYTEST_ADDOPTS` / `GOTESTSUM_JUNITFILE`).
+- `--preset pest` is accepted as a name for the phpunit preset. It was
+  refused with the tip "a similar value exists: 'jest'".
 - The phpunit preset runs Composer scripts: `sooth run --preset phpunit --
   composer test` (and `composer run-script …`, `php composer.phar …`).
   Composer reads every option in front of a `--` as its own, so the
@@ -21,6 +33,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- A run of a known runner without `--preset` now injects the reporter
+  flags, prints the full report and records history, where it used to print
+  only the per-run lines (see Added). Pass `--no-history` to keep it out of
+  `.sooth/`.
+- A run that had no report to read closes with one line on stderr that
+  names the flag that adds one: `--junit <PATH>` or `--preset <RUNNER>`,
+  `--preset jest` for jest, `--preset phpunit` for a Composer script, or
+  `--junit build.xml` when the command already writes that report. Stdout
+  is unchanged.
+- `artisan test` is Laravel's own command only as the program or behind a
+  PHP binary (`php`, `php8.4`). Behind `sail`, `ddev` or another wrapper it
+  runs in a container, so the phpunit preset no longer puts a report path
+  of this machine after it.
 - The gate refuses a command that runs through paratest: `--changed` with
   `php artisan test --parallel`, `pest --parallel` (or `-p`) or
   `vendor/bin/paratest` exits 2 before anything runs, and says which flag

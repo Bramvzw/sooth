@@ -151,6 +151,184 @@ fn a_plain_run_ends_with_a_verdict_line() {
     );
 }
 
+/// A fake runner called `name` in `dir`: it writes a one-test report to the
+/// path its `flag` carries (`--flag PATH` or `--flag=PATH`), leaves a
+/// `ran-with` note of its arguments, and refuses any argument in `refused`.
+fn write_named_runner(dir: &Path, name: &str, flag: &str, refused: &str) {
+    use std::os::unix::fs::PermissionsExt;
+    let script = format!(
+        concat!(
+            "#!/bin/sh\n",
+            "printf '%s\\n' \"$@\" > ran-with\n",
+            "report=\"\"; prev=\"\"\n",
+            "for a in \"$@\"; do\n",
+            "  case \"$a\" in {refused}) echo \"unknown option $a\" >&2; exit 64 ;; esac\n",
+            "  case \"$a\" in {flag}=*) report=\"${{a#{flag}=}}\" ;; esac\n",
+            "  if [ \"$prev\" = \"{flag}\" ]; then report=\"$a\"; fi\n",
+            "  prev=\"$a\"\n",
+            "done\n",
+            "[ -n \"$report\" ] || exit 0\n",
+            "printf '<testsuite><testcase classname=\"a\" name=\"ok\"/></testsuite>' > \"$report\"\n",
+        ),
+        flag = flag,
+        refused = refused
+    );
+    std::fs::write(dir.join(name), script).expect("write runner");
+    std::fs::set_permissions(dir.join(name), std::fs::Permissions::from_mode(0o755))
+        .expect("chmod");
+}
+
+/// `sooth run --no-history --color never <args>` in `dir`: (exit, stdout, stderr).
+fn first_command(dir: &Path, args: &[&str]) -> (Option<i32>, String, String) {
+    let output = Command::new(env!("CARGO_BIN_EXE_sooth"))
+        .current_dir(dir)
+        .args(["run", "--no-history", "--color", "never"])
+        .args(args)
+        .output()
+        .expect("sooth should run");
+    (
+        output.status.code(),
+        String::from_utf8(output.stdout).expect("stdout should be UTF-8"),
+        String::from_utf8(output.stderr).expect("stderr should be UTF-8"),
+    )
+}
+
+#[test]
+fn first_command_a_runner_that_names_itself_needs_no_preset() {
+    let cwd = Scratch::new("first-inferred");
+    write_named_runner(&cwd, "pytest", "--junit-xml", "--none");
+    let (exit, stdout, stderr) = first_command(&cwd, &["--", "./pytest"]);
+
+    assert_eq!(exit, Some(0), "got: {stdout:?} {stderr:?}");
+    assert!(
+        stdout.contains("tests: 1 total"),
+        "the report was read: {stdout:?}"
+    );
+    assert!(
+        stderr.contains("`--preset pytest`") && stderr.contains("`./pytest`"),
+        "the choice is said out loud: {stderr:?}"
+    );
+
+    // An explicit choice is nobody's inference.
+    let (_, _, stderr) = first_command(&cwd, &["--preset", "pytest", "--", "./pytest"]);
+    assert!(!stderr.contains("inferred"), "got: {stderr:?}");
+}
+
+#[test]
+fn first_command_pest_is_a_name_for_the_phpunit_preset() {
+    let cwd = Scratch::new("first-pest");
+    write_named_runner(&cwd, "pest", "--log-junit", "--none");
+    let (exit, stdout, stderr) = first_command(&cwd, &["--preset", "pest", "--", "./pest"]);
+
+    assert_eq!(exit, Some(0), "got: {stdout:?} {stderr:?}");
+    assert!(stdout.contains("tests: 1 total"), "got: {stdout:?}");
+}
+
+#[test]
+fn first_command_without_a_report_source_names_the_flags_that_add_one() {
+    let cwd = Scratch::new("first-plain");
+    let (exit, stdout, stderr) = first_command(&cwd, &["--", "true"]);
+
+    assert_eq!(exit, Some(0));
+    assert!(
+        stdout
+            .lines()
+            .last()
+            .is_some_and(|line| line.starts_with("result: ✓ PASSED")),
+        "stdout keeps its shape: {stdout:?}"
+    );
+    assert!(
+        stderr.contains("--preset <RUNNER>") && stderr.contains("--junit <PATH>"),
+        "got: {stderr:?}"
+    );
+}
+
+#[test]
+fn first_command_jest_is_named_but_never_assumed() {
+    // The jest preset needs the jest-junit package: injecting its reporter
+    // into a project without it would break a command that works.
+    let cwd = Scratch::new("first-jest");
+    write_named_runner(&cwd, "jest", "--never", "--reporters=*");
+    let (exit, stdout, stderr) = first_command(&cwd, &["--", "./jest"]);
+
+    assert_eq!(exit, Some(0), "got: {stdout:?} {stderr:?}");
+    assert!(
+        stderr.contains("`--preset jest`") && stderr.contains("jest-junit"),
+        "got: {stderr:?}"
+    );
+}
+
+#[test]
+fn first_command_that_writes_its_own_report_is_left_as_typed() {
+    // A second `--log-junit` would win over sooth's: the run would end
+    // without the report sooth asked for.
+    let cwd = Scratch::new("first-own-report");
+    write_named_runner(&cwd, "phpunit", "--log-junit", "--none");
+    let (exit, stdout, stderr) =
+        first_command(&cwd, &["--", "./phpunit", "--log-junit", "build.xml"]);
+
+    assert_eq!(exit, Some(0), "got: {stdout:?} {stderr:?}");
+    let ran_with = std::fs::read_to_string(cwd.join("ran-with")).expect("the runner ran");
+    assert_eq!(ran_with, "--log-junit\nbuild.xml\n", "nothing was injected");
+    assert!(
+        stderr.contains("--junit build.xml"),
+        "the report it writes is one flag away: {stderr:?}"
+    );
+}
+
+#[test]
+fn first_command_with_a_report_asked_for_in_the_environment_is_left_as_typed() {
+    // pytest reads more arguments from PYTEST_ADDOPTS: sooth's own flag
+    // would override the report the user asked for there.
+    let cwd = Scratch::new("first-env-report");
+    write_named_runner(&cwd, "pytest", "--never", "--junit-xml=*");
+    let output = Command::new(env!("CARGO_BIN_EXE_sooth"))
+        .current_dir(&cwd)
+        .env("PYTEST_ADDOPTS", "-q --junitxml=ci.xml")
+        .args(["run", "--no-history", "--color", "never", "--", "./pytest"])
+        .output()
+        .expect("sooth should run");
+    let stderr = String::from_utf8(output.stderr).expect("stderr should be UTF-8");
+
+    assert_eq!(output.status.code(), Some(0), "got: {stderr:?}");
+    assert!(!stderr.contains("inferred"), "got: {stderr:?}");
+    assert!(stderr.contains("`--junit ci.xml`"), "got: {stderr:?}");
+}
+
+#[test]
+fn first_command_behind_a_container_wrapper_is_left_as_typed() {
+    // `sail artisan test` runs in a container: a report path on this
+    // machine means nothing there, so nothing is inferred or injected.
+    let cwd = Scratch::new("first-sail");
+    write_named_runner(&cwd, "sail", "--never", "--log-junit");
+    let (exit, stdout, stderr) = first_command(&cwd, &["--", "./sail", "artisan", "test"]);
+
+    assert_eq!(exit, Some(0), "got: {stdout:?} {stderr:?}");
+    assert!(!stderr.contains("inferred"), "got: {stderr:?}");
+    let ran_with = std::fs::read_to_string(cwd.join("ran-with")).expect("the wrapper ran");
+    assert_eq!(ran_with, "artisan\ntest\n", "nothing was injected");
+}
+
+#[test]
+fn first_command_the_gate_and_json_work_on_an_inferred_preset() {
+    let Some(dir) = scratch_repo("first-gate") else {
+        return;
+    };
+    write_named_runner(&dir, "pytest", "--junit-xml", "--none");
+    std::fs::write(dir.join("test_a.py"), "\n").expect("write");
+    let (exit, stdout, stderr) = first_command(
+        &dir,
+        &["--changed=HEAD", "--runs", "2", "--json", "--", "./pytest"],
+    );
+
+    assert_eq!(exit, Some(0), "got: {stdout:?} {stderr:?}");
+    assert!(
+        stdout.lines().count() == 1 && stdout.starts_with('{'),
+        "bare --json still owns stdout: {stdout:?}"
+    );
+    assert!(stdout.contains("\"gate\""), "got: {stdout:?}");
+}
+
 #[test]
 fn json_to_a_file_keeps_the_human_report_on_stdout() {
     let (cwd, mut command) = sooth_in("json-file");

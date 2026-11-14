@@ -7,7 +7,7 @@ tests *actually do* — which ones are flaky, which are slow, and which depend o
 instant, single binary. No server, no dashboard, no AI, no accounts.
 
 ```
-sooth run --preset pytest -- pytest
+sooth run -- pytest
 ```
 
 > **v0.3.0 is out** — a prebuilt binary, no Rust needed (see [Install](#install)), and Laravel's
@@ -18,27 +18,47 @@ sooth run --preset pytest -- pytest
 ## Usage
 
 ```
-# a known runner: the preset injects the reporter flags and reads the report
-sooth run --preset pytest -- pytest
-sooth run --preset phpunit -- vendor/bin/phpunit
+# a runner sooth knows: its preset injects the reporter flags and reads the report
+sooth run -- pytest
+sooth run -- vendor/bin/phpunit
+sooth run -- php artisan test
+
+# a command that does not name its runner: say which preset it is
+sooth run --preset phpunit -- composer test
 
 # any other runner: point sooth at the JUnit-XML report your command writes
 sooth run --junit report.xml -- ./run-tests.sh
 
 # machine-readable JSON, straight to a file
-sooth run --preset pytest --json=sooth.json -- pytest
+sooth run --json=sooth.json -- pytest
 ```
 
-The command after `--` must be the test runner itself — not a wrapper like
-`python -m pytest` or `npm test`. Laravel is the exception: the phpunit
-preset knows `php artisan test` and Composer scripts, and puts its flags
-where each of them forwards arguments, so Pest, PHPUnit and `--parallel` all
-work the way you run them every day:
+Presets: `pytest`, `phpunit` (also PHPUnit's relatives Pest and paratest;
+`--preset pest` is accepted), `jest` (needs the
+[`jest-junit`](https://github.com/jest-community/jest-junit) package) and
+`go` (gotestsum). When the command names its runner — `pytest`,
+`vendor/bin/pest`, `php artisan test`, `gotestsum` — sooth reads the preset
+from it and says so in one line; pass `--preset` yourself to choose, or to
+drop that line in a hook. Two things are never assumed: `jest`, because its
+preset needs a package your project may not have, and a script such as
+`composer test` or `npm test`, which can run anything. A run that ends up
+without a report says which flag adds one.
+
+If your runner's own configuration already writes a JUnit report (`<junit
+outputFile="…"/>` in `phpunit.xml`, `addopts` in `pytest.ini`), a preset's
+report takes its place for that run. To keep the file, point sooth at it
+instead: `sooth run --junit build/junit.xml -- vendor/bin/phpunit`.
+
+A preset needs the command after `--` to be the test runner itself — not a
+wrapper like `python -m pytest` or `npm test`. Laravel is the exception: the
+phpunit preset knows `php artisan test` and Composer scripts, and puts its
+flags where each of them forwards arguments, so Pest, PHPUnit and
+`--parallel` all work the way you run them every day:
 
 ```
-sooth run --preset phpunit -- php artisan test
-sooth run --preset phpunit -- php artisan test --parallel
-sooth run --preset phpunit -- vendor/bin/pest
+sooth run -- php artisan test
+sooth run -- php artisan test --parallel
+sooth run -- vendor/bin/pest
 sooth run --preset phpunit -- composer test
 ```
 

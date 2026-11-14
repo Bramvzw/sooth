@@ -42,11 +42,42 @@ fn main() -> ExitCode {
 fn dispatch() -> ExitCode {
     let parsed = Cli::parse();
     match parsed.command {
-        Command::Run(args) => run(&args),
+        Command::Run(mut args) => {
+            infer_preset(&mut args);
+            run(&args)
+        }
         Command::Explain(args) => explain(&args),
         Command::Import(args) => import(&args),
         Command::History(args) => history_command(&args),
     }
+}
+
+/// Without `--preset` or `--junit`, take the preset the command itself
+/// names — and say so, because the report that follows depends on it. An
+/// explicit flag is never second-guessed.
+#[expect(clippy::print_stderr)]
+fn infer_preset(args: &mut cli::RunArgs) {
+    if args.preset.is_some() || args.junit.is_some() {
+        return;
+    }
+    if let Some((preset, words)) = preset::infer(&args.command) {
+        eprintln!(
+            "sooth: using `--preset {}`, inferred from `{words}`",
+            preset.name()
+        );
+        args.preset = Some(preset);
+    }
+}
+
+/// The closing line of a run that had no report to read: what it could not
+/// see, and the flag that changes that.
+#[expect(clippy::print_stderr)]
+fn print_report_advice(command: &[String]) {
+    eprintln!(
+        "sooth: only the exit code was read — for per-test results, flaky detection and \
+         history, {}",
+        preset::report_advice(command)
+    );
 }
 
 /// Handle `sooth run`: execute the test command, then — when a report source
@@ -1032,6 +1063,7 @@ fn emit_output(
                 "{}",
                 report::verdict_line(outcomes, None, report_failures, failed, style)
             );
+            print_report_advice(&args.command);
         }
     }
     None
