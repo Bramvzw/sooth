@@ -6,6 +6,7 @@
     reason = "The one module that prints (AGENTS.md)."
 )]
 
+use std::borrow::Cow;
 use std::time::Duration;
 
 use crate::analyzers::{explain, flaky, history};
@@ -198,7 +199,7 @@ pub fn print_gate(selection: &gate::Selection, style: Style) {
         selection.base
     );
     for file in &selection.files {
-        println!("  {}", style.dim(file));
+        println!("  {}", style.dim(&printable(file)));
     }
 }
 
@@ -325,7 +326,7 @@ pub fn print_history(analyses: &Analyses<'_>, style: Style) {
                 .failures_confined_to
                 .as_deref()
                 .map_or_else(String::new, |environment| {
-                    format!("; every failure in {environment}")
+                    format!("; every failure in {}", printable(environment))
                 });
             println!(
                 "  {}. {} {} {}",
@@ -420,9 +421,26 @@ fn regression_mark(style: Style) -> String {
     style.red("▼")
 }
 
-/// The identity with its namespace prefix dimmed: every byte stays — grep
-/// and copy-paste keep working — the eye lands on `ClassTest::method`.
+/// Text from outside sooth — a report, the history file, git — made safe to
+/// print: every control character (an ANSI escape, a carriage return, a
+/// newline) becomes U+FFFD. Without this a test name can erase and repaint
+/// sooth's own lines, the verdict included, in any terminal or CI log that
+/// renders ANSI. The `--json` document escapes them instead (`json::escape`).
+fn printable(text: &str) -> Cow<'_, str> {
+    if !text.chars().any(char::is_control) {
+        return Cow::Borrowed(text);
+    }
+    text.chars()
+        .map(|ch| if ch.is_control() { '\u{fffd}' } else { ch })
+        .collect()
+}
+
+/// The identity with its namespace prefix dimmed: every character stays —
+/// grep and copy-paste keep working — the eye lands on `ClassTest::method`.
+/// Control characters are the exception (see [`printable`]).
 fn identity(id: &str, style: Style) -> String {
+    let id = printable(id);
+    let id = id.as_ref();
     let class = id.split_once("::").map_or(id, |(class, _)| class);
     let Some((namespace, _)) = class.rsplit_once('.') else {
         return id.to_owned();
@@ -514,8 +532,9 @@ fn observed_phrase(observed: &explain::Observed, reordered: &[usize], style: Sty
         )),
         explain::Observed::Real => style.bold_red("real (reproduced on re-run)"),
         explain::Observed::FailedDifferently { suite, isolation } => style.red(&format!(
-            "failed differently on re-run ({suite} in the suite, {isolation} in \
-             isolation — not a reproduction)"
+            "failed differently on re-run ({} in the suite, {} in isolation — not a reproduction)",
+            printable(suite),
+            printable(isolation)
         )),
         explain::Observed::FlakyOrOrder => {
             style.yellow("flaky or order-dependent (passed on re-run in isolation)")
@@ -553,7 +572,7 @@ fn familiarity_phrase(explanation: &explain::Explanation, style: Style) -> Strin
             let confined = failures_confined_to
                 .as_deref()
                 .map_or_else(String::new, |environment| {
-                    format!("; every failure in {environment}")
+                    format!("; every failure in {}", printable(environment))
                 });
             let phrase = format!(
                 "known flake ({failed_runs} of {observed_runs} in history, {}%{confined}){}{listed}",
@@ -617,12 +636,15 @@ fn explanation_headline(counts: &explain::Counts) -> String {
     format!("{failures} — {}", parts.join(", "))
 }
 
-/// The short form of a commit, as git itself abbreviates it.
-fn short_commit(commit: &str) -> &str {
-    commit
-        .char_indices()
-        .nth(7)
-        .map_or(commit, |(end, _)| commit.split_at(end).0)
+/// The short form of a commit, as git itself abbreviates it. The history
+/// file is the user's to edit, so it is printed like any outside text.
+fn short_commit(commit: &str) -> Cow<'_, str> {
+    printable(
+        commit
+            .char_indices()
+            .nth(7)
+            .map_or(commit, |(end, _)| commit.split_at(end).0),
+    )
 }
 
 /// How much history the analysis above rests on. A file larger than one
@@ -1044,6 +1066,19 @@ mod tests {
 
     fn plain() -> Style {
         Style::from_parts(ColorChoice::Never, false, false)
+    }
+
+    #[test]
+    fn outside_text_loses_its_control_characters_and_nothing_else() {
+        assert_eq!(
+            super::printable("Tëst.Ünit::méthod → ok"),
+            "Tëst.Ünit::méthod → ok"
+        );
+        assert_eq!(
+            super::printable("a\u{1b}[31mb\rc\nd\u{9b}e"),
+            "a\u{fffd}[31mb\u{fffd}c\u{fffd}d\u{fffd}e"
+        );
+        assert_eq!(super::short_commit("ab\u{1b}[2Kcdef0123"), "ab\u{fffd}[2Kc");
     }
 
     #[test]

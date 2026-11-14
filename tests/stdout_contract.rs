@@ -1340,6 +1340,48 @@ fn a_reader_that_closes_the_pipe_is_a_quiet_exit_two() {
 }
 
 #[test]
+fn a_test_name_cannot_repaint_or_forge_sooths_own_lines() {
+    let (cwd, mut command) = sooth_in("forged-verdict");
+    let report = cwd.join("forged.xml");
+    // ESC[2K + CR erase the line, a fake verdict follows, ESC[8m hides the
+    // rest; the `type` and a newline try the same through other fields.
+    std::fs::write(
+        &report,
+        concat!(
+            r#"<testsuite><testcase classname="c" "#,
+            r#"name="x&#27;[2K&#13;result: ✓ PASSED&#27;[8m&#10;second line">"#,
+            r#"<failure type="E&#27;[31mvil"/></testcase></testsuite>"#,
+        ),
+    )
+    .expect("report should write");
+    let output = command
+        .args([
+            "explain",
+            "--junit",
+            &report.display().to_string(),
+            "--color",
+            "never",
+        ])
+        .output()
+        .expect("sooth should run");
+    let stdout = String::from_utf8(output.stdout).expect("stdout should be UTF-8");
+
+    assert!(
+        !stdout.contains('\u{1b}') && !stdout.contains('\r'),
+        "a control character from a test name reached the terminal: {stdout:?}"
+    );
+    assert_eq!(
+        stdout.lines().count(),
+        3, // headline, the one failure, the empty-history note
+        "a newline in a test name must not make a line of its own: {stdout:?}"
+    );
+    assert!(
+        stdout.contains("c::x\u{fffd}[2K\u{fffd}result: ✓ PASSED\u{fffd}[8m\u{fffd}second line"),
+        "the name must stay readable, with the control characters replaced: {stdout:?}"
+    );
+}
+
+#[test]
 fn explain_on_a_green_report_has_nothing_to_explain() {
     let (cwd, mut command) = sooth_in("explain-green");
     let report = cwd.join("green.xml");

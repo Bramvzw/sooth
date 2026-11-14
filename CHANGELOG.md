@@ -16,6 +16,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A test name can no longer repaint sooth's own lines. Control characters
+  in text that comes from a report, the history or git (an ANSI escape, a
+  carriage return, a newline) are printed as `�`, so a name carrying
+  `ESC[2K` and a fake `result: ✓ PASSED` cannot erase and replace the
+  verdict in a terminal or CI log. `--json` already escaped them.
 - A proven flake no longer drops out of sight after a few pushes. The
   history looked at a test's last 50 *runs*, so three green `--runs 20`
   gates pushed the proof out. It now looks at the last 50 invocations with
