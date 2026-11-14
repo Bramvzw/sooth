@@ -313,6 +313,15 @@ fn gate_selection(
         eprintln!("sooth: {reason}");
         return Err(ExitCode::from(EXIT_SOOTH_ERROR));
     }
+    if let Some(selection) = plan.own_selection(std::path::Path::new(".")) {
+        eprintln!(
+            "sooth: the gate's command already selects `{selection}` — the runner would \
+             run that and the changed test files, `--runs` times over, while the gate \
+             names only the changed ones. Give the gate the bare runner: it adds the \
+             files itself"
+        );
+        return Err(ExitCode::from(EXIT_SOOTH_ERROR));
+    }
     let selection = match gate::resolve(base.as_deref(), preset, std::path::Path::new(".")) {
         Ok(selection) => selection,
         Err(reason) => {

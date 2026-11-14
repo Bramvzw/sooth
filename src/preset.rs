@@ -223,6 +223,33 @@ impl Plan {
         ))
     }
 
+    /// A selection the user's command already carries, as seen from `dir`:
+    /// the gate adds its files to it, so the runner would run the union
+    /// while the gate names only its own. Reported only when certain — an
+    /// argument that is no option, does not follow one that may be waiting
+    /// for a value (`--bootstrap tests/x.php`), and names something that
+    /// exists (for go: a package pattern). A selection behind a value-less
+    /// flag (`pytest -q tests/`) is not told apart from a value and passes.
+    pub fn own_selection(&self, dir: &Path) -> Option<&str> {
+        let arguments = self.runner_arguments();
+        arguments.iter().enumerate().find_map(|(index, argument)| {
+            let follows_an_open_option = index
+                .checked_sub(1)
+                .and_then(|before| arguments.get(before))
+                .is_some_and(|before| {
+                    before.starts_with('-') && before != "--" && !before.contains('=')
+                });
+            if argument.starts_with('-') || follows_an_open_option {
+                return None;
+            }
+            let selects = match self.preset {
+                Preset::Go => argument.contains("...") || dir.join(argument).is_dir(),
+                Preset::Phpunit | Preset::Pytest | Preset::Jest => dir.join(argument).exists(),
+            };
+            selects.then_some(argument.as_str())
+        })
+    }
+
     /// What a gate of several `files` that got no report should check
     /// first, for a Composer script: a `--parallel` inside the script is
     /// invisible to [`Plan::gate_refusal`], and paratest's own "Too many
@@ -1148,6 +1175,71 @@ mod tests {
             full,
             command(&["php8.3", "artisan", "test", "--log-junit", "/tmp/r.xml"])
         );
+    }
+
+    #[test]
+    fn a_selection_of_the_commands_own_is_seen_only_when_it_is_certain() {
+        let report = report_path().unwrap();
+        let dir = report.parent().expect("a private scratch dir");
+        std::fs::create_dir_all(dir.join("tests/Unit")).unwrap();
+        std::fs::write(dir.join("phpunit.xml"), "").unwrap();
+        let own = |parts: &[&str], preset| {
+            Plan::resolve(&command(parts), preset)
+                .own_selection(dir)
+                .map(str::to_owned)
+        };
+
+        for (parts, preset, selection) in [
+            (
+                &["vendor/bin/phpunit", "tests"][..],
+                Preset::Phpunit,
+                "tests",
+            ),
+            (
+                &["php", "artisan", "test", "tests/Unit"][..],
+                Preset::Phpunit,
+                "tests/Unit",
+            ),
+            (
+                &["composer", "test", "--", "tests"][..],
+                Preset::Phpunit,
+                "tests",
+            ),
+            (&["pytest", "tests", "-q"][..], Preset::Pytest, "tests"),
+            (
+                &["pytest", "--maxfail=1", "tests"][..],
+                Preset::Pytest,
+                "tests",
+            ),
+            (&["gotestsum", "--", "./..."][..], Preset::Go, "./..."),
+        ] {
+            assert_eq!(own(parts, preset).as_deref(), Some(selection), "{parts:?}");
+        }
+        for (parts, preset) in [
+            (&["vendor/bin/phpunit"][..], Preset::Phpunit),
+            // An option's value, even when it exists.
+            (
+                &["vendor/bin/phpunit", "-c", "phpunit.xml"][..],
+                Preset::Phpunit,
+            ),
+            (
+                &["vendor/bin/phpunit", "--testsuite", "tests"][..],
+                Preset::Phpunit,
+            ),
+            // Not there, so not a path: a `--filter` pattern, say.
+            (
+                &["vendor/bin/phpunit", "--filter=x", "nothing-here"][..],
+                Preset::Phpunit,
+            ),
+            // Composer's script name is not the runner's argument.
+            (&["composer", "tests"][..], Preset::Phpunit),
+            // The known blind spot: a value-less flag in front.
+            (&["pytest", "-q", "tests"][..], Preset::Pytest),
+            (&["gotestsum", "--", "-run", "TestX"][..], Preset::Go),
+        ] {
+            assert_eq!(own(parts, preset), None, "{parts:?}");
+        }
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

@@ -310,7 +310,10 @@ exec sooth run --changed --runs 20 --preset phpunit -- vendor/bin/phpunit
 Needs `--preset` (which files are tests is runner knowledge) and an explicit
 `--runs`. Give the gate the bare runner: it appends the changed files itself,
 and a command that already carries its own selection (`./...`, a `tests/`
-path) runs the union — the whole suite, `--runs` times. Deleted or
+path) would run the union — the whole suite, `--runs` times. Sooth refuses
+such a command when it is sure the argument is a selection; behind a
+value-less flag (`pytest -q tests/`) it cannot tell it from that flag's
+value, and the union runs. Deleted or
 renamed-away tests select nothing (there is nothing left to run). PHPUnit
 before 10 accepts a single path argument, so gating several changed files at
 once needs PHPUnit 10+ — the gate checks `--version` and refuses loudly
