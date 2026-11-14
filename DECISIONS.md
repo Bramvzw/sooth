@@ -391,7 +391,8 @@ value. Write or read failures degrade to a stderr warning and never change
 the exit contract. The file is append-only JSON lines, hand-written and
 hand-parsed like the `--json` output (same no-serde reasoning); unreadable
 lines are counted and skipped, never fatal. Analysis looks at each test's
-last 50 observations, and loading reads at most the file's last 64 MiB —
+last 50 invocations (see "One invocation is one piece of evidence"), and
+loading reads at most the file's last 64 MiB —
 the file is append-only and never pruned by sooth, so the read must be
 bounded or every run would pay for the entire past. Drift ages out; the
 user prunes (or doesn't) a file they own.
@@ -940,6 +941,14 @@ claims need more than one invocation:
 
 Lines written before the field existed have no invocation and each stands
 alone, so an existing history keeps the evidence it had.
+
+The window follows the same unit (#228): the analysis looks at a test's
+last 50 *invocations*, with every run they made. Counted in runs, the
+`--runs 20` the gate itself recommends used up the window in under three
+pushes and a proven flake dropped out of sight; gate runs over new,
+untracked test files are dirty and filled it without ever being evidence.
+When the file is larger than one load reads, the report says the count is
+the newest part and not all of it.
 
 Collapsing the N runs into one stored observation was rejected: it throws
 away the per-run counts, and which status would the collapsed observation

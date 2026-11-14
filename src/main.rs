@@ -812,10 +812,7 @@ fn import(args: &cli::ImportArgs) -> ExitCode {
         },
         style,
     );
-    println!(
-        "history now holds {}",
-        report::count(loaded.observations.len(), "observation")
-    );
+    report::print_history_size(loaded.observations.len(), loaded.truncated);
     ExitCode::SUCCESS
 }
 
@@ -852,10 +849,7 @@ fn history_command(args: &cli::HistoryArgs) -> ExitCode {
         }),
         style,
     );
-    println!(
-        "history now holds {}",
-        report::count(loaded.observations.len(), "observation")
-    );
+    report::print_history_size(loaded.observations.len(), loaded.truncated);
     ExitCode::SUCCESS
 }
 

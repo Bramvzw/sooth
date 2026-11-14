@@ -138,8 +138,8 @@ fn failures_confined_to(signal: &[&Observation]) -> Option<String> {
 /// old it is, and failing-since reads the tail. The sort is stable, so
 /// observations sharing one `at` — a single run stamps all of its
 /// observations alike — keep their file order. The analysis looks at each
-/// test's last [`WINDOW_PER_TEST`] signal-carrying observations (skips
-/// carry none).
+/// test's last [`WINDOW_PER_TEST`] invocations, signal-carrying
+/// observations only (skips carry none).
 pub fn analyze(observations: &[Observation]) -> Analysis {
     let mut in_time_order: Vec<&Observation> = observations
         .iter()
@@ -157,9 +157,7 @@ pub fn analyze(observations: &[Observation]) -> Analysis {
 
     let mut analysis = Analysis::default();
     for (id, mut signal) in by_test {
-        if signal.len() > WINDOW_PER_TEST {
-            signal.drain(..signal.len() - WINDOW_PER_TEST);
-        }
+        keep_last_invocations(&mut signal);
         classify(id, &signal, &mut analysis);
     }
 
@@ -176,6 +174,25 @@ pub fn analyze(observations: &[Observation]) -> Analysis {
         .never_passed
         .sort_by(|a, b| b.failed_runs.cmp(&a.failed_runs).then(a.id.cmp(&b.id)));
     analysis
+}
+
+/// Cut a test's observations down to its last [`WINDOW_PER_TEST`]
+/// invocations, keeping every run those made.
+fn keep_last_invocations(signal: &mut Vec<&Observation>) {
+    let mut seen: BTreeSet<Invocation> = BTreeSet::new();
+    let mut first_kept = 0;
+    for (line, observation) in signal.iter().copied().enumerate().rev() {
+        let invocation = observation
+            .invocation
+            .as_deref()
+            .map_or(Invocation::Line(line), Invocation::Run);
+        if seen.len() == WINDOW_PER_TEST && !seen.contains(&invocation) {
+            first_kept = line + 1;
+            break;
+        }
+        seen.insert(invocation);
+    }
+    signal.drain(..first_kept);
 }
 
 /// File one test's window under what it proves: a flake, a regression, a
@@ -381,6 +398,47 @@ mod tests {
         assert_eq!(analysis.flaky.len(), 1);
         assert_eq!(analysis.flaky[0].outcomes.failed, 1);
         assert_eq!(analysis.flaky[0].outcomes.passed, WINDOW_PER_TEST - 1);
+    }
+
+    #[test]
+    fn a_proven_flake_survives_green_gates_of_twenty_runs() {
+        // The gate recommends `--runs 20`. Three of those on the same commit
+        // are sixty observations, but three invocations.
+        let mut history = vec![
+            in_run("c::t", TestStatus::Passed, "aaa", "r1"),
+            in_run("c::t", TestStatus::Failed, "aaa", "r2"),
+        ];
+        for gate in ["g1", "g2", "g3"] {
+            history.extend((0..20).map(|_| in_run("c::t", TestStatus::Passed, "aaa", gate)));
+        }
+        let analysis = analyze(&history);
+        assert_eq!(analysis.flaky.len(), 1, "the proof left the window");
+        assert_eq!(analysis.flaky[0].outcomes.failed, 1);
+        assert_eq!(analysis.flaky[0].outcomes.passed, 61);
+    }
+
+    #[test]
+    fn the_window_is_a_tests_last_invocations_with_all_their_runs() {
+        use crate::history::WINDOW_PER_TEST;
+        // The failure is the oldest invocation; each later one has two runs.
+        let later = |count: usize| {
+            let mut history = vec![
+                in_run("c::t", TestStatus::Passed, "aaa", "first-pass"),
+                in_run("c::t", TestStatus::Failed, "aaa", "the-failure"),
+            ];
+            for run in 0..count {
+                let name = format!("later-{run}");
+                history.push(in_run("c::t", TestStatus::Passed, "aaa", &name));
+                history.push(in_run("c::t", TestStatus::Passed, "aaa", &name));
+            }
+            history
+        };
+        // WINDOW later invocations push the failure (and the pass before it) out.
+        assert!(analyze(&later(WINDOW_PER_TEST)).is_empty());
+        // One fewer and the failure is the oldest invocation inside.
+        let analysis = analyze(&later(WINDOW_PER_TEST - 1));
+        assert_eq!(analysis.flaky.len(), 1);
+        assert_eq!(analysis.flaky[0].outcomes.passed, (WINDOW_PER_TEST - 1) * 2);
     }
 
     #[test]

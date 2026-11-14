@@ -19,6 +19,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   those commits, says so (`known flake (…), and every run since <commit> (3
   runs)`) and keeps the run from reading as nothing new.
 
+- A proven flake no longer drops out of sight after a few pushes. The
+  history looked at a test's last 50 *runs*, so three green `--runs 20`
+  gates pushed the proof out. It now looks at the last 50 invocations with
+  every run they made. When the history file is larger than sooth reads at
+  once, the closing line says the count is its newest part.
+
 ### Changed
 
 - `--json`: `explanation.failures[].verdict` can be `never_passed` (with
