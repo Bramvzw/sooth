@@ -45,6 +45,27 @@ jobs:
       - name: Docs are as honest as the code
         run: RUSTDOCFLAGS="-D warnings" cargo doc --no-deps
 
+  # Development happens on macOS: a test that fails on one platform only
+  # needs a second one to be compared against. A job of its own rather than
+  # a matrix on `test`, because branch protection requires a check with
+  # exactly that name. Tests only — formatting, clippy and docs do not
+  # differ per platform.
+  test-macos:
+    name: test (macOS)
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Install Rust toolchain (pinned by rust-toolchain.toml)
+        run: rustup toolchain install
+
+      - name: Cache cargo registry and build artifacts
+        uses: Swatinem/rust-cache@258712b0b7b1ddf8bddc9fc3b0faca682b2736c3 # v2
+
+      - name: Test
+        run: cargo test
+
   msrv:
     name: Build on MSRV (1.85)
     runs-on: ubuntu-latest
