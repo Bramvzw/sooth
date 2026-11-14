@@ -47,8 +47,10 @@ from a broken invocation).
 ## Run history
 
 Every run with a report source appends one observation per test to
-`.sooth/history.jsonl` in the directory you run from. Add `.sooth/` to your
-`.gitignore` to keep it out of `git add -A`; sooth itself never counts it, or
+`.sooth/history.jsonl` in the directory you run from. You do not have to
+ignore it: the first time sooth creates `.sooth/` in a repository that does
+not ignore it, it adds the directory to `.git/info/exclude` (local to your
+clone, never committed) and says so once. Sooth itself never counts it, or
 the `--junit` report a run writes, as a change to your code. Flaky evidence
 then accumulates from runs you make anyway:
 

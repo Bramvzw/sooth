@@ -1048,6 +1048,89 @@ fn what_sooth_and_the_run_write_does_not_make_a_clean_tree_dirty() {
     );
 }
 
+/// One green run in `dir`, with its report beside the repository.
+fn green_run_in(dir: &Repo) -> std::process::Output {
+    let report = dir.outside("report.xml");
+    let script = format!(
+        "printf '<testsuite><testcase classname=\"c\" name=\"t\"/></testsuite>' > '{}'",
+        report.display()
+    );
+    Command::new(env!("CARGO_BIN_EXE_sooth"))
+        .current_dir(dir)
+        .args([
+            "run",
+            "--junit",
+            &report.display().to_string(),
+            "--color",
+            "never",
+            "--",
+            "sh",
+            "-c",
+            &script,
+        ])
+        .output()
+        .expect("sooth should run")
+}
+
+fn git_status_of(dir: &Path) -> String {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(["status", "--porcelain"])
+        .output()
+        .expect("git should run");
+    String::from_utf8(output.stdout).expect("git output should be UTF-8")
+}
+
+#[test]
+fn creating_the_history_keeps_it_out_of_git_status_without_touching_the_project() {
+    let Some(dir) = scratch_repo("exclude") else {
+        return;
+    };
+    // The project ignores nothing; sooth may not ask it to.
+    std::fs::write(dir.join(".gitignore"), "").expect("write");
+    git_in(&dir, &["commit", "-q", "-am", "ignore nothing"]);
+
+    let first = green_run_in(&dir);
+    let stderr = String::from_utf8(first.stderr).expect("stderr should be UTF-8");
+    assert!(
+        stderr.contains("added `.sooth/` to .git/info/exclude"),
+        "the one change sooth makes must be said: {stderr:?}"
+    );
+    let exclude = std::fs::read_to_string(dir.join(".git/info/exclude")).expect("exclude file");
+    assert!(
+        exclude.lines().any(|line| line == ".sooth/"),
+        "got: {exclude:?}"
+    );
+    assert_eq!(
+        git_status_of(&dir),
+        "",
+        "the project's tree must stay clean"
+    );
+
+    // Said once: the second run finds it ignored and stays quiet.
+    let second = green_run_in(&dir);
+    let stderr = String::from_utf8(second.stderr).expect("stderr should be UTF-8");
+    assert!(!stderr.contains("info/exclude"), "got: {stderr:?}");
+    let exclude = std::fs::read_to_string(dir.join(".git/info/exclude")).expect("exclude file");
+    assert_eq!(exclude.matches(".sooth/").count(), 1, "got: {exclude:?}");
+}
+
+#[test]
+fn a_project_that_already_ignores_the_history_is_left_alone() {
+    // `scratch_repo` commits a `.gitignore` with `.sooth/`.
+    let Some(dir) = scratch_repo("exclude-ignored") else {
+        return;
+    };
+    let before = std::fs::read_to_string(dir.join(".git/info/exclude")).unwrap_or_default();
+    let output = green_run_in(&dir);
+    let stderr = String::from_utf8(output.stderr).expect("stderr should be UTF-8");
+
+    assert!(!stderr.contains("info/exclude"), "got: {stderr:?}");
+    let after = std::fs::read_to_string(dir.join(".git/info/exclude")).unwrap_or_default();
+    assert_eq!(before, after);
+}
+
 #[test]
 fn history_accumulates_across_invocations_and_reports_proven_flakes() {
     let Some(dir) = scratch_repo("history") else {
