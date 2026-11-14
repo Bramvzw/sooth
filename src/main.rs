@@ -438,8 +438,18 @@ fn verify_failures(
     if failed.is_empty() {
         return None;
     }
-    // Selection gets the raw name half; the joined id is never re-split.
-    let names: Vec<String> = failed.iter().map(|test| test.name.clone()).collect();
+    // Selection gets the raw name half; the joined id is never re-split. A
+    // failure the runner cannot be pointed at stays out of the selection —
+    // it would widen it to the whole suite — and reads unverified.
+    let names: Vec<String> = failed
+        .iter()
+        .map(|test| test.name.clone())
+        .filter(|name| preset::selectable(preset, name))
+        .collect();
+    if names.is_empty() {
+        eprintln!("sooth: verification skipped — no failed test has a name the runner can select");
+        return None;
+    }
     let mut verify_reports = Vec::with_capacity(verify::VERIFY_RUNS as usize);
     for attempt in 1..=verify::VERIFY_RUNS {
         let path = match preset::report_path() {

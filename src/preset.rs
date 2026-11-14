@@ -122,6 +122,9 @@ pub fn inject_selected(
 
 /// The selection flag(s) that restrict `preset` to the tests named `names`.
 fn selection_args(preset: Preset, names: &[String]) -> Option<Vec<String>> {
+    if names.iter().any(|name| !selectable(preset, name)) {
+        return None;
+    }
     match preset {
         // The JUnit classname is dotted but --filter wants the backslashed
         // FQCN; only the name half survives both (#93).
@@ -151,6 +154,16 @@ fn selection_args(preset: Preset, names: &[String]) -> Option<Vec<String>> {
             Some(vec!["-t".to_owned(), format!("({pattern})")])
         }
         Preset::Go => None,
+    }
+}
+
+/// Whether a runner can be pointed at the test with this raw `name`. An
+/// empty one — or, for pytest, one that is empty before its `[parameters]`
+/// — turns `--filter '/::()/'`, `-t '()'` or `-k ''` into "every test".
+pub fn selectable(preset: Preset, name: &str) -> bool {
+    match preset {
+        Preset::Pytest => !base_name(name).is_empty(),
+        Preset::Phpunit | Preset::Jest | Preset::Go => !name.is_empty(),
     }
 }
 
@@ -642,6 +655,18 @@ mod tests {
         assert!(is_test_file(Preset::Jest, "src/__tests__/deep/cart.tsx"));
         assert!(!is_test_file(Preset::Jest, "src/__tests__/fixtures.json"));
         assert!(!is_test_file(Preset::Jest, "src/__tests_almost__/cart.js"));
+    }
+
+    #[test]
+    fn a_name_that_selects_nothing_in_particular_selects_nothing_at_all() {
+        // `--filter '/::()/'`, `-t '()'` and `-k ''` all match every test.
+        let named = "test_x".to_owned();
+        for preset in [Preset::Phpunit, Preset::Jest, Preset::Pytest] {
+            assert!(selection_args(preset, &[named.clone(), String::new()]).is_none());
+            assert!(selection_args(preset, std::slice::from_ref(&named)).is_some());
+        }
+        // pytest selects by the name before its parameters.
+        assert!(selection_args(Preset::Pytest, &["[only-params]".to_owned()]).is_none());
     }
 
     #[test]
