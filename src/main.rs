@@ -1431,6 +1431,7 @@ mod tests {
                 failed_runs: 1,
                 observed_runs: 4,
                 failures_confined_to: None,
+                red_since: None,
             },
             quarantined,
         }

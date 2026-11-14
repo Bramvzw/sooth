@@ -7,8 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- `--json`: `explanation.failures[].verdict` can be `never_passed` (with
+  `first_commit`); a `known_flake` entry and `history.flaky[]` carry
+  `red_since` (`null`, or `commit` and `failed_runs`);
+  `explanation.counts` and `history` gain `never_passed`. Additions only.
+
 ### Fixed
 
+- `failing since <commit>` now means what the README says: green before,
+  red since. A test that failed every observed run is reported as `never
+  seen passing (… first on <commit>)` instead of as a regression on the
+  first commit sooth happened to see.
+- A real break on a test that was once flaky is no longer filed under "all
+  known flakes, nothing new". A proven flake that has failed every run
+  since a commit, across three invocations or more and never passing on
+  those commits, says so (`known flake (…), and every run since <commit> (3
+  runs)`) and keeps the run from reading as nothing new.
 - sooth never exits 101. A panic is reported as `sooth: internal error …`
   with exit 2, and a reader that closes the pipe (`sooth history | head`)
   ends sooth quietly with exit 2 instead of a panic message.
