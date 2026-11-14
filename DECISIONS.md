@@ -96,8 +96,8 @@ not wait for it and stands on flaky + slow + order-dependence alone.
 
 `sooth` is a personal OSS project — no JIRA, no external board. Work is planned
 GitHub-native:
-- **Milestones = versions** (`v0.1 skeleton`, `v0.2 flaky`, `v0.3 slow+order`,
-  `v1.0 launch`, `egress spike`).
+- **Milestones = versions** (`v0.1 skeleton`, `v0.2 flaky`, `v0.3 laravel`,
+  `v0.4 slow+order`, `v1.0 launch`, `egress spike`).
 - **Epics = theme issues** (label `epic`): Core run pipeline, Flaky detection,
   Slow & order analysis, Distribution & packaging, Launch & docs, Network egress.
 - **Stories = issues under an epic** (label `story`), each assigned to a milestone.
@@ -128,7 +128,7 @@ output: the structured signal comes from the JUnit XML the runner produces
 shuffling for order-dependence is a separate pass (see above). Since the v0.1
 architecture audit the runner runs exactly *once* per call: repetition is an
 orchestration strategy (the v0.2 flaky loop parses the report between runs;
-the v0.3 order pass runs different shuffled invocations), so the loop lives
+the v0.4 order pass runs different shuffled invocations), so the loop lives
 with the orchestrator, not the spawner.
 
 ## Pinned Rust toolchain instead of rolling `stable`
@@ -879,7 +879,7 @@ one green isolation run says more than any signature.
 
 The third case the issue names — failed alone with the *same* signature
 while the suite's normal order was green — is order-dependence and belongs
-to #111 (v0.3), not to verification.
+to #111 (v0.4), not to verification.
 
 ## Layering invariants are clippy lints, not a tidy test
 
@@ -952,7 +952,7 @@ The roadmap put distribution at the v1.0 launch. It came forward because the
 first users sooth is built for are PHP and Laravel developers, and most of
 them have no Rust toolchain: `cargo install sooth` is a dead end for exactly
 the people the beachhead names. A tool nobody can install gets no feedback,
-and the feedback is what v0.3 and v1.0 need.
+and the feedback is what the analysis passes and v1.0 need.
 
 Every release now carries static binaries for macOS and Linux, x86_64 and
 arm64 (`.github/workflows/binaries.yml`), and `install.sh` downloads the one

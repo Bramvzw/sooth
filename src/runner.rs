@@ -38,7 +38,7 @@ impl RunOutcome {
 /// Exactly once on purpose: spawning and measuring is this module's whole
 /// job. *Repetition* is an orchestration strategy that lives with the caller
 /// — flaky detection (v0.2) repeats in a fixed order and parses the report
-/// per run, order-dependence detection (v0.3) runs different shuffled
+/// per run, order-dependence detection (v0.4) runs different shuffled
 /// invocations (see `DECISIONS.md`).
 ///
 /// # Errors
