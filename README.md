@@ -297,6 +297,10 @@ sooth run --fail-on-flaky --preset phpunit -- vendor/bin/phpunit
 The run exits 0 only when *every* failure is on the list — the pardoned
 failures are still printed, and the verdict says exactly what happened
 (`result: ✓ PASSED — only quarantined flakes failed (2 tests pardoned)`).
+The list pardons what you put on it, but sooth does not call it a flake
+when the history says otherwise: a listed test that is `failing since` a
+commit keeps its `▼`, and the verdict reads `only quarantined tests failed
+(2 tests pardoned, 1 of them not a flake by the history)`.
 Any new failure, new flakiness, or a failed run the report cannot explain
 still fails the build. Without the flag the list still labels its entries as
 known (see above), but it pardons nothing and steers no exit code.

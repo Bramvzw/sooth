@@ -546,6 +546,61 @@ fn a_quarantined_failure_is_pardoned_with_fail_on_flaky() {
 }
 
 #[test]
+fn a_pardoned_regression_is_not_called_a_flake() {
+    let (cwd, mut command) = sooth_in("quarantine-regression");
+    // Green on `aaa`, red on `bbb` in two invocations: a regression by the
+    // history, and listed in the quarantine all the same.
+    std::fs::create_dir_all(cwd.join(".sooth")).expect("mkdir");
+    let line = |at: u32, commit: &str, status: &str| {
+        format!(
+            r#"{{"at":{at},"commit":"{commit}","dirty":false,"env":"local","run":"r{at}","status":"{status}","id":"c::t"}}"#
+        ) + "\n"
+    };
+    std::fs::write(
+        cwd.join(".sooth/history.jsonl"),
+        line(1, "aaa", "passed") + &line(2, "bbb", "failed") + &line(3, "bbb", "failed"),
+    )
+    .expect("history");
+    std::fs::write(cwd.join(".sooth-quarantine"), "c::t\n").expect("quarantine");
+    let report = cwd.join("report.xml");
+    let script = format!(
+        "printf '<testsuite><testcase classname=\"c\" name=\"t\"><failure/></testcase></testsuite>' > '{}'; exit 1",
+        report.display()
+    );
+    let output = command
+        .args([
+            "run",
+            "--junit",
+            &report.display().to_string(),
+            "--fail-on-flaky",
+            "--color",
+            "never",
+            "--",
+            "sh",
+            "-c",
+            &script,
+        ])
+        .output()
+        .expect("sooth should run");
+    let stdout = String::from_utf8(output.stdout).expect("stdout should be UTF-8");
+
+    // A human listed the id, so the pardon stands — loudly.
+    assert_eq!(output.status.code(), Some(0), "got: {stdout:?}");
+    assert!(
+        stdout.contains("▼ c::t — failing since bbb"),
+        "a regression keeps its mark when it is pardoned: {stdout:?}"
+    );
+    assert!(
+        !stdout.contains("only quarantined flakes failed"),
+        "the closing line called a regression a flake: {stdout:?}"
+    );
+    assert!(
+        stdout.contains("only quarantined tests failed (1 test pardoned, 1 of them not a flake"),
+        "got: {stdout:?}"
+    );
+}
+
+#[test]
 fn an_unlisted_failure_still_fails_with_fail_on_flaky() {
     let (cwd, mut command) = sooth_in("quarantine-miss");
     std::fs::write(cwd.join(".sooth-quarantine"), "some.other::test_flake\n")

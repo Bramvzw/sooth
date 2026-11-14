@@ -16,6 +16,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A pardoned regression is no longer called a flake. With
+  `--fail-on-flaky`, a quarantined test the history reports as `failing
+  since` a commit (or never seen passing) got the calm `⊘` and the verdict
+  `only quarantined flakes failed`. The pardon stands, since the team
+  listed the id, but the test keeps its `▼` and the verdict reads `only
+  quarantined tests failed (… pardoned, 1 of them not a flake by the
+  history)`.
 - `--verify`: one exact reproduction is a reproduction. A failure that one
   re-run reproduced exactly and the other failed differently (a teardown
   error, say) was labelled `failed differently … not a reproduction`; it

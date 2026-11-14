@@ -393,7 +393,9 @@ fn red_streak_phrase(streak: Option<&history::RedStreak>) -> String {
 /// them and, unlike emoji, they carry the ANSI color that is the point.
 /// With `--color never` the characters stay; only the paint drops.
 fn glyph(explanation: &explain::Explanation, style: Style) -> String {
-    if explanation.quarantined {
+    // Quarantine calms a flake's line. A regression on the list keeps its
+    // own mark: listed or not, it is not a flake.
+    if explanation.quarantined && !explanation.listed_but_not_a_flake() {
         return style.yellow("⊘");
     }
     match &explanation.verdict {
@@ -721,12 +723,26 @@ pub fn print_pardon_gap(style: Style) {
 
 /// The verdict when `--fail-on-flaky` pardoned every failure: honest about
 /// the failures, explicit about why the exit is 0.
-pub fn pardoned_verdict(outcomes: &[RunOutcome], pardoned: usize, style: Style) -> String {
+/// `not_flakes` of the pardoned are regressions or never passed by the
+/// history: the list pardons them all the same, but they are not called
+/// flakes here.
+pub fn pardoned_verdict(
+    outcomes: &[RunOutcome],
+    pardoned: usize,
+    not_flakes: usize,
+    style: Style,
+) -> String {
     let total: Duration = outcomes.iter().map(|outcome| outcome.duration).sum();
-    style.yellow(&format!(
-        "result: ✓ PASSED — only quarantined flakes failed ({} pardoned) ({total:.2?} total)",
-        count(pardoned, "test")
-    ))
+    let pardoned = count(pardoned, "test");
+    let what = if not_flakes == 0 {
+        format!("only quarantined flakes failed ({pardoned} pardoned)")
+    } else {
+        format!(
+            "only quarantined tests failed ({pardoned} pardoned, {not_flakes} of them not a \
+             flake by the history)"
+        )
+    };
+    style.yellow(&format!("result: ✓ PASSED — {what} ({total:.2?} total)"))
 }
 
 /// `1 error`, `2 errors` — a count with a correctly pluralized noun.

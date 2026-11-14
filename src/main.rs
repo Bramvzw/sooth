@@ -983,7 +983,15 @@ fn verdict(
     style: report::Style,
 ) -> String {
     match analyses.pardoned {
-        Some(pardoned) => report::pardoned_verdict(outcomes, pardoned.len(), style),
+        Some(pardoned) => {
+            let not_flakes = analyses
+                .explanation
+                .unwrap_or_default()
+                .iter()
+                .filter(|explanation| explanation.listed_but_not_a_flake())
+                .count();
+            report::pardoned_verdict(outcomes, pardoned.len(), not_flakes, style)
+        }
         None => report::verdict_line(outcomes, junit_summary, report_failures, failed, style),
     }
 }
