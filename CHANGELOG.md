@@ -58,6 +58,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The gate no longer loses a changed test file whose name git would quote.
+  A path holding a `"` or a backslash came back C-quoted, was no test file
+  in that form, and silently left the selection — the gate reported fewer
+  files than had changed, or "nothing to prove". The listings are read
+  NUL-separated now, as written on disk.
 - `--verify` in a Pest project: a class-based PHPUnit test is found again.
   Pest reports `test_that_true_is_true` as `That true is true`, so the
   re-run's `--filter` matched nothing and every such failure — the
@@ -66,6 +71,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   have been prettified from: an optional `test` prefix, a space for an
   underscore or a camelCase hump, either case. Plain PHPUnit names and
   Pest-style descriptions match as before.
+
+### Security
+
+- The gate hands the runner paths, never options. A changed test file
+  called `--bootstrap=payloadTest.php` (or `-k_test.py`) reached PHPUnit or
+  pytest as an option: it would have run anyway as a test, but this way its
+  name alone chose a bootstrap file or replaced the project's
+  configuration. Selected paths are now passed as `./<path>`.
 
 ## [0.3.1] - 2026-11-14
 

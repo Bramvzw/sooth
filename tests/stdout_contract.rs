@@ -2623,6 +2623,71 @@ fn the_gate_selects_a_test_file_with_a_non_ascii_name() {
     assert!(stdout.contains("CaféTest.php"), "got: {stdout:?}");
 }
 
+/// A one-file gate of the phpunit preset over a file called `name`, with a
+/// runner that notes its arguments in `ran-with`: (stdout, the arguments).
+fn gate_one_file_named(tag: &str, name: &str) -> Option<(String, String)> {
+    let dir = scratch_repo(tag)?;
+    write_named_runner(&dir, "phpunit", "--log-junit", "--bootstrap=*");
+    std::fs::write(dir.join(name), "<?php\n").expect("write");
+    let output = Command::new(env!("CARGO_BIN_EXE_sooth"))
+        .current_dir(&dir)
+        .args([
+            "run",
+            "--changed=HEAD",
+            "--runs",
+            "2",
+            "--no-history",
+            "--preset",
+            "phpunit",
+            "--color",
+            "never",
+            "--",
+            "./phpunit",
+        ])
+        .output()
+        .expect("sooth should run");
+    let stdout = String::from_utf8(output.stdout).expect("stdout should be UTF-8");
+    let ran_with = std::fs::read_to_string(dir.join("ran-with")).unwrap_or_default();
+    Some((stdout, ran_with))
+}
+
+#[test]
+fn the_gate_selects_a_test_file_whose_name_git_would_quote() {
+    // Without -z, git C-quotes a path holding a quote or a backslash; the
+    // quoted form is no test file, so it silently left the selection.
+    for name in ["Wei\"rdTest.php", "Back\\slashTest.php"] {
+        let Some((stdout, ran_with)) = gate_one_file_named("gate-quoted", name) else {
+            return;
+        };
+        assert!(
+            stdout.contains("gate: 1 changed test file against HEAD"),
+            "`{name}` must be gated: {stdout:?}"
+        );
+        assert!(
+            ran_with.ends_with(&format!("./{name}\n")),
+            "the runner gets the path as it is on disk: {ran_with:?}"
+        );
+    }
+}
+
+#[test]
+fn the_gate_hands_the_runner_paths_never_options() {
+    // A test file may be called anything. Unanchored, this one reaches the
+    // runner as an option: `--bootstrap=…` runs code before any test.
+    let Some((stdout, ran_with)) = gate_one_file_named("gate-dash", "--bootstrap=payloadTest.php")
+    else {
+        return;
+    };
+    assert!(
+        stdout.contains("✓ PASSED"),
+        "the runner must have taken it as a path: {stdout:?}"
+    );
+    assert!(
+        ran_with.ends_with("./--bootstrap=payloadTest.php\n"),
+        "got: {ran_with:?}"
+    );
+}
+
 #[test]
 fn the_gate_run_from_a_subdirectory_selects_paths_the_runner_can_open() {
     let Some(dir) = scratch_repo("gate-subdir") else {
@@ -3085,7 +3150,8 @@ fn a_composer_script_gets_the_reporter_flags_after_a_double_dash() {
     assert!(stdout.contains("2 of 2 runs"), "got: {stdout:?}");
     let runner_args = std::fs::read_to_string(dir.join("runner-args")).expect("the runner ran");
     assert!(
-        runner_args.starts_with("--log-junit\n") && runner_args.ends_with("ATest.php\nBTest.php\n"),
+        runner_args.starts_with("--log-junit\n")
+            && runner_args.ends_with("./ATest.php\n./BTest.php\n"),
         "the script gets the flags, then the gate's files: {runner_args:?}"
     );
     assert!(

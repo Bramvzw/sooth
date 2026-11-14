@@ -278,12 +278,17 @@ pub fn resolve_commit(dir: &Path, given: &str) -> Result<String, CommitError> {
 }
 
 pub(crate) fn git(dir: &Path, args: &[&str]) -> Option<String> {
+    git_raw(dir, args).map(|text| text.trim().to_owned())
+}
+
+/// A successful git call's stdout exactly as written — for `-z` listings,
+/// where a path may begin or end with the whitespace [`git`] trims.
+pub(crate) fn git_raw(dir: &Path, args: &[&str]) -> Option<String> {
     let output = git_run(dir, args)?;
     if !output.status.success() {
         return None;
     }
-    let text = String::from_utf8(output.stdout).ok()?;
-    Some(text.trim().to_owned())
+    String::from_utf8(output.stdout).ok()
 }
 
 #[expect(

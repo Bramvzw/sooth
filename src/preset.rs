@@ -538,7 +538,10 @@ fn selected_paths(preset: Preset, files: &[String]) -> Vec<String> {
         Preset::Jest => std::iter::once("--".to_owned())
             .chain(files.iter().map(|file| regex_escape(file)))
             .collect(),
-        Preset::Phpunit | Preset::Pytest => files.to_vec(),
+        // Anchored, so a file called `--bootstrap=xTest.php` or
+        // `-k_test.py` reaches the runner as the path it is and never as an
+        // option. git's paths are always relative, so `./` is always right.
+        Preset::Phpunit | Preset::Pytest => files.iter().map(|file| format!("./{file}")).collect(),
     }
 }
 
@@ -857,8 +860,8 @@ mod tests {
                 "--",
                 "--log-junit",
                 "/tmp/r.xml",
-                "a/BTest.php",
-                "c/DTest.php"
+                "./a/BTest.php",
+                "./c/DTest.php"
             ])
         );
     }
@@ -1163,7 +1166,7 @@ mod tests {
                 "--log-junit",
                 "/tmp/r.xml",
                 "--stop-on-failure",
-                "tests/ATest.php"
+                "./tests/ATest.php"
             ])
         );
         // No files, no trace of the gate — jest's separator included.
@@ -1421,9 +1424,19 @@ mod tests {
     }
 
     #[test]
-    fn most_runners_take_the_paths_verbatim() {
-        let files = vec!["a/BTest.php".to_owned(), "c/DTest.php".to_owned()];
-        assert_eq!(selected_paths(Preset::Phpunit, &files), files);
+    fn phpunit_and_pytest_paths_are_anchored_so_none_can_read_as_an_option() {
+        let files = vec!["a/BTest.php".to_owned(), "--bootstrap=xTest.php".to_owned()];
+        assert_eq!(
+            selected_paths(Preset::Phpunit, &files),
+            vec![
+                "./a/BTest.php".to_owned(),
+                "./--bootstrap=xTest.php".to_owned()
+            ]
+        );
+        assert_eq!(
+            selected_paths(Preset::Pytest, &["-k_test.py".to_owned()]),
+            vec!["./-k_test.py".to_owned()]
+        );
     }
 
     #[test]
