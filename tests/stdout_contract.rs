@@ -299,6 +299,59 @@ fn write_verify_runner(dir: &std::path::Path) {
 }
 
 #[test]
+fn a_failure_without_a_name_is_never_verified_against_the_whole_suite() {
+    use std::os::unix::fs::PermissionsExt;
+    let (cwd, mut command) = sooth_in("verify-nameless");
+    // The suite's one failure has no `name`. A re-run would have to select
+    // "every test"; the runner records whether it was asked to.
+    std::fs::write(
+        cwd.join("runner.sh"),
+        concat!(
+            "#!/bin/sh\n",
+            "report=\"\"; prev=\"\"\n",
+            "for a in \"$@\"; do\n",
+            "  if [ \"$prev\" = \"--log-junit\" ]; then report=\"$a\"; fi\n",
+            "  case \"$a\" in --filter) touch re-ran;; esac\n",
+            "  prev=\"$a\"\n",
+            "done\n",
+            "printf '<testsuite><testcase classname=\"c\"><failure/></testcase></testsuite>' > \"$report\"\n",
+            "exit 1\n",
+        ),
+    )
+    .expect("write runner");
+    std::fs::set_permissions(
+        cwd.join("runner.sh"),
+        std::fs::Permissions::from_mode(0o755),
+    )
+    .expect("chmod");
+    let output = command
+        .args([
+            "run",
+            "--verify",
+            "--no-history",
+            "--preset",
+            "phpunit",
+            "--color",
+            "never",
+            "--",
+            "./runner.sh",
+        ])
+        .output()
+        .expect("sooth should run");
+    let stderr = String::from_utf8(output.stderr).expect("stderr should be UTF-8");
+
+    assert_eq!(output.status.code(), Some(1));
+    assert!(
+        !cwd.join("re-ran").exists(),
+        "the re-run selected every test for a failure it could not name"
+    );
+    assert!(
+        stderr.contains("verification skipped"),
+        "skipping must be said: {stderr:?}"
+    );
+}
+
+#[test]
 fn a_verified_failure_that_passes_on_re_run_reads_flaky_or_order_dependent() {
     let (cwd, mut command) = sooth_in("verify-flake");
     write_verify_runner(&cwd);

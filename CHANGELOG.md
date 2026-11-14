@@ -16,6 +16,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `--verify` never re-runs the whole suite for a failure it cannot name. A
+  failed test case without a `name` built a selector that matched every
+  test, and the failure was then labelled from that unrestricted run. Such
+  a failure is now left out of the selection and reads `unverified`; when
+  no failure can be selected, verification is skipped and says so.
 - A test name can no longer repaint sooth's own lines. Control characters
   in text that comes from a report, the history or git (an ANSI escape, a
   carriage return, a newline) are printed as `�`, so a name carrying
