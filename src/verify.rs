@@ -1,6 +1,7 @@
 //! Failure re-verification: after a failing run, re-run *only the failed
 //! tests* and classify them (see `DECISIONS.md`).
 
+use std::collections::btree_map::Entry;
 use std::collections::BTreeMap;
 
 use crate::junit::{JunitReport, TestStatus};
@@ -144,22 +145,39 @@ pub struct FailedTest {
     pub signature: FailureSignature,
 }
 
-/// The suite's failed tests, collapsed per report (worst status wins).
+/// The suite's failed tests, collapsed per report (worst status wins; the
+/// name is the first case's that carried the id). One pass over the report:
+/// a fully red suite is when this list is longest.
 pub fn failed_tests(report: &JunitReport) -> Vec<FailedTest> {
-    run_signatures(report)
-        .into_iter()
-        .filter(|(_, signature)| matches!(signature.status, TestStatus::Failed | TestStatus::Error))
-        .map(|(id, signature)| {
-            let name = report
-                .test_cases
-                .iter()
-                .find(|case| case.qualified_name() == id)
-                .map_or_else(|| id.clone(), |case| case.name.clone());
-            FailedTest {
-                id,
-                name,
-                signature,
+    let mut by_id: BTreeMap<String, FailedTest> = BTreeMap::new();
+    for case in &report.test_cases {
+        let signature = FailureSignature {
+            status: case.status,
+            failure_type: case.failure_type.clone(),
+        };
+        match by_id.entry(case.qualified_name()) {
+            Entry::Occupied(mut seen) => {
+                if case.status.severity() > seen.get().signature.status.severity() {
+                    seen.get_mut().signature = signature;
+                }
             }
+            Entry::Vacant(first) => {
+                let id = first.key().clone();
+                first.insert(FailedTest {
+                    id,
+                    name: case.name.clone(),
+                    signature,
+                });
+            }
+        }
+    }
+    by_id
+        .into_values()
+        .filter(|test| {
+            matches!(
+                test.signature.status,
+                TestStatus::Failed | TestStatus::Error
+            )
         })
         .collect()
 }
@@ -176,6 +194,33 @@ pub fn failed_ids(report: &JunitReport) -> Vec<String> {
 mod tests {
     use super::{classify, failed_ids, failed_tests};
     use crate::junit::parse_str;
+
+    #[test]
+    fn listing_the_failures_of_a_fully_red_suite_stays_linear() {
+        // A suite that is red everywhere (the database is down) is when the
+        // list is longest. Quadratic, these two calls took over five seconds;
+        // linear, they take milliseconds — the bound is 100x slack.
+        use std::fmt::Write as _;
+        let mut cases = String::new();
+        for i in 0..10_000 {
+            // `cases` is a plain `String`; `write!` never fails for it.
+            let _ = write!(
+                cases,
+                r#"<testcase classname="c{}" name="t{i}"><failure/></testcase>"#,
+                i % 50
+            );
+        }
+        let report = report(&cases);
+        let started = std::time::Instant::now();
+        let failed = failed_tests(&report);
+        assert_eq!(failed.len(), 10_000);
+        assert_eq!(failed_ids(&report).len(), 10_000);
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(3),
+            "listing 10,000 failures took {:?}",
+            started.elapsed()
+        );
+    }
 
     fn report(cases: &str) -> crate::junit::JunitReport {
         parse_str(&format!("<testsuite>{cases}</testsuite>")).unwrap()

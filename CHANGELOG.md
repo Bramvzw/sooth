@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A suite that is red everywhere no longer makes sooth itself slow. Listing
+  the failed tests was quadratic in their number: 20,000 failures cost 16
+  seconds per report, and now 0.3.
 - A clean tree stays clean in the history. sooth read the code identity
   after the run and counted every untracked file, so the report a run wrote
   into the repository (the README's own `--junit report.xml` example) and an
