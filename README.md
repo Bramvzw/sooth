@@ -193,8 +193,8 @@ whenever it could read the report (2 when it could not).
 sooth re-runs *only the failed tests* twice — seconds instead of N× the
 suite — and each failure's line above says what came of it:
 
-- **real** — reproduced on every re-run, with the same failure: fix the
-  test or the code.
+- **real** — failed on every re-run, at least once with the same failure
+  the suite saw: fix the test or the code.
 - **flaky or order-dependent** — passed on re-run in isolation.
 - **failed differently** — the re-run failed with another exception than
   the suite saw (`TypeError` vs `RuntimeException`): an artifact of

@@ -55,13 +55,15 @@ pub struct DifferentFailure {
 /// What re-verification concluded about the run's failures.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct Verdict {
-    /// Failed the suite and failed every verification run it appeared in,
-    /// with the same signature.
+    /// Failed the suite and every verification run it appeared in, at least
+    /// one of them with the signature the suite saw: one exact reproduction
+    /// is a reproduction.
     pub real: Vec<String>,
     /// Failed the suite but passed at least one verification run.
     pub flaky_or_order: Vec<String>,
-    /// Failed every verification run, but with a different signature than
-    /// the suite saw — nothing was reproduced (see `DECISIONS.md`).
+    /// Failed every verification run, and each time with a different
+    /// signature than the suite saw — nothing was reproduced (see
+    /// `DECISIONS.md`).
     pub failed_differently: Vec<DifferentFailure>,
     /// Failed the suite but never appeared in a verification report.
     pub unverified: Vec<String>,
@@ -77,6 +79,7 @@ pub fn classify(failed: &[FailedTest], verify_reports: &[JunitReport]) -> Verdic
     for test in failed {
         let mut seen = false;
         let mut passed_once = false;
+        let mut reproduced = false;
         let mut mismatch: Option<FailureSignature> = None;
         for run in &per_run {
             // A skip carries no signal: it does not count as re-run.
@@ -89,7 +92,9 @@ pub fn classify(failed: &[FailedTest], verify_reports: &[JunitReport]) -> Verdic
                     if matches!(signature.status, TestStatus::Failed | TestStatus::Error) =>
                 {
                     seen = true;
-                    if !same_failure(&test.signature, signature) && mismatch.is_none() {
+                    if same_failure(&test.signature, signature) {
+                        reproduced = true;
+                    } else if mismatch.is_none() {
                         mismatch = Some(signature.clone());
                     }
                 }
@@ -100,6 +105,8 @@ pub fn classify(failed: &[FailedTest], verify_reports: &[JunitReport]) -> Verdic
             verdict.unverified.push(test.id.clone());
         } else if passed_once {
             verdict.flaky_or_order.push(test.id.clone());
+        } else if reproduced {
+            verdict.real.push(test.id.clone());
         } else if let Some(isolation) = mismatch {
             verdict.failed_differently.push(DifferentFailure {
                 id: test.id.clone(),
@@ -286,6 +293,37 @@ mod tests {
         assert_eq!(verdict.failed_differently.len(), 1);
         assert_eq!(verdict.failed_differently[0].suite, "TypeError");
         assert_eq!(verdict.failed_differently[0].isolation, "RuntimeException");
+    }
+
+    #[test]
+    fn one_exact_reproduction_outranks_a_re_run_that_failed_differently() {
+        // The suite saw an AssertionError; re-run 1 reproduced it exactly,
+        // re-run 2 died in teardown. The reproduction is in hand.
+        let failed = failed(
+            r#"<testcase classname="c" name="t"><failure type="AssertionError"/></testcase>"#,
+        );
+        for verify in [
+            [
+                report(
+                    r#"<testcase classname="c" name="t"><failure type="AssertionError"/></testcase>"#,
+                ),
+                report(
+                    r#"<testcase classname="c" name="t"><error type="RuntimeException"/></testcase>"#,
+                ),
+            ],
+            [
+                report(
+                    r#"<testcase classname="c" name="t"><error type="RuntimeException"/></testcase>"#,
+                ),
+                report(
+                    r#"<testcase classname="c" name="t"><failure type="AssertionError"/></testcase>"#,
+                ),
+            ],
+        ] {
+            let verdict = classify(&failed, &verify);
+            assert_eq!(verdict.real, ["c::t"]);
+            assert!(verdict.failed_differently.is_empty());
+        }
     }
 
     #[test]
