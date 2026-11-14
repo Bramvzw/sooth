@@ -625,6 +625,20 @@ fn short_commit(commit: &str) -> &str {
         .map_or(commit, |(end, _)| commit.split_at(end).0)
 }
 
+/// How much history the analysis above rests on. A file larger than one
+/// load reads is said as such: the count is then the newest part, not all.
+pub fn print_history_size(observations: usize, truncated: bool) {
+    let observations = count(observations, "observation");
+    if truncated {
+        println!(
+            "history: the newest {observations} were read; the file holds more than sooth \
+             loads at once, so older ones are out of reach"
+        );
+    } else {
+        println!("history now holds {observations}");
+    }
+}
+
 /// What a "new" label rests on, when it rests on nothing: `None` is a
 /// history that was not consulted, `Some(0)` an empty one.
 pub fn print_history_gap(evidence: Option<PriorEvidence>, style: Style) {

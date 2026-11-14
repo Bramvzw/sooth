@@ -16,6 +16,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A proven flake no longer drops out of sight after a few pushes. The
+  history looked at a test's last 50 *runs*, so three green `--runs 20`
+  gates pushed the proof out. It now looks at the last 50 invocations with
+  every run they made. When the history file is larger than sooth reads at
+  once, the closing line says the count is its newest part.
 - `failing since <commit>` now means what the README says: green before,
   red since. A test that failed every observed run is reported as `never
   seen passing (… first on <commit>)` instead of as a regression on the
