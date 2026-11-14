@@ -110,13 +110,13 @@ fn run(args: &cli::RunArgs) -> ExitCode {
 
     let identity = identity_before_run(args, report_source.as_ref());
 
-    let (outcomes, reports) = match execute_runs(
-        args.runs,
-        &(command, envs),
-        report_source.as_ref(),
-        plan.as_ref(),
-        files.len(),
-    ) {
+    let session = Session {
+        spawn: &(command, envs),
+        report_source: report_source.as_ref(),
+        plan: plan.as_ref(),
+        gated_files: files.len(),
+    };
+    let (outcomes, reports) = match execute_runs(args, &session, style) {
         Ok(executed) => executed,
         Err(exit) => return exit,
     };
@@ -183,22 +183,147 @@ fn run(args: &cli::RunArgs) -> ExitCode {
     }
 }
 
-/// Run the command `runs` times and load each run's report.
+/// What every run of one invocation shares: the command as it is spawned,
+/// where its report comes from, and what the gate handed it.
+struct Session<'a> {
+    spawn: &'a preset::Spawn,
+    report_source: Option<&'a ReportSource>,
+    plan: Option<&'a preset::Plan>,
+    gated_files: usize,
+}
+
+/// Whether the runner is kept quiet: N copies of the same output bury the
+/// verdict, so repeated runs print one line each and the output of the
+/// first that failed (see `DECISIONS.md`). One run shows its tests as if
+/// you had run them yourself.
+fn quiet_repeats(args: &cli::RunArgs) -> bool {
+    args.runs > 1 && !args.show_output
+}
+
+/// The output of quiet runs, kept off the screen: every run writes to one
+/// file in a private directory, and the first failing run's is set aside.
+/// Dropping it removes the directory, on every way out of the runs loop.
+struct Capture {
+    dir: std::path::PathBuf,
+    /// The first run that failed, whether or not its output could be kept.
+    first_failure: Option<usize>,
+    kept: bool,
+}
+
+impl Capture {
+    fn start() -> std::io::Result<Self> {
+        Ok(Self {
+            dir: preset::private_dir()?,
+            first_failure: None,
+            kept: false,
+        })
+    }
+
+    fn current_path(&self) -> std::path::PathBuf {
+        self.dir.join("run.log")
+    }
+
+    fn kept_path(&self) -> std::path::PathBuf {
+        self.dir.join("first-failure.log")
+    }
+
+    /// An empty file for the run about to start.
+    fn open(&self) -> std::io::Result<std::fs::File> {
+        std::fs::File::create(self.current_path())
+    }
+
+    /// What the run that just ended wrote.
+    fn current(&self) -> Vec<u8> {
+        std::fs::read(self.current_path()).unwrap_or_default()
+    }
+
+    /// Run `number` failed: set its output aside if it is the first.
+    fn note_failure(&mut self, number: usize) {
+        if self.first_failure.is_none() {
+            self.first_failure = Some(number);
+            self.kept = std::fs::rename(self.current_path(), self.kept_path()).is_ok();
+        }
+    }
+
+    /// Show the first failing run's output, if one failed and it was kept.
+    fn replay_first_failure(&self, total: usize, to_stderr: bool, style: report::Style) {
+        let Some(number) = self.first_failure.filter(|_| self.kept) else {
+            return;
+        };
+        let replay = report::Replay {
+            number,
+            total,
+            why: "the first that failed",
+            output: &std::fs::read(self.kept_path()).unwrap_or_default(),
+        };
+        report::print_replay(&replay, to_stderr, style);
+    }
+
+    /// Show the output of run `number`, the one sooth stops at: it is what
+    /// the error that follows points to. An earlier failure goes first.
+    fn replay_before_stopping(
+        &self,
+        (number, total): (usize, usize),
+        to_stderr: bool,
+        style: report::Style,
+    ) {
+        self.replay_first_failure(total, to_stderr, style);
+        let replay = report::Replay {
+            number,
+            total,
+            why: "where sooth stopped",
+            output: &self.current(),
+        };
+        report::print_replay(&replay, to_stderr, style);
+    }
+}
+
+impl Drop for Capture {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(self.current_path());
+        let _ = std::fs::remove_file(self.kept_path());
+        let _ = std::fs::remove_dir(&self.dir);
+    }
+}
+
+/// Run the command `--runs` times and load each run's report.
 ///
 /// Repetition lives here, not in the runner: the report is parsed per run,
 /// and per-test outcomes across runs feed the flaky pass. Fixed order on
 /// purpose — see DECISIONS.md.
 #[expect(clippy::print_stderr)]
 fn execute_runs(
-    runs: u32,
-    (command, envs): &preset::Spawn,
-    report_source: Option<&ReportSource>,
-    plan: Option<&preset::Plan>,
-    gated_files: usize,
+    args: &cli::RunArgs,
+    session: &Session<'_>,
+    style: report::Style,
 ) -> Result<(Vec<runner::RunOutcome>, Vec<junit::JunitReport>), ExitCode> {
-    let mut outcomes = Vec::with_capacity(runs as usize);
-    let mut reports: Vec<junit::JunitReport> = Vec::with_capacity(runs as usize);
-    for _ in 0..runs {
+    let total = args.runs as usize;
+    let (command, envs) = session.spawn;
+    let report_source = session.report_source;
+    let mut capture = if quiet_repeats(args) {
+        Some(Capture::start().map_err(|err| {
+            eprintln!("sooth: failed to create a temp directory for the runs' output: {err}");
+            ExitCode::from(EXIT_SOOTH_ERROR)
+        })?)
+    } else {
+        None
+    };
+    // Bare --json owns sooth's stdout: the runs ride in the document, and
+    // what a quiet run wrote is replayed on stderr.
+    let json_owns_stdout = matches!(args.json, Some(None));
+    let stop = |messages: &[String]| {
+        for message in messages {
+            eprintln!("sooth: {message}");
+        }
+        if let Some(ReportSource::Preset(path)) = report_source {
+            cleanup_preset_report(path);
+        }
+        ExitCode::from(EXIT_SOOTH_ERROR)
+    };
+
+    let mut outcomes = Vec::with_capacity(total);
+    let mut reports: Vec<junit::JunitReport> = Vec::with_capacity(total);
+    for number in 1..=total {
         let report_before = match report_source {
             // Delete the preset's report before every run: a runner that
             // stops writing must fail loudly instead of silently re-serving
@@ -212,25 +337,49 @@ fn execute_runs(
             Some(ReportSource::User(path)) => file_state(path),
             None => None,
         };
-        match runner::run_once(command, envs) {
-            Ok(outcome) => outcomes.push(outcome),
-            Err(err) => {
-                let program = &command[0];
-                eprintln!("sooth: failed to run `{program}`: {err}");
-                if let Some(ReportSource::Preset(path)) = report_source {
-                    cleanup_preset_report(path);
+        let ran = match &capture {
+            Some(capture) => capture
+                .open()
+                .map_err(|err| format!("failed to create a file for the run's output: {err}"))
+                .and_then(|file| started(runner::run_captured(command, envs, file), command)),
+            None => started(runner::run_once(command, envs), command),
+        };
+        let outcome = match ran {
+            Ok(outcome) => outcome,
+            Err(message) => {
+                // An earlier run's failure is not lost with this one.
+                if let Some(capture) = &capture {
+                    capture.replay_first_failure(total, json_owns_stdout, style);
                 }
-                return Err(ExitCode::from(EXIT_SOOTH_ERROR));
+                return Err(stop(&[message]));
+            }
+        };
+        outcomes.push(outcome);
+        let outcome = &outcomes[number - 1];
+        if let Some(source) = report_source {
+            match load_run_report(source, session, report_before, (&outcomes, args.runs)) {
+                Ok(report) => reports.push(report),
+                Err(messages) => {
+                    if let Some(capture) = &capture {
+                        report::print_run(number, total, outcome, style);
+                        capture.replay_before_stopping((number, total), json_owns_stdout, style);
+                    }
+                    return Err(stop(&messages));
+                }
             }
         }
-        if let Some(source) = report_source {
-            reports.push(load_run_report(
-                source,
-                plan,
-                report_before,
-                (&outcomes, runs),
-                gated_files,
-            )?);
+        let failed = !outcome.success
+            || (report_source.is_some()
+                && reports
+                    .last()
+                    .is_some_and(|report| report.failing_count() > 0));
+        if let Some(capture) = capture.as_mut() {
+            if failed {
+                capture.note_failure(number);
+            }
+            if !json_owns_stdout {
+                report::print_run(number, total, outcome, style);
+            }
         }
     }
     if let Some(ReportSource::Preset(path)) = report_source {
@@ -238,7 +387,18 @@ fn execute_runs(
         // run's parse result is already in memory.
         cleanup_preset_report(path);
     }
+    if let Some(capture) = &capture {
+        capture.replay_first_failure(total, json_owns_stdout, style);
+    }
     Ok((outcomes, reports))
+}
+
+/// A run that started, or why it did not, in words.
+fn started(
+    ran: std::io::Result<runner::RunOutcome>,
+    command: &[String],
+) -> Result<runner::RunOutcome, String> {
+    ran.map_err(|err| format!("failed to run `{}`: {err}", command[0]))
 }
 
 /// The command to spawn, its environment, and where its report comes from:
@@ -764,7 +924,9 @@ fn print_sections(
     analyses: &Analyses<'_>,
     style: report::Style,
 ) {
-    report::print_runs(outcomes, style);
+    if !quiet_repeats(args) {
+        report::print_runs(outcomes, style);
+    }
     report::print_summary(summary, outcomes.len(), args.slowest.is_some(), style);
     // One line per failing test, then what is known but did not fail: every
     // pass's findings are folded into those two sections (see `DECISIONS.md`).
@@ -1067,7 +1229,9 @@ fn emit_output(
             // --json has no report source. Assert that invariant locally so
             // a weakened guard fails loudly instead of dropping output.
             debug_assert!(args.json.is_none());
-            report::print_runs(outcomes, style);
+            if !quiet_repeats(args) {
+                report::print_runs(outcomes, style);
+            }
             println!(
                 "{}",
                 report::verdict_line(outcomes, None, report_failures, failed, style)
@@ -1120,6 +1284,12 @@ fn rejected_flag(args: &cli::RunArgs) -> Option<&'static str> {
                 "`--fail-on-flaky` requires a report: `--junit <PATH>` or `--preset <RUNNER>`",
             );
         }
+    }
+    if args.show_output && args.runs == 1 {
+        return Some(
+            "`--show-output` is for repeated runs (`--runs N`): a single run always shows \
+             its output",
+        );
     }
     if args.changed.is_some() {
         if args.preset.is_none() {
@@ -1183,24 +1353,23 @@ impl ReportSource {
     }
 }
 
-/// One run's report: freshness-checked (user files only), loaded, and — on
-/// the error path — annotated with crash context and cleaned up (presets).
-#[expect(clippy::print_stderr)]
+/// One run's report: freshness-checked (user files only) and loaded. On
+/// failure, the lines that say why — the caller prints them, after whatever
+/// a quiet run had kept back.
 fn load_run_report(
     source: &ReportSource,
-    plan: Option<&preset::Plan>,
+    session: &Session<'_>,
     report_before: Option<(std::time::SystemTime, u64)>,
     (outcomes, requested_runs): (&[runner::RunOutcome], u32),
-    gated_files: usize,
-) -> Result<junit::JunitReport, ExitCode> {
+) -> Result<junit::JunitReport, Vec<String>> {
+    let (plan, gated_files) = (session.plan, session.gated_files);
     if let ReportSource::User(path) = source {
         if report_before.is_some() && file_state(path) == report_before {
-            eprintln!(
-                "sooth: the JUnit-XML report at `{}` was not touched by this run — it \
+            return Err(vec![format!(
+                "the JUnit-XML report at `{}` was not touched by this run — it \
                  predates the test command. Is the runner writing its report to this path?",
                 path.display()
-            );
-            return Err(ExitCode::from(EXIT_SOOTH_ERROR));
+            )]);
         }
     }
     let preset_plan = match source {
@@ -1208,20 +1377,15 @@ fn load_run_report(
         ReportSource::User(_) => None,
     };
     load_report(source.path(), preset_plan).map_err(|message| {
-        eprintln!("sooth: {message}");
+        let mut lines = vec![message];
         let unwritten = !source.path().exists();
-        if let Some(note) = preset_plan.and_then(|plan| plan.single_path_note(gated_files)) {
-            if unwritten {
-                eprintln!("sooth: {note}");
-            }
-        }
-        if let Some(context) = crash_context(outcomes, requested_runs) {
-            eprintln!("sooth: {context}");
-        }
-        if let ReportSource::Preset(path) = source {
-            cleanup_preset_report(path);
-        }
-        ExitCode::from(EXIT_SOOTH_ERROR)
+        lines.extend(
+            preset_plan
+                .and_then(|plan| plan.single_path_note(gated_files))
+                .filter(|_| unwritten),
+        );
+        lines.extend(crash_context(outcomes, requested_runs));
+        lines
     })
 }
 
@@ -1497,6 +1661,15 @@ mod tests {
         let args = parse_run_args(&["sooth", "run", "--fail-on-flaky", "--", "true"]);
         let reason = rejected_flag(&args).expect("flag should be rejected");
         assert!(reason.contains("--fail-on-flaky"), "got: {reason}");
+    }
+
+    #[test]
+    fn show_output_without_repeats_is_rejected() {
+        // One run always shows its output: the flag would do nothing.
+        let args = parse_run_args(&["sooth", "run", "--show-output", "--", "true"]);
+        assert!(rejected_flag(&args).is_some_and(|reason| reason.contains("--show-output")));
+        let args = parse_run_args(&["sooth", "run", "--show-output", "--runs", "2", "--", "true"]);
+        assert_eq!(rejected_flag(&args), None);
     }
 
     #[test]

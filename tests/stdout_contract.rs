@@ -329,6 +329,267 @@ fn first_command_the_gate_and_json_work_on_an_inferred_preset() {
     assert!(stdout.contains("\"gate\""), "got: {stdout:?}");
 }
 
+/// `sooth run --color never <args> -- sh -c <script>` in a scratch dir. The
+/// script gets the number of its invocation as `$n` (1, 2, …).
+fn repeat_script(tag: &str, args: &[&str], script: &str) -> std::process::Output {
+    let (cwd, mut command) = sooth_in(tag);
+    let counted = format!(
+        "n=$(( $(cat '{c}' 2>/dev/null || echo 0) + 1 )); echo $n > '{c}'; {script}",
+        c = cwd.join("invocations").display()
+    );
+    command
+        .args(["run", "--color", "never"])
+        .args(args)
+        .args(["--", "sh", "-c", &counted])
+        .output()
+        .expect("sooth should run")
+}
+
+#[test]
+fn repeated_runs_keep_the_runner_quiet_and_say_one_line_each() {
+    let output = repeat_script(
+        "quiet-green",
+        &["--runs", "3"],
+        "echo NOISE; echo ERRNOISE >&2",
+    );
+    let stdout = String::from_utf8(output.stdout).expect("stdout should be UTF-8");
+    let stderr = String::from_utf8(output.stderr).expect("stderr should be UTF-8");
+
+    assert_eq!(output.status.code(), Some(0), "got: {stdout:?}");
+    assert!(
+        !stdout.contains("NOISE") && !stderr.contains("NOISE"),
+        "twenty copies of a green run say nothing: {stdout:?} {stderr:?}"
+    );
+    for run in 1..=3 {
+        assert_eq!(
+            stdout
+                .matches(&format!("run {run}/3: runner exit=0"))
+                .count(),
+            1,
+            "one line per run: {stdout:?}"
+        );
+    }
+    assert!(
+        stdout
+            .lines()
+            .last()
+            .is_some_and(|line| line.starts_with("result: ✓ PASSED")),
+        "got: {stdout:?}"
+    );
+}
+
+#[test]
+fn the_first_failing_run_shows_its_output_once() {
+    let output = repeat_script(
+        "quiet-red",
+        &["--runs", "4"],
+        "echo \"OUT $n\"; echo \"ERR $n\" >&2; [ $n -lt 2 ]",
+    );
+    let stdout = String::from_utf8(output.stdout).expect("stdout should be UTF-8");
+
+    assert_eq!(output.status.code(), Some(1), "got: {stdout:?}");
+    assert!(
+        stdout.contains("output of run 2/4, the first that failed:\nOUT 2\nERR 2\n"),
+        "both streams of the failing run, in order: {stdout:?}"
+    );
+    for hidden in ["OUT 1", "OUT 3", "OUT 4", "ERR 3"] {
+        assert!(
+            !stdout.contains(hidden),
+            "`{hidden}` must stay hidden: {stdout:?}"
+        );
+    }
+    // The block sits between the run lines and the verdict.
+    let block = stdout.find("output of run 2/4").expect("the block");
+    assert!(
+        stdout.find("run 4/4:").is_some_and(|line| line < block),
+        "got: {stdout:?}"
+    );
+    assert!(
+        stdout.find("result: ").is_some_and(|line| line > block),
+        "got: {stdout:?}"
+    );
+}
+
+#[test]
+fn show_output_lets_every_run_speak_as_before() {
+    let output = repeat_script("quiet-off", &["--runs", "3", "--show-output"], "echo NOISE");
+    let stdout = String::from_utf8(output.stdout).expect("stdout should be UTF-8");
+
+    assert_eq!(stdout.matches("NOISE").count(), 3, "got: {stdout:?}");
+    assert!(!stdout.contains("output of run"), "got: {stdout:?}");
+    assert!(stdout.contains("run 3/3: runner exit=0"), "got: {stdout:?}");
+}
+
+#[test]
+fn a_single_run_shows_the_tests_as_if_you_ran_them() {
+    let output = repeat_script("quiet-single", &[], "echo NOISE");
+    let stdout = String::from_utf8(output.stdout).expect("stdout should be UTF-8");
+    assert_eq!(stdout.matches("NOISE").count(), 1, "got: {stdout:?}");
+}
+
+#[test]
+fn a_quiet_run_that_wrote_no_report_still_shows_why() {
+    // "The runner's own output above likely explains…" has to stay true.
+    let (cwd, mut command) = sooth_in("quiet-no-report");
+    write_named_runner(&cwd, "pytest", "--never", "--none");
+    std::fs::write(
+        cwd.join("pytest"),
+        "#!/bin/sh\necho 'usage: pytest: unrecognized arguments'\nexit 4\n",
+    )
+    .expect("write");
+    let output = command
+        .args([
+            "run",
+            "--no-history",
+            "--color",
+            "never",
+            "--runs",
+            "3",
+            "--",
+            "./pytest",
+        ])
+        .output()
+        .expect("sooth should run");
+    let stdout = String::from_utf8(output.stdout).expect("stdout should be UTF-8");
+    let stderr = String::from_utf8(output.stderr).expect("stderr should be UTF-8");
+
+    assert_eq!(output.status.code(), Some(2), "got: {stdout:?} {stderr:?}");
+    assert!(
+        stdout.contains("unrecognized arguments"),
+        "the hidden output is the explanation: {stdout:?}"
+    );
+    assert!(
+        stderr.contains("wrote no JUnit-XML report"),
+        "got: {stderr:?}"
+    );
+}
+
+#[test]
+fn quiet_repeats_under_bare_json_leave_stdout_to_the_document() {
+    // The fixture report has a failing test, so the first run's output is
+    // replayed — on stderr, because bare --json owns stdout.
+    let (cwd, mut command) = sooth_in("quiet-json");
+    let (report, write_report) = fresh_report(&cwd);
+    let output = command
+        .args([
+            "run",
+            "--no-history",
+            "--color",
+            "never",
+            "--runs",
+            "2",
+            "--junit",
+            &report.display().to_string(),
+            "--json",
+            "--",
+            "sh",
+            "-c",
+            &format!("echo NOISE; {write_report}"),
+        ])
+        .output()
+        .expect("sooth should run");
+    let stdout = String::from_utf8(output.stdout).expect("stdout should be UTF-8");
+    let stderr = String::from_utf8(output.stderr).expect("stderr should be UTF-8");
+
+    assert!(
+        stdout.lines().count() == 1 && stdout.starts_with("{\"schema_version\""),
+        "one line, the document: {stdout:?}"
+    );
+    assert_eq!(stderr.matches("NOISE").count(), 1, "got: {stderr:?}");
+}
+
+#[test]
+fn a_quiet_run_that_left_the_users_report_untouched_is_still_shown() {
+    // Run 2 dies before it writes the report: sooth refuses the stale file,
+    // and what run 2 printed is the only explanation there is.
+    let (cwd, mut command) = sooth_in("quiet-stale");
+    let (report, write_report) = fresh_report(&cwd);
+    let counted = format!(
+        "n=$(( $(cat '{c}' 2>/dev/null || echo 0) + 1 )); echo $n > '{c}'; \
+         echo \"OUT $n\"; [ $n -eq 1 ] || {{ echo \"CRASH $n\" >&2; exit 3; }}; {write_report}",
+        c = cwd.join("invocations").display()
+    );
+    let output = command
+        .args([
+            "run",
+            "--no-history",
+            "--color",
+            "never",
+            "--runs",
+            "3",
+            "--junit",
+            &report.display().to_string(),
+            "--",
+            "sh",
+            "-c",
+            &counted,
+        ])
+        .output()
+        .expect("sooth should run");
+    let stdout = String::from_utf8(output.stdout).expect("stdout should be UTF-8");
+    let stderr = String::from_utf8(output.stderr).expect("stderr should be UTF-8");
+
+    assert_eq!(output.status.code(), Some(2), "got: {stdout:?} {stderr:?}");
+    assert!(
+        stderr.contains("was not touched by this run"),
+        "got: {stderr:?}"
+    );
+    assert!(
+        stdout.contains("run 2/3: runner exit=3") && stdout.contains("OUT 2\nCRASH 2\n"),
+        "the run that broke, and what it said: {stdout:?}"
+    );
+}
+
+#[test]
+fn an_earlier_failing_run_is_still_shown_when_a_later_one_stops_sooth() {
+    let (cwd, mut command) = sooth_in("quiet-abort-after-failure");
+    // Run 1 fails and reports it; run 2 writes no report at all.
+    std::fs::write(
+        cwd.join("pytest"),
+        concat!(
+            "#!/bin/sh\n",
+            "n=$(( $(cat invocations 2>/dev/null || echo 0) + 1 )); echo $n > invocations\n",
+            "[ $n -eq 1 ] || { echo 'NOREPORT 2'; exit 4; }\n",
+            "for a in \"$@\"; do case \"$a\" in --junit-xml=*) report=\"${a#--junit-xml=}\" ;; esac; done\n",
+            "echo 'FAILED 1'\n",
+            "printf '<testsuite><testcase classname=\"c\" name=\"t\"><failure/></testcase></testsuite>' > \"$report\"\n",
+            "exit 1\n",
+        ),
+    )
+    .expect("write");
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(cwd.join("pytest"), std::fs::Permissions::from_mode(0o755))
+            .expect("chmod");
+    }
+    let output = command
+        .args([
+            "run",
+            "--no-history",
+            "--color",
+            "never",
+            "--runs",
+            "3",
+            "--",
+            "./pytest",
+        ])
+        .output()
+        .expect("sooth should run");
+    let stdout = String::from_utf8(output.stdout).expect("stdout should be UTF-8");
+    let stderr = String::from_utf8(output.stderr).expect("stderr should be UTF-8");
+
+    assert_eq!(output.status.code(), Some(2), "got: {stdout:?} {stderr:?}");
+    assert!(
+        stdout.contains("output of run 1/3, the first that failed:\nFAILED 1\n"),
+        "run 1's failure is not lost with the abort: {stdout:?}"
+    );
+    assert!(stdout.contains("NOREPORT 2"), "got: {stdout:?}");
+    assert!(
+        stderr.contains("wrote no JUnit-XML report"),
+        "got: {stderr:?}"
+    );
+}
+
 /// `sooth run --color never --junit report.xml <args> -- cp src.xml
 /// report.xml` in a scratch dir, with `xml` as the report: its stdout.
 fn stdout_for_report(tag: &str, xml: &str, args: &[&str]) -> String {

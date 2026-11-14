@@ -129,7 +129,8 @@ shuffling for order-dependence is a separate pass (see above). Since the v0.1
 architecture audit the runner runs exactly *once* per call: repetition is an
 orchestration strategy (the v0.2 flaky loop parses the report between runs;
 the v0.4 order pass runs different shuffled invocations), so the loop lives
-with the orchestrator, not the spawner.
+with the orchestrator, not the spawner. (Repeated runs no longer inherit the
+terminal: see "Repeated runs are quiet".)
 
 ## Pinned Rust toolchain instead of rolling `stable`
 
@@ -1443,3 +1444,57 @@ Three lines on the screen claimed more than sooth knew (#243, #193):
 
 The JSON document is untouched by all three: it carries the numbers, and
 these were statements about them.
+
+## Repeated runs are quiet
+
+"You see your test output exactly as if you had run it yourself" is the
+right promise for one run. For twenty it is twenty copies of the same
+output: a one-file gate on a fresh Laravel app printed 252 lines, and the
+one line that mattered was the last (#240). In a pre-push hook the answer
+scrolled away.
+
+So with `--runs` above 1 the test command writes to a file in a private
+temp directory instead of the terminal, and sooth prints:
+
+- **one line per run, as it finishes** — the same `run 7/20: runner exit=0
+  (0.47s)` line the report used to print afterwards, now doubling as
+  progress;
+- **the output of the first run that failed, once**, between the run lines
+  and the report. Later failing runs say the same thing or fail another
+  test, and the report names every failing test either way.
+
+Choices:
+
+- **The default, not a flag.** Bram's call, between three options: a
+  newcomer's first gate should not be a wall of text they have to learn a
+  flag to get rid of. `--show-output` restores the old behaviour for the
+  day someone needs to watch run 13.
+- **One run is untouched.** It still inherits the terminal, colours and
+  progress included; nothing is captured and nothing can be lost.
+- **A file, not a pipe.** Both streams go to one file through one shared
+  handle, so they stay in the order the runner wrote them, with no reader
+  thread and no buffer in sooth's memory while the run lasts. Only the
+  first failing run's file is kept; each other run overwrites the last.
+- **A run counts as failed by its exit code or its report**, the same two
+  signals the verdict uses, so a runner that exits 0 over a red report
+  still gets its output shown.
+- **When sooth has to stop at a run, that run's output is shown first** —
+  no report written, a `--junit` file the run did not touch, a report that
+  does not parse. The error ends in "the runner's own output above likely
+  explains", and in a quiet run there would have been nothing above. An
+  earlier run's failure is shown before it: stopping at run 7 must not
+  lose what run 2 said.
+- **Both streams are replayed on stdout**, where the report is, in the order
+  the runner wrote them. The exception is bare `--json`: there stdout is the
+  document and nothing else, so the replay goes to stderr and no run lines
+  are printed — the runs are in the document.
+- **The capture directory is removed on every way out**, a panic on a
+  closed pipe included: it is a value whose `Drop` deletes it.
+- **`--show-output` without `--runs` is refused**, like every flag that
+  would do nothing.
+
+The cost: a runner that colours or animates its output only for a terminal
+prints plainly into the file, so the one failing run shown may look
+different from a run made by hand. And of several different failures across
+the runs, only the first run's output is seen; the report's per-test lines
+are what covers the rest.

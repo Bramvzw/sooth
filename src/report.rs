@@ -174,20 +174,63 @@ impl JunitSummary {
 /// purpose: a bare `exit=2` reads as sooth's own exit-code contract, where 2
 /// means "sooth itself failed" — two vocabularies that must stay distinct.
 pub fn print_runs(outcomes: &[RunOutcome], style: Style) {
-    let total = outcomes.len();
     for (index, outcome) in outcomes.iter().enumerate() {
-        let status = outcome.status_label();
-        let status = if outcome.success {
-            style.green(&status)
-        } else {
-            style.red(&status)
-        };
-        println!(
-            "run {}/{total}: {status} ({:.2?})",
-            index + 1,
-            outcome.duration
-        );
+        print_run(index + 1, outcomes.len(), outcome, style);
     }
+}
+
+/// One run's line: which run, how the runner exited, how long it took.
+pub fn print_run(number: usize, total: usize, outcome: &RunOutcome, style: Style) {
+    let status = outcome.status_label();
+    let status = if outcome.success {
+        style.green(&status)
+    } else {
+        style.red(&status)
+    };
+    println!("run {number}/{total}: {status} ({:.2?})", outcome.duration);
+}
+
+/// One quiet run's output, to be shown after all: which run, why this one,
+/// and what it wrote.
+pub struct Replay<'a> {
+    pub number: usize,
+    pub total: usize,
+    /// Why this run's output is shown, as it reads after "output of run
+    /// 2/20, ".
+    pub why: &'a str,
+    pub output: &'a [u8],
+}
+
+/// Show a quiet run's output between two lines that say whose it is. The
+/// output is the runner's, byte for byte as it would have reached the
+/// terminal — both of its streams, in the order it wrote them — closed
+/// with a newline so the next line starts on its own. `to_stderr` when
+/// stdout belongs to the JSON document.
+pub fn print_replay(replay: &Replay<'_>, to_stderr: bool, style: Style) {
+    use std::io::Write;
+    let Replay {
+        number,
+        total,
+        why,
+        output,
+    } = replay;
+    let opening = style.dim(&format!("output of run {number}/{total}, {why}:"));
+    let closing = style.dim(&format!("end of the output of run {number}/{total}"));
+    let newline: &[u8] = if output.last().is_some_and(|last| *last != b'\n') {
+        b"\n"
+    } else {
+        b""
+    };
+    let mut stream: Box<dyn Write> = if to_stderr {
+        Box::new(std::io::stderr().lock())
+    } else {
+        Box::new(std::io::stdout().lock())
+    };
+    // A closed pipe is the reader's business; see `internal_error`.
+    let _ = writeln!(stream, "{opening}");
+    let _ = stream.write_all(output);
+    let _ = stream.write_all(newline);
+    let _ = writeln!(stream, "{closing}");
 }
 
 /// What the gate selected: the files about to be repeated, so "why is my

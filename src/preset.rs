@@ -29,6 +29,16 @@ pub type Spawn = (Vec<String>, Vec<(String, String)>);
 ///
 /// Returns the underlying I/O error if no directory can be created.
 pub fn report_path() -> io::Result<PathBuf> {
+    private_dir().map(|dir| dir.join("report.xml"))
+}
+
+/// A fresh directory under the system temp dir that only this user can
+/// read (mode 0700 on Unix), with an unpredictable name.
+///
+/// # Errors
+///
+/// Returns the underlying I/O error if no directory can be created.
+pub fn private_dir() -> io::Result<PathBuf> {
     let base = std::env::temp_dir();
     let pid = std::process::id();
     for attempt in 0..32 {
@@ -37,7 +47,7 @@ pub fn report_path() -> io::Result<PathBuf> {
             .map_or(0, |since| since.subsec_nanos());
         let dir = base.join(format!("sooth-{pid}-{nanos}-{attempt}"));
         match create_private_dir(&dir) {
-            Ok(()) => return Ok(dir.join("report.xml")),
+            Ok(()) => return Ok(dir),
             // Collision: someone (or a previous iteration) got there first.
             Err(err) if err.kind() == io::ErrorKind::AlreadyExists => {}
             Err(err) => return Err(err),
@@ -45,7 +55,7 @@ pub fn report_path() -> io::Result<PathBuf> {
     }
     Err(io::Error::new(
         io::ErrorKind::AlreadyExists,
-        "could not create a unique temp directory for the report",
+        "could not create a unique temp directory",
     ))
 }
 

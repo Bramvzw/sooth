@@ -7,8 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `--show-output`: show the test command's output for every run of
+  `--runs N`, as before this release. Without `--runs` it is refused: a
+  single run always shows its output.
+
 ### Changed
 
+- **Repeated runs are quiet.** With `--runs` above 1 the test command's
+  output is no longer printed N times. Each run gets its line as it
+  finishes (`run 7/20: runner exit=0 (0.47s)`), and if any run failed, the
+  output of the first that did is shown once, above the report. A one-file
+  gate of 20 runs went from about 230 lines to 26. A single run still
+  shows its output live. With bare `--json` the run lines are left out and
+  a failing run's output is replayed on stderr, so stdout is the document
+  alone. When sooth has to stop at a run (no report, a stale `--junit`
+  file), that run's output is shown before the error.
 - With `--runs N` the totals line reads `tests (final run): …`. It always
   counted the last run only, while the failures listed under it cover every
   run: `12 passed, 9 failed` above `11 failures` looked like a miscount.

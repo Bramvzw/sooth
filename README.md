@@ -307,6 +307,13 @@ enough for a pre-push hook:
 exec sooth run --changed --runs 20 --preset phpunit -- vendor/bin/phpunit
 ```
 
+Repeated runs are quiet. With `--runs` above 1 — the gate always is — the
+test command's output stays off the screen: you get one line per run, and if
+any run failed, the output of the first one that did, once. Twenty copies of
+the same output would bury the verdict. `--show-output` brings every run's
+output back; a single run always shows it, as if you had run the tests
+yourself.
+
 Needs `--preset` (which files are tests is runner knowledge) and an explicit
 `--runs`. Give the gate the bare runner: it appends the changed files itself,
 and a command that already carries its own selection (`./...`, a `tests/`

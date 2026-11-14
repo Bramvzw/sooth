@@ -45,20 +45,48 @@ impl RunOutcome {
 ///
 /// Returns the underlying I/O error if the command cannot be spawned (for
 /// example when the program is not found on `PATH`).
+pub fn run_once(command: &[String], envs: &[(String, String)]) -> std::io::Result<RunOutcome> {
+    spawn(command, envs, None)
+}
+
+/// [`run_once`], with the child's stdout and stderr written to `capture`
+/// instead of this terminal — one file for both, so the two streams stay in
+/// the order the child wrote them.
+///
+/// # Errors
+///
+/// As [`run_once`], and when the file's handle cannot be shared between
+/// the two streams.
+pub fn run_captured(
+    command: &[String],
+    envs: &[(String, String)],
+    capture: std::fs::File,
+) -> std::io::Result<RunOutcome> {
+    spawn(command, envs, Some(capture))
+}
+
 #[expect(
     clippy::disallowed_methods,
     reason = "Spawning the wrapped test command is what this module is for."
 )]
-pub fn run_once(command: &[String], envs: &[(String, String)]) -> std::io::Result<RunOutcome> {
+fn spawn(
+    command: &[String],
+    envs: &[(String, String)],
+    capture: Option<std::fs::File>,
+) -> std::io::Result<RunOutcome> {
     let (program, rest) = command
         .split_first()
         .expect("clap guarantees the command has at least one element");
+    let mut child = Command::new(program);
+    child
+        .args(rest)
+        .envs(envs.iter().map(|(key, value)| (key, value)));
+    if let Some(file) = capture {
+        child.stdout(file.try_clone()?).stderr(file);
+    }
 
     let start = Instant::now();
-    let status = Command::new(program)
-        .args(rest)
-        .envs(envs.iter().map(|(key, value)| (key, value)))
-        .status()?;
+    let status = child.status()?;
     Ok(RunOutcome {
         exit_code: status.code(),
         signal: signal_of(status),

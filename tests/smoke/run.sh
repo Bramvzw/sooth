@@ -89,6 +89,10 @@ expect_on_line "$wobbly" "flaky"
 expect_on_line "$wobbly" "2 of 4 runs now"
 expect_on_line "$broken" "✗"
 refuse "wrote no JUnit-XML report"
+# Repeated runs are quiet: one line per run, one failing run's output.
+expect "run 4/4: runner exit="
+expect "output of run 1/4, the first that failed:"
+[ "$(grep -c -- "^output of run" <<<"$output")" -eq 1 ] || fail "more than one run's output was shown"
 
 # 2. Re-running only the failures: a reproduced one is real, the other is not.
 echo 1 > "$SMOKE_COUNTER"   # the suite run is invocation 1: wobbly fails

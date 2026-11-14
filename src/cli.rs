@@ -95,6 +95,10 @@ pub struct ExplainArgs {
 
 /// Arguments for `sooth run`.
 #[derive(Debug, Args)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "Each bool is one independent command-line flag, which is how clap's derive models a switch."
+)]
 pub struct RunArgs {
     /// Built-in preset for a known test runner: injects the right reporter
     /// flags and reads the report it writes (mutually exclusive with --junit).
@@ -110,8 +114,9 @@ pub struct RunArgs {
 
     /// How many times to run the suite (fixed order). With a report source
     /// and more than one run, mixed outcomes are reported as flaky; the
-    /// summary table itself reflects the final run. How many you need for a
-    /// given failure rate: see "How many runs do I need?" in the README.
+    /// summary table itself reflects the final run. Repeated runs are kept
+    /// quiet (see --show-output). How many you need for a given failure
+    /// rate: see "How many runs do I need?" in the README.
     #[arg(long, default_value_t = 1, value_parser = clap::value_parser!(u32).range(1..))]
     pub runs: u32,
 
@@ -125,6 +130,12 @@ pub struct RunArgs {
     )]
     #[arg(long, value_name = "PATH", num_args = 0..=1, require_equals = true)]
     pub json: Option<Option<PathBuf>>,
+
+    /// Show the test command's output for every run. Without it, `--runs N`
+    /// keeps the command quiet: one line per run, and the output of the
+    /// first run that failed. A single run always shows its output.
+    #[arg(long)]
+    pub show_output: bool,
 
     /// Do not record this run into `.sooth/history.jsonl` and do not report
     /// from the accumulated history (recording needs a report source; without
