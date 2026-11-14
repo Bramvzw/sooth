@@ -1208,6 +1208,67 @@ fn explain_classifies_a_report_without_running_or_recording_anything() {
 }
 
 #[test]
+fn a_panic_is_sooth_failing_exit_two_never_101() {
+    let (cwd, mut command) = sooth_in("panic-exit");
+    let report = cwd.join("huge-time.xml");
+    // Any panic will do; this one exists (#158): a `time` no Duration holds.
+    std::fs::write(
+        &report,
+        r#"<testsuite><testcase classname="c" name="t" time="1e300"/></testsuite>"#,
+    )
+    .expect("report should write");
+    let output = command
+        .args(["explain", "--junit", &report.display().to_string()])
+        .output()
+        .expect("sooth should run");
+    let stderr = String::from_utf8(output.stderr).expect("stderr should be UTF-8");
+
+    assert_eq!(
+        output.status.code(),
+        Some(2),
+        "a panic is sooth's own failure, inside the 0/1/2 contract: {stderr:?}"
+    );
+    assert!(stderr.contains("sooth: internal error"), "got: {stderr:?}");
+    assert!(
+        !stderr.contains("RUST_BACKTRACE"),
+        "the raw panic message reached the user: {stderr:?}"
+    );
+}
+
+#[test]
+fn a_reader_that_closes_the_pipe_is_a_quiet_exit_two() {
+    let (cwd, _) = sooth_in("closed-pipe");
+    // `true` is gone long before sooth writes its first line, so the write
+    // meets a closed pipe: `sooth history | head` in miniature.
+    let script = format!(
+        "(sleep 0.3; '{}' history 2> err.txt; echo $? > code.txt) | true",
+        env!("CARGO_BIN_EXE_sooth")
+    );
+    let ran = Command::new("sh")
+        .current_dir(&cwd)
+        .args(["-c", &script])
+        .status()
+        .expect("sh should run");
+    assert!(ran.success());
+    // The subshell may still be writing its two files when `true` returns.
+    let code = (0..50)
+        .find_map(|_| {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            std::fs::read_to_string(cwd.join("code.txt"))
+                .ok()
+                .filter(|code| !code.trim().is_empty())
+        })
+        .expect("sooth should have exited");
+    let stderr = std::fs::read_to_string(cwd.join("err.txt")).expect("stderr file");
+
+    assert_eq!(code.trim(), "2", "stderr: {stderr:?}");
+    assert!(
+        stderr.is_empty(),
+        "a reader walking away is not worth a word, let alone a panic: {stderr:?}"
+    );
+}
+
+#[test]
 fn explain_on_a_green_report_has_nothing_to_explain() {
     let (cwd, mut command) = sooth_in("explain-green");
     let report = cwd.join("green.xml");

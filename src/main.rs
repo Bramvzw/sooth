@@ -33,6 +33,13 @@ const EXIT_SOOTH_ERROR: u8 = 2;
 const DEFAULT_SLOWEST: usize = 10;
 
 fn main() -> ExitCode {
+    // A panic is sooth failing, never the tests: exit 2, not Rust's 101
+    // (see DECISIONS.md, exit codes).
+    std::panic::set_hook(Box::new(report::internal_error));
+    std::panic::catch_unwind(dispatch).unwrap_or(ExitCode::from(EXIT_SOOTH_ERROR))
+}
+
+fn dispatch() -> ExitCode {
     let parsed = Cli::parse();
     match parsed.command {
         Command::Run(args) => run(&args),

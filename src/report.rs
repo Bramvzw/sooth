@@ -9,6 +9,33 @@
 use std::time::Duration;
 
 use crate::analyzers::{explain, flaky, history};
+
+/// The panic hook. A panic is a bug in sooth and is said as one. A reader
+/// that closed sooth's stdout or stderr (`sooth history | head`) is not: the
+/// failed print panics, and nobody is left to read a message about it.
+pub fn internal_error(panic: &std::panic::PanicHookInfo) {
+    use std::io::Write as _;
+
+    let payload = panic.payload();
+    let message = payload
+        .downcast_ref::<&str>()
+        .copied()
+        .or_else(|| payload.downcast_ref::<String>().map(String::as_str))
+        .unwrap_or("no message");
+    if message.starts_with("failed printing to std") {
+        return;
+    }
+    let location = panic
+        .location()
+        .map(|at| format!(" at {}:{}", at.file(), at.line()))
+        .unwrap_or_default();
+    // Not `eprintln!`: with stderr closed it would panic inside the hook.
+    let _ = writeln!(
+        std::io::stderr(),
+        "sooth: internal error{location}: {message}\n\
+         sooth: this is a bug — please report it at https://github.com/Bramvzw/sooth/issues"
+    );
+}
 use crate::cli::ColorChoice;
 use crate::gate;
 use crate::json;
