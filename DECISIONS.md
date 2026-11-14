@@ -1380,3 +1380,39 @@ names stop matching, and there is no migration.
 What `-t` selects is unchanged: the title, in any file. `--verify` may
 therefore re-run a same-titled test from another file too, which is the
 over-matching the verification entry chose.
+
+## Real runners are tested in a layer of their own
+
+The contract suite drives the binary with `sh` scripts that stand in for
+runners. That pins what sooth does with a command and a report; it cannot
+see how a real runner parses the command sooth builds, or what its reporter
+writes. Every bug of the v0.3 audit's second phase lived there: Composer
+reading `--log-junit` as its own option, paratest refusing a second path,
+Pest prettifying a method name, jest-junit's templates, jest counting a
+snapshot as a test. Each was found by hand, against a real project (#184).
+
+`tests/smoke/` is that hand-work, kept: a three-test fixture per runner —
+one steady test, one that fails on every second invocation, one that always
+fails — and `run.sh`, which drives the built binary through `--runs`,
+`--verify`, two history runs and the gate, and checks the verdict lines.
+PHPUnit, Pest, a Composer script, jest and pytest each get a CI job.
+
+Choices:
+
+- **Not in `make check`.** It installs the runners and takes a network. The
+  fast gate stays the thing one runs before every commit; `make smoke` is
+  for a change to a preset, the gate or `--verify`.
+- **The runners' current releases, no lock files.** A runner release that
+  breaks sooth should be seen, and a lock file would hide it until someone
+  bumped it. The price is that the job can go red on a pull request that
+  changed nothing, so it is not a required check, and it also runs weekly
+  on `main`, where such a failure has no pull request to be confused with.
+- **Text checks in a shell script, not Rust tests.** What is asserted is
+  the line a user reads (`known flake`, `real (reproduced on re-run)`);
+  `grep -F` says that directly, and a failed check prints the whole run.
+- **The flaky test counts invocations in a file outside the tree**, so its
+  outcome is decided, the working tree stays clean, and the history flow
+  can prove a flake on a clean commit the way a user's history would.
+- **No Laravel application.** `artisan test` would need a full skeleton per
+  run; its forwarding is covered by the Composer fixture (the same
+  "arguments after the wrapper" shape) and by hand before a release.

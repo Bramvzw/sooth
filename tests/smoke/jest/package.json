@@ -1,0 +1,9 @@
+{
+  "name": "sooth-smoke-jest",
+  "private": true,
+  "description": "Fixture for sooth's real-runner smoke tests (tests/smoke/run.sh).",
+  "devDependencies": {
+    "jest": "^29.7.0 || ^30.0.0",
+    "jest-junit": "^16.0.0 || ^17.0.0"
+  }
+}

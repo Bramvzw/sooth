@@ -1,0 +1,54 @@
+name: Smoke (real runners)
+
+# The contract tests drive sooth with fake runners. This drives it against
+# the runners themselves — PHPUnit, Pest, a Composer script, jest, pytest —
+# on a three-test fixture project each (tests/smoke/). Not part of
+# `make check`: it installs the runners, and the fast gate stays fast.
+#
+# The fixtures take the runners' current releases, so this can go red on a
+# pull request that changed nothing: that is a runner release sooth has to
+# learn about, which is what the weekly run is for. Not a required check.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  schedule:
+    - cron: "17 5 * * 1"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: smoke-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+jobs:
+  smoke:
+    name: smoke (${{ matrix.runner }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [phpunit, pest, composer, jest, pytest]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Install Rust toolchain (pinned by rust-toolchain.toml)
+        run: rustup toolchain install
+
+      - name: Cache cargo registry and build artifacts
+        uses: Swatinem/rust-cache@258712b0b7b1ddf8bddc9fc3b0faca682b2736c3 # v2
+
+      - name: Build sooth
+        run: cargo build
+
+      # PHP, Composer, Node and npm come with the runner image; the script
+      # installs each fixture's own dependencies.
+      - name: Install pytest
+        if: matrix.runner == 'pytest'
+        run: pipx install pytest
+
+      - name: Run the smoke tests
+        run: tests/smoke/run.sh ${{ matrix.runner }}
