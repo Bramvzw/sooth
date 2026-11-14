@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- With `--runs N` the totals line reads `tests (final run): …`. It always
+  counted the last run only, while the failures listed under it cover every
+  run: `12 passed, 9 failed` above `11 failures` looked like a miscount.
+- `slowest tests` lists measured durations only, and only when it ranks:
+  a test with `time="0"` (pytest and jest-junit write that for anything
+  under a millisecond) no longer appears as `0.00ns`, and a suite with no
+  more tests than the cut-off gets no list unless `--slowest` asks for one.
+  `--json` is unchanged.
+
+### Fixed
+
+- `--no-history` no longer says what the history holds. A failure read
+  `new (nothing in history)` and the headline counted it as `1 new`, about
+  a file that was never read. Such a line now ends at the test's name (or
+  at what this run itself saw), and the note below it still says the
+  history was not consulted.
+
 ## [0.3.2] - 2026-11-14
 
 ### Added

@@ -10,10 +10,10 @@ instant, single binary. No server, no dashboard, no AI, no accounts.
 sooth run -- pytest
 ```
 
-> **v0.3.0 is out** — a prebuilt binary, no Rust needed (see [Install](#install)), and Laravel's
-> `php artisan test` and Pest work under `--preset phpunit`. Flaky detection (run history,
-> failure re-verification, `--runs N`) landed in v0.2. Slow-test and order-dependence analysis are next.
-> See `ROADMAP.md` for the full plan and `DECISIONS.md` for why it's built this way.
+> **v0.3.2 is out** — a prebuilt binary, no Rust needed (see [Install](#install)). For Laravel,
+> `sooth run -- php artisan test` needs no flags, Pest and Composer scripts work, and the
+> pre-push gate repeats only the tests you changed. Slow-test and order-dependence analysis
+> are next. See `ROADMAP.md` for the full plan and `DECISIONS.md` for why it's built this way.
 
 ## Usage
 

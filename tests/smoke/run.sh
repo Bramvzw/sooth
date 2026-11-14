@@ -82,7 +82,7 @@ expect_on_line() { grep -F -- "$1" <<<"$output" | grep -qF -- "$2" || fail "no l
 echo 0 > "$SMOKE_COUNTER"
 run "--runs 4" --no-history --runs 4 ${preset[@]+"${preset[@]}"} -- "${runner[@]}"
 expect_exit 1
-expect "tests: "
+expect "tests (final run): "
 # jest orders its files by what failed last, so there the label reads
 # "flaky or order-dependent": the count is what every runner agrees on.
 expect_on_line "$wobbly" "flaky"
@@ -136,10 +136,13 @@ case "$flavour" in
     expect_on_line "ClassicTest::Totals add up" "real (reproduced on re-run)"
     ;;
   jest)
-    # The same title in two files is two tests.
+    # The same title in two files is two tests. The JSON names every test;
+    # the human report only the failing ones and, for a larger suite, the
+    # slowest.
     rm "$new"
     echo 0 > "$SMOKE_COUNTER"
-    run "identities carry the file" --no-history ${preset[@]+"${preset[@]}"} -- "${runner[@]}"
+    run "identities carry the file" --no-history --json="$work/identities.json" ${preset[@]+"${preset[@]}"} -- "${runner[@]}"
+    output=$(cat "$work/identities.json")
     expect "shop.test.js::steady"
     expect "cart.test.js::steady"
     ;;

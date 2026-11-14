@@ -765,7 +765,7 @@ fn print_sections(
     style: report::Style,
 ) {
     report::print_runs(outcomes, style);
-    report::print_summary(summary, style);
+    report::print_summary(summary, outcomes.len(), args.slowest.is_some(), style);
     // One line per failing test, then what is known but did not fail: every
     // pass's findings are folded into those two sections (see `DECISIONS.md`).
     report::print_explanation(analyses, style);

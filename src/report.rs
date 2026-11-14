@@ -203,8 +203,13 @@ pub fn print_gate(selection: &gate::Selection, style: Style) {
     }
 }
 
-/// The test totals plus the slowest-tests list.
-pub fn print_summary(summary: &JunitSummary, style: Style) {
+/// The test totals plus the slowest-tests list. With several `runs` the
+/// totals are the final run's and say so: the failures listed below them
+/// cover every run, and the two would otherwise seem to disagree. The
+/// ranking lists measured durations only, and — unless `ranking_asked_for`
+/// with `--slowest` — only when it leaves tests out: seven tests have no
+/// "slowest ten".
+pub fn print_summary(summary: &JunitSummary, runs: usize, ranking_asked_for: bool, style: Style) {
     let passed = style.green(&format!("{} passed", summary.passed));
     let failed = format!("{} failed", summary.failed);
     let failed = if summary.failed > 0 {
@@ -224,16 +229,29 @@ pub fn print_summary(summary: &JunitSummary, style: Style) {
     } else {
         skipped
     };
+    let label = if runs > 1 {
+        "tests (final run)"
+    } else {
+        "tests"
+    };
     println!(
-        "tests: {} total — {passed}, {failed}, {errors}, {skipped}",
+        "{label}: {} total — {passed}, {failed}, {errors}, {skipped}",
         summary.total
     );
 
-    if summary.slowest.is_empty() {
+    // `time="0"` is a runner that did not measure, not a test that took no
+    // time: `0.00ns` in a ranking would be a number nobody observed.
+    let measured: Vec<&(String, Duration)> = summary
+        .slowest
+        .iter()
+        .filter(|(_, duration)| !duration.is_zero())
+        .collect();
+    let leaves_tests_out = summary.total > summary.slowest.len();
+    if measured.is_empty() || !(ranking_asked_for || leaves_tests_out) {
         return;
     }
     println!("{}", style.dim("slowest tests:"));
-    for (index, (name, duration)) in summary.slowest.iter().enumerate() {
+    for (index, (name, duration)) in measured.into_iter().enumerate() {
         println!(
             "  {}. {} {}",
             index + 1,
@@ -461,8 +479,11 @@ pub fn print_explanation(analyses: &Analyses<'_>, style: Style) {
     if explanations.is_empty() {
         return;
     }
+    // Without a history read, "new" and "nothing in history" would be
+    // claims about a file nobody opened.
+    let consulted = analyses.history_observations.is_some();
     let counts = explain::Counts::of(explanations);
-    let headline = explanation_headline(&counts);
+    let headline = explanation_headline(&counts, consulted);
     println!(
         "{}",
         if counts.only_known_flakes() {
@@ -481,12 +502,16 @@ pub fn print_explanation(analyses: &Analyses<'_>, style: Style) {
         if let Some(observed) = &explanation.observed {
             parts.push(observed_phrase(observed, reordered, style));
         }
-        parts.push(familiarity_phrase(explanation, style));
+        parts.extend(familiarity_phrase(explanation, consulted, style));
+        let known = if parts.is_empty() {
+            String::new()
+        } else {
+            format!(" — {}", parts.join(", "))
+        };
         println!(
-            "  {} {} — {}",
+            "  {} {}{known}",
             glyph(explanation, style),
-            identity(&explanation.id, style),
-            parts.join(", ")
+            identity(&explanation.id, style)
         );
     }
     print_history_gap(analyses.history_observations, style);
@@ -555,8 +580,22 @@ fn runs_phrase(runs: &[usize]) -> String {
     }
 }
 
-/// Whether this failure was already known, and on whose authority.
-fn familiarity_phrase(explanation: &explain::Explanation, style: Style) -> String {
+/// Whether this failure was already known, and on whose authority. `None`
+/// when there is nothing to go on: the history was not `consulted` and no
+/// list names the test.
+fn familiarity_phrase(
+    explanation: &explain::Explanation,
+    consulted: bool,
+    style: Style,
+) -> Option<String> {
+    if !consulted && explanation.verdict == explain::Verdict::Unknown && !explanation.quarantined {
+        return None;
+    }
+    Some(known_phrase(explanation, style))
+}
+
+/// [`familiarity_phrase`] for a failure there is something to say about.
+fn known_phrase(explanation: &explain::Explanation, style: Style) -> String {
     let listed = if explanation.quarantined {
         format!(", quarantined in {}", crate::quarantine::FILE_NAME)
     } else {
@@ -612,11 +651,13 @@ fn familiarity_phrase(explanation: &explain::Explanation, style: Style) -> Strin
 
 /// `3 failures — 1 known flake, 2 new`; the all-clear sentence when nothing
 /// in the run is new.
-fn explanation_headline(counts: &explain::Counts) -> String {
+fn explanation_headline(counts: &explain::Counts, consulted: bool) -> String {
     let failures = count(counts.total(), "failure");
     if counts.only_known_flakes() {
         return format!("{failures} — all known flakes, nothing new");
     }
+    // Unread, the history cannot have found a failure new.
+    let new = if consulted { counts.new } else { 0 };
     let parts: Vec<String> = [
         (counts.known_flakes, "known flake", "known flakes"),
         (counts.failing_since, "regression", "regressions"),
@@ -626,7 +667,7 @@ fn explanation_headline(counts: &explain::Counts) -> String {
             "never seen passing",
         ),
         (counts.quarantined, "quarantined", "quarantined"),
-        (counts.new, "new", "new"),
+        (new, "new", "new"),
     ]
     .iter()
     .filter(|(amount, _, _)| *amount > 0)
@@ -635,6 +676,9 @@ fn explanation_headline(counts: &explain::Counts) -> String {
         format!("{amount} {noun}")
     })
     .collect();
+    if parts.is_empty() {
+        return failures;
+    }
     format!("{failures} — {}", parts.join(", "))
 }
 
@@ -1354,7 +1398,7 @@ mod tests {
             quarantined: false,
         };
         assert_eq!(
-            super::familiarity_phrase(&broken_and_new, plain()),
+            super::known_phrase(&broken_and_new, plain()),
             "new (nothing in history)"
         );
 
@@ -1373,7 +1417,7 @@ mod tests {
             quarantined: true,
         };
         assert_eq!(
-            super::familiarity_phrase(&known_and_listed, plain()),
+            super::known_phrase(&known_and_listed, plain()),
             "known flake (2 of 6 in history, 33%), quarantined in .sooth-quarantine"
         );
     }
@@ -1428,7 +1472,7 @@ mod tests {
             ..explain::Counts::default()
         };
         assert_eq!(
-            super::explanation_headline(&counts),
+            super::explanation_headline(&counts, true),
             "4 failures — 2 known flakes, 1 regression, 1 new"
         );
     }
@@ -1443,7 +1487,7 @@ mod tests {
             ..explain::Counts::default()
         };
         assert_eq!(
-            super::explanation_headline(&counts),
+            super::explanation_headline(&counts, true),
             "2 failures — all known flakes, nothing new"
         );
     }
@@ -1458,7 +1502,7 @@ mod tests {
             ..explain::Counts::default()
         };
         assert_eq!(
-            super::explanation_headline(&counts),
+            super::explanation_headline(&counts, true),
             "1 failure — 1 regression"
         );
     }
