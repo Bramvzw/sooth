@@ -1170,6 +1170,77 @@ fn explain_classifies_a_report_without_running_or_recording_anything() {
     );
 }
 
+/// A scratch dir holding a hand-written history for `c::t` — `(at, commit,
+/// run, status)` per line — and a report in which `c::t` fails.
+fn explain_against_history(tag: &str, lines: &[(u32, &str, &str, &str)]) -> String {
+    let (cwd, mut command) = sooth_in(tag);
+    std::fs::create_dir_all(cwd.join(".sooth")).expect("mkdir");
+    let history: String = lines
+        .iter()
+        .map(|(at, commit, run, status)| {
+            format!(
+                r#"{{"at":{at},"commit":"{commit}","dirty":false,"env":"local","run":"{run}","status":"{status}","id":"c::t"}}"#
+            ) + "\n"
+        })
+        .collect();
+    std::fs::write(cwd.join(".sooth/history.jsonl"), history).expect("history");
+    std::fs::write(
+        cwd.join("red.xml"),
+        r#"<testsuite><testcase classname="c" name="t"><failure/></testcase></testsuite>"#,
+    )
+    .expect("report");
+    let output = command
+        .args(["explain", "--junit", "red.xml", "--color", "never"])
+        .output()
+        .expect("sooth should run");
+    String::from_utf8(output.stdout).expect("stdout should be UTF-8")
+}
+
+#[test]
+fn a_known_flake_that_went_red_at_a_commit_is_never_nothing_new() {
+    // Flaky on `aaa`, green on `bbb`, then red in three invocations on `ccc`.
+    let stdout = explain_against_history(
+        "red-flake",
+        &[
+            (1, "aaa", "r1", "passed"),
+            (2, "aaa", "r2", "failed"),
+            (3, "bbb", "r3", "passed"),
+            (4, "bbb", "r4", "passed"),
+            (5, "ccc", "r5", "failed"),
+            (6, "ccc", "r6", "failed"),
+            (7, "ccc", "r7", "failed"),
+        ],
+    );
+    assert!(
+        stdout.contains("known flake (4 of 7 in history, 57%), and every run since ccc (3 runs)"),
+        "got: {stdout:?}"
+    );
+    assert!(
+        !stdout.contains("nothing new"),
+        "a flake that stopped passing was waved through: {stdout:?}"
+    );
+}
+
+#[test]
+fn a_test_never_seen_passing_is_not_called_a_regression() {
+    let stdout = explain_against_history(
+        "never-passed",
+        &[(1, "aaa", "r1", "failed"), (2, "aaa", "r2", "failed")],
+    );
+    assert!(
+        stdout.contains("1 failure — 1 never seen passing"),
+        "got: {stdout:?}"
+    );
+    assert!(
+        stdout.contains("never seen passing (failed all 2 observed runs, first on aaa)"),
+        "got: {stdout:?}"
+    );
+    assert!(
+        !stdout.contains("regression") && !stdout.contains("failing since"),
+        "no commit broke a test that never passed: {stdout:?}"
+    );
+}
+
 #[test]
 fn explain_on_a_green_report_has_nothing_to_explain() {
     let (cwd, mut command) = sooth_in("explain-green");

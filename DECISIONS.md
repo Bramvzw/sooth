@@ -1002,3 +1002,41 @@ This is recognising one well-known command shape, not general wrapper
 detection: `npm test`, `composer test` or `python -m pytest` can hide any
 command, and guessing what they run would break the "never guess" rule.
 `artisan test` is one fixed command with documented forwarding.
+
+## A streak says what was witnessed: regression, never seen passing, or a flake gone red
+
+The history's streak check made two claims the observations did not support
+(#226, #227):
+
+- A test that failed from its first observation read `failing since <first
+  commit seen>` and was counted as a regression. The label's own definition
+  is "green until a commit, red ever since"; without a green there is no
+  commit to blame, and `git show` on that commit sends the reader to the
+  wrong place.
+- A test that had ever been proven flaky was never looked at again: flaky
+  proof returned first. When such a test really broke, every run read
+  `known flake` and the verdict was "all known flakes, nothing new" until
+  the old proof left the window.
+
+So the trailing streak is read for every test, and labelled by what came
+before it:
+
+- **Green, then a red streak** across two invocations: `failing since X`.
+  Unchanged, and now the only case that is called a regression.
+- **Nothing but red** in the window: `never seen passing (failed all N
+  observed runs, first on X)`. X is where sooth first looked, said as such.
+- **A proven flake, red on every run since a commit**: the flake label
+  stays — it is still true — and the streak is added to it: `known flake
+  (4 of 8 in history, 50%), and every run since X (3 runs)`. Sooth does not
+  conclude "regression": a 50% flake fails three times in a row one time in
+  eight. It does stop saying "nothing new", because that is the one place
+  where being wrong hides a real break.
+
+What keeps the third case from firing on an ordinary flake: the streak only
+counts failures on commits the test was never seen passing on (a failure on
+a commit that also passed is the flake being a flake), and it needs three
+invocations, not two (`RED_STREAK_INVOCATIONS`): two reds in a row is what
+a 50% flake does one time in four.
+
+In `--json` these are additions: verdict `never_passed`, `red_since` on a
+known flake, and `never_passed` in the counts and under `history`.

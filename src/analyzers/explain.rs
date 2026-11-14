@@ -4,7 +4,7 @@
 use std::collections::BTreeSet;
 
 use crate::analyzers::flaky::Analysis as FlakyAnalysis;
-use crate::analyzers::history::Analysis as HistoryAnalysis;
+use crate::analyzers::history::{Analysis as HistoryAnalysis, RedStreak};
 use crate::verify;
 
 /// What the accumulated evidence says about one failure.
@@ -16,9 +16,19 @@ pub enum Verdict {
         /// The one environment every failure came from, when the history saw
         /// this test in more than one.
         failures_confined_to: Option<String>,
+        /// The flake has failed every run since a commit: known as a flake,
+        /// but not safe to wave through as one.
+        red_since: Option<RedStreak>,
     },
+    /// Green before, red since `commit`: a regression pointer.
     FailingSince {
         commit: String,
+        failed_runs: usize,
+    },
+    /// Red in every observed run. `first_commit` is where sooth first saw
+    /// it, which is not a cause.
+    NeverPassed {
+        first_commit: String,
         failed_runs: usize,
     },
     Unknown,
@@ -65,12 +75,16 @@ pub struct Explanation {
     pub quarantined: bool,
 }
 
-/// How the failures divide over the verdicts — a partition, so the four
-/// counts sum to the failure count.
+/// How the failures divide over the verdicts — a partition, so the five
+/// counts (not `red_flakes`, a subset of `known_flakes`) sum to the failure
+/// count.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct Counts {
     pub known_flakes: usize,
+    /// Known flakes that have failed every run since a commit.
+    pub red_flakes: usize,
     pub failing_since: usize,
+    pub never_passed: usize,
     /// Quarantined failures the history could not classify.
     pub quarantined: usize,
     pub new: usize,
@@ -80,9 +94,13 @@ impl Counts {
     pub fn of(explanations: &[Explanation]) -> Self {
         let mut counts = Self::default();
         for explanation in explanations {
-            match explanation.verdict {
-                Verdict::KnownFlake { .. } => counts.known_flakes += 1,
+            match &explanation.verdict {
+                Verdict::KnownFlake { red_since, .. } => {
+                    counts.known_flakes += 1;
+                    counts.red_flakes += usize::from(red_since.is_some());
+                }
                 Verdict::FailingSince { .. } => counts.failing_since += 1,
+                Verdict::NeverPassed { .. } => counts.never_passed += 1,
                 Verdict::Unknown if explanation.quarantined => counts.quarantined += 1,
                 Verdict::Unknown => counts.new += 1,
             }
@@ -91,13 +109,19 @@ impl Counts {
     }
 
     pub fn total(&self) -> usize {
-        self.known_flakes + self.failing_since + self.quarantined + self.new
+        self.known_flakes + self.failing_since + self.never_passed + self.quarantined + self.new
     }
 
     /// Nothing failed that sooth or the team did not already know as a flake.
-    /// A regression is known too, but it is a real failure and never counts.
+    /// A regression and a test never seen passing are known too, but they
+    /// are real failures and never count; nor does a flake that has been red
+    /// on every run since a commit.
     pub fn only_known_flakes(&self) -> bool {
-        self.total() > 0 && self.failing_since == 0 && self.new == 0
+        self.total() > 0
+            && self.failing_since == 0
+            && self.never_passed == 0
+            && self.new == 0
+            && self.red_flakes == 0
     }
 }
 
@@ -188,11 +212,18 @@ fn verdict_for(id: &str, history: &HistoryAnalysis) -> Verdict {
             failed_runs: test.outcomes.failed,
             observed_runs: test.outcomes.observed(),
             failures_confined_to: test.failures_confined_to.clone(),
+            red_since: test.red_since.clone(),
         };
     }
     if let Some(test) = history.failing_since.iter().find(|test| test.id == id) {
         return Verdict::FailingSince {
             commit: test.commit.clone(),
+            failed_runs: test.failed_runs,
+        };
+    }
+    if let Some(test) = history.never_passed.iter().find(|test| test.id == id) {
+        return Verdict::NeverPassed {
+            first_commit: test.first_commit.clone(),
             failed_runs: test.failed_runs,
         };
     }
@@ -215,12 +246,14 @@ mod tests {
                     failed: 4,
                 },
                 failures_confined_to: None,
+                red_since: None,
             }],
             failing_since: vec![FailingSince {
                 id: "c::regressed".to_owned(),
                 commit: "abc1234def".to_owned(),
                 failed_runs: 6,
             }],
+            never_passed: Vec::new(),
         }
     }
 
@@ -244,6 +277,7 @@ mod tests {
                 failed_runs: 4,
                 observed_runs: 50,
                 failures_confined_to: None,
+                red_since: None,
             }
         );
         assert!(Counts::of(&explained).only_known_flakes());
