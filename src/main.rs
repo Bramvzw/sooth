@@ -62,66 +62,37 @@ fn run(args: &cli::RunArgs) -> ExitCode {
     }
     let style = report::Style::resolved(args.color);
 
-    let (command_args, selection) = match gated_command(args, style) {
-        Ok(Some(gated)) => gated,
-        Ok(None) => return ExitCode::SUCCESS,
+    let plan = args
+        .preset
+        .map(|preset| preset::Plan::resolve(&args.command, preset));
+    let selection = match gate_selection(args, plan.as_ref(), style) {
+        Ok(Gate::Off) => None,
+        Ok(Gate::Files(selection)) => Some(selection),
+        Ok(Gate::Nothing) => return ExitCode::SUCCESS,
         Err(exit) => return exit,
     };
-    let ((command, envs), report_source) = match prepared_command(args, &command_args) {
+    let files = selection.as_ref().map_or(&[][..], |gated| &gated.files);
+    let ((command, envs), report_source) = match prepared_command(args, plan.as_ref(), files) {
         Ok(prepared) => prepared,
         Err(exit) => return exit,
     };
 
     let identity = identity_before_run(args, report_source.as_ref());
 
-    // Repetition lives here, not in the runner: the report is parsed per
-    // run, and per-test outcomes across runs feed the flaky pass. Fixed
-    // order on purpose — see DECISIONS.md.
-    let mut outcomes = Vec::with_capacity(args.runs as usize);
-    let mut reports: Vec<junit::JunitReport> = Vec::with_capacity(args.runs as usize);
-    for _ in 0..args.runs {
-        let report_before = match &report_source {
-            // Delete the preset's report before every run: a runner that
-            // stops writing must fail loudly instead of silently re-serving
-            // the previous run's truth.
-            Some(ReportSource::Preset(path)) => {
-                let _ = std::fs::remove_file(path);
-                None
-            }
-            // A user's file is never deleted; remember its state instead so
-            // "did this run touch it" is a fact, not a clock comparison.
-            Some(ReportSource::User(path)) => file_state(path),
-            None => None,
-        };
-        match runner::run_once(&command, &envs) {
-            Ok(outcome) => outcomes.push(outcome),
-            Err(err) => {
-                let program = &command[0];
-                eprintln!("sooth: failed to run `{program}`: {err}");
-                if let Some(ReportSource::Preset(path)) = &report_source {
-                    cleanup_preset_report(path);
-                }
-                return ExitCode::from(EXIT_SOOTH_ERROR);
-            }
-        }
-        if let Some(source) = &report_source {
-            match load_run_report(source, &command[0], report_before, &outcomes, args.runs) {
-                Ok(report) => reports.push(report),
-                Err(exit) => return exit,
-            }
-        }
-    }
-    if let Some(ReportSource::Preset(path)) = &report_source {
-        // Best-effort cleanup of the preset's private report dir — every
-        // run's parse result is already in memory.
-        cleanup_preset_report(path);
-    }
+    let (outcomes, reports) = match execute_runs(
+        args.runs,
+        &(command, envs),
+        report_source.as_ref(),
+        plan.as_ref(),
+    ) {
+        Ok(executed) => executed,
+        Err(exit) => return exit,
+    };
 
     let (junit_summary, flaky_analysis) = summarize_reports(args, &reports);
     let history_pass = record_history(identity, &reports);
     let history_analysis = history_pass.as_ref().map(|pass| &pass.analysis);
-    // The raw command: inject_selected re-injects the report flags itself.
-    let verify_verdict = verify_failures(args, &args.command, reports.last());
+    let verify_verdict = verify_failures(args, plan.as_ref(), reports.last());
 
     let suite_red = suite_failed(&outcomes, &reports);
     // The list labels known flakes on any red run; only --fail-on-flaky
@@ -180,25 +151,83 @@ fn run(args: &cli::RunArgs) -> ExitCode {
     }
 }
 
+/// Run the command `runs` times and load each run's report.
+///
+/// Repetition lives here, not in the runner: the report is parsed per run,
+/// and per-test outcomes across runs feed the flaky pass. Fixed order on
+/// purpose — see DECISIONS.md.
+#[expect(clippy::print_stderr)]
+fn execute_runs(
+    runs: u32,
+    (command, envs): &preset::Spawn,
+    report_source: Option<&ReportSource>,
+    plan: Option<&preset::Plan>,
+) -> Result<(Vec<runner::RunOutcome>, Vec<junit::JunitReport>), ExitCode> {
+    let mut outcomes = Vec::with_capacity(runs as usize);
+    let mut reports: Vec<junit::JunitReport> = Vec::with_capacity(runs as usize);
+    for _ in 0..runs {
+        let report_before = match report_source {
+            // Delete the preset's report before every run: a runner that
+            // stops writing must fail loudly instead of silently re-serving
+            // the previous run's truth.
+            Some(ReportSource::Preset(path)) => {
+                let _ = std::fs::remove_file(path);
+                None
+            }
+            // A user's file is never deleted; remember its state instead so
+            // "did this run touch it" is a fact, not a clock comparison.
+            Some(ReportSource::User(path)) => file_state(path),
+            None => None,
+        };
+        match runner::run_once(command, envs) {
+            Ok(outcome) => outcomes.push(outcome),
+            Err(err) => {
+                let program = &command[0];
+                eprintln!("sooth: failed to run `{program}`: {err}");
+                if let Some(ReportSource::Preset(path)) = report_source {
+                    cleanup_preset_report(path);
+                }
+                return Err(ExitCode::from(EXIT_SOOTH_ERROR));
+            }
+        }
+        if let Some(source) = report_source {
+            reports.push(load_run_report(
+                source,
+                plan,
+                report_before,
+                &outcomes,
+                runs,
+            )?);
+        }
+    }
+    if let Some(ReportSource::Preset(path)) = report_source {
+        // Best-effort cleanup of the preset's private report dir — every
+        // run's parse result is already in memory.
+        cleanup_preset_report(path);
+    }
+    Ok((outcomes, reports))
+}
+
 /// The command to spawn, its environment, and where its report comes from:
 /// the preset injects flags and manages a temp report, `--junit` points at
-/// the user's own file.
+/// the user's own file. `files` is the gate's selection, empty without one.
 #[expect(clippy::print_stderr)]
 fn prepared_command(
     args: &cli::RunArgs,
-    command: &[String],
+    plan: Option<&preset::Plan>,
+    files: &[String],
 ) -> Result<(preset::Spawn, Option<ReportSource>), ExitCode> {
-    match args.preset {
-        Some(chosen) => {
+    match plan {
+        Some(plan) => {
             let path = preset::report_path().map_err(|err| {
                 eprintln!("sooth: failed to create a temp directory for the report: {err}");
                 ExitCode::from(EXIT_SOOTH_ERROR)
             })?;
-            let spawn = preset::inject(command, chosen, &path);
+            let spawn = plan.run(&path, files);
             Ok((spawn, Some(ReportSource::Preset(path))))
         }
         None => Ok((
-            (command.to_vec(), Vec::new()),
+            (args.command.clone(), Vec::new()),
             args.junit.clone().map(ReportSource::User),
         )),
     }
@@ -221,18 +250,30 @@ fn summarize_reports(
     (summary, flaky)
 }
 
-/// The command to spawn plus the gate's selection when `--changed` gated it.
-type GatedRun = (Vec<String>, Option<gate::Selection>);
+/// What `--changed` made of this run.
+enum Gate {
+    /// No `--changed`: the command runs as given.
+    Off,
+    /// The happy fast path: nothing changed, nothing to prove, nothing
+    /// spawned — its output is already emitted.
+    Nothing,
+    /// The test files that run, and nothing else.
+    Files(gate::Selection),
+}
 
-/// The command with the gate's selection appended, plus the selection for
-/// the report. `Ok(None)` is the gate's happy fast path: nothing changed,
-/// nothing to prove, nothing spawned — its output is already emitted.
+/// Resolve `--changed` into the files to run, refusing what the runner
+/// cannot be handed.
 #[expect(clippy::print_stderr)]
-fn gated_command(args: &cli::RunArgs, style: report::Style) -> Result<Option<GatedRun>, ExitCode> {
+fn gate_selection(
+    args: &cli::RunArgs,
+    plan: Option<&preset::Plan>,
+    style: report::Style,
+) -> Result<Gate, ExitCode> {
     let Some(base) = &args.changed else {
-        return Ok(Some((args.command.clone(), None)));
+        return Ok(Gate::Off);
     };
-    let preset = args.preset.expect("rejected_flag guarantees a preset");
+    let plan = plan.expect("rejected_flag guarantees a preset");
+    let preset = plan.preset();
     let selection = match gate::resolve(base.as_deref(), preset, std::path::Path::new(".")) {
         Ok(selection) => selection,
         Err(reason) => {
@@ -241,13 +282,13 @@ fn gated_command(args: &cli::RunArgs, style: report::Style) -> Result<Option<Gat
         }
     };
     if selection.files.is_empty() {
-        return empty_gate(args, &selection).map(|()| None);
+        return empty_gate(args, &selection).map(|()| Gate::Nothing);
     }
     // PHPUnit before 10 runs only the first positional path: a multi-file
     // selection would gate one file while claiming them all (#139). Probed
     // only when that can happen; too old refuses, unknown warns.
     if preset == cli::Preset::Phpunit && selection.files.len() > 1 {
-        match preset::phpunit_major(&args.command) {
+        match plan.phpunit_major() {
             Some(major) if major < 10 => {
                 eprintln!(
                     "sooth: the gate selected {} test files, but PHPUnit {major} runs only \
@@ -260,7 +301,7 @@ fn gated_command(args: &cli::RunArgs, style: report::Style) -> Result<Option<Gat
             None => eprintln!(
                 "sooth: could not read a PHPUnit version from `{} --version` — if it is \
                  older than 10, only the first of the {} selected files will run",
-                preset::version_probe(&args.command).display(),
+                plan.version_probe().display(),
                 selection.files.len()
             ),
             Some(_) => {}
@@ -271,9 +312,7 @@ fn gated_command(args: &cli::RunArgs, style: report::Style) -> Result<Option<Gat
     if !matches!(args.json, Some(None)) {
         report::print_gate(&selection, style);
     }
-    let mut command = args.command.clone();
-    command.extend(preset::selected_paths(preset, &selection.files));
-    Ok(Some((command, Some(selection))))
+    Ok(Gate::Files(selection))
 }
 
 /// The empty gate's output, honoring every output mode's contract: bare
@@ -426,13 +465,14 @@ fn print_disagreement(runs_failed: bool, report_failures: usize, has_reports: bo
 #[expect(clippy::print_stderr)]
 fn verify_failures(
     args: &cli::RunArgs,
-    command: &[String],
+    plan: Option<&preset::Plan>,
     final_report: Option<&junit::JunitReport>,
 ) -> Option<verify::Verdict> {
     if !args.verify {
         return None;
     }
-    let preset = args.preset?;
+    let plan = plan?;
+    let preset = plan.preset();
     let report = final_report?;
     let failed = verify::failed_tests(report);
     if failed.is_empty() {
@@ -459,7 +499,7 @@ fn verify_failures(
                 return None;
             }
         };
-        let Some((cmd, envs)) = preset::inject_selected(command, preset, &path, &names) else {
+        let Some((cmd, envs)) = plan.rerun(&path, &names) else {
             eprintln!(
                 "sooth: verification is not supported for this preset yet — \
                  sooth cannot restrict its runner to a subset of tests"
@@ -1099,7 +1139,7 @@ impl ReportSource {
 #[expect(clippy::print_stderr)]
 fn load_run_report(
     source: &ReportSource,
-    program: &str,
+    plan: Option<&preset::Plan>,
     report_before: Option<(std::time::SystemTime, u64)>,
     outcomes: &[runner::RunOutcome],
     requested_runs: u32,
@@ -1114,11 +1154,11 @@ fn load_run_report(
             return Err(ExitCode::from(EXIT_SOOTH_ERROR));
         }
     }
-    let preset_program = match source {
-        ReportSource::Preset(_) => Some(program),
+    let preset_plan = match source {
+        ReportSource::Preset(_) => plan,
         ReportSource::User(_) => None,
     };
-    load_report(source.path(), preset_program).map_err(|message| {
+    load_report(source.path(), preset_plan).map_err(|message| {
         eprintln!("sooth: {message}");
         if let Some(context) = crash_context(outcomes, requested_runs) {
             eprintln!("sooth: {context}");
@@ -1130,20 +1170,19 @@ fn load_run_report(
     })
 }
 
-/// Load the JUnit-XML report at `path`. `preset_program` is the wrapped
-/// program name when the report is preset-managed — used to turn "no report
-/// was written" into an actionable message instead of a parse error about a
-/// temp path the user never chose.
+/// Load the JUnit-XML report at `path`. `preset_plan` is the wrapped
+/// command's plan when the report is preset-managed — used to turn "no
+/// report was written" into an actionable message instead of a parse error
+/// about a temp path the user never chose.
 fn load_report(
     path: &std::path::Path,
-    preset_program: Option<&str>,
+    preset_plan: Option<&preset::Plan>,
 ) -> Result<junit::JunitReport, String> {
-    if let Some(program) = preset_program {
+    if let Some(plan) = preset_plan {
         if !path.exists() {
             return Err(format!(
-                "the test command wrote no JUnit-XML report — is the reporter available, \
-                 and is `{program}` the test runner itself rather than a wrapper like \
-                 `python -m` or `npm`?"
+                "the test command wrote no JUnit-XML report — {}",
+                plan.no_report_hint()
             ));
         }
     }
@@ -1283,7 +1322,8 @@ mod tests {
     #[test]
     fn a_preset_run_that_writes_no_report_gets_an_actionable_error() {
         let missing = std::env::temp_dir().join("sooth-test-no-such-report.xml");
-        let message = super::load_report(&missing, Some("pytest"))
+        let plan = crate::preset::Plan::resolve(&["pytest".to_owned()], crate::cli::Preset::Pytest);
+        let message = super::load_report(&missing, Some(&plan))
             .expect_err("a missing preset report should error");
         assert!(message.contains("wrote no JUnit-XML report"));
         assert!(message.contains("pytest"));

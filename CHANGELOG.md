@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- The phpunit preset runs Composer scripts: `sooth run --preset phpunit --
+  composer test` (and `composer run-script …`, `php composer.phar …`).
+  Composer reads every option in front of a `--` as its own, so the
+  reporter flags, a `--verify` selection and the gate's files go after the
+  `--` — yours, or one sooth adds. Before, the run died on Composer's
+  `Command "…report.xml" is not defined`. A script whose other commands
+  refuse the extra arguments (Laravel 12's skeleton runs `config:clear`
+  first) still writes no report; the error now names Composer's
+  `@no_additional_args` instead of asking whether `composer` is the runner.
+
 ## [0.3.1] - 2026-11-14
 
 ### Changed
