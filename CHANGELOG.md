@@ -33,6 +33,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- The gate refuses a command that already selects tests itself.
+  `--changed -- vendor/bin/phpunit tests/` ran all of `tests/` plus the
+  changed files, `--runs` times, under a line that named only the changed
+  ones. It now exits 2 before anything runs and says to give the gate the
+  bare runner. Only a certain selection is refused: an argument that
+  exists on disk (for go, a `./...` pattern) and cannot be an option's
+  value. `pytest -q tests/` is not told apart from a flag with a value and
+  still runs the union, as the README says.
 - A run of a known runner without `--preset` now injects the reporter
   flags, prints the full report and records history, where it used to print
   only the per-run lines (see Added). Pass `--no-history` to keep it out of

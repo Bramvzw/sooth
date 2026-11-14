@@ -2623,6 +2623,53 @@ fn the_gate_selects_a_test_file_with_a_non_ascii_name() {
     assert!(stdout.contains("CaféTest.php"), "got: {stdout:?}");
 }
 
+#[test]
+fn the_gate_refuses_a_command_that_brings_its_own_selection() {
+    // `./runner.sh tests/` plus the gate's files is the union: all of
+    // `tests/`, `--runs` times, under a line that names one changed file.
+    let Some(dir) = scratch_repo("gate-own-selection") else {
+        return;
+    };
+    write_gate_runner(&dir);
+    std::fs::create_dir_all(dir.join("tests")).expect("mkdir");
+    std::fs::write(dir.join("tests/NewTest.php"), "<?php\n").expect("write");
+    let gate = |extra: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_sooth"))
+            .current_dir(&dir)
+            .args([
+                "run",
+                "--changed=HEAD",
+                "--runs",
+                "2",
+                "--no-history",
+                "--preset",
+                "phpunit",
+                "--color",
+                "never",
+                "--",
+                "./runner.sh",
+            ])
+            .args(extra)
+            .output()
+            .expect("sooth should run")
+    };
+
+    let output = gate(&["tests/", "--stop-on-failure"]);
+    let stderr = String::from_utf8(output.stderr).expect("stderr should be UTF-8");
+    assert_eq!(output.status.code(), Some(2), "got: {stderr:?}");
+    assert!(
+        stderr.contains("already selects `tests/`"),
+        "the refusal names what the command selects: {stderr:?}"
+    );
+    assert!(!dir.join("ran-tests").exists(), "nothing may have run");
+
+    // An option's value is not a selection, even when it is a path.
+    let output = gate(&["--bootstrap", "tests/NewTest.php"]);
+    let stderr = String::from_utf8(output.stderr).expect("stderr should be UTF-8");
+    assert_eq!(output.status.code(), Some(0), "got: {stderr:?}");
+    assert!(dir.join("ran-tests").exists(), "the gate must have run");
+}
+
 /// A one-file gate of the phpunit preset over a file called `name`, with a
 /// runner that notes its arguments in `ran-with`: (stdout, the arguments).
 fn gate_one_file_named(tag: &str, name: &str) -> Option<(String, String)> {

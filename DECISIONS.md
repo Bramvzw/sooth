@@ -1317,3 +1317,35 @@ is a separate decision, still open in #235.
 The contract test for this applies the filter with perl (PCRE, as PHP's
 `preg_match`), because a test that only compares the pattern's text cannot
 tell whether it matches anything. It is skipped where perl is missing.
+
+## The gate refuses a selection it is sure of, and only that
+
+The gate appends its files to the user's command. A command that already
+selects tests — `vendor/bin/phpunit tests/`, `pytest tests`, `gotestsum --
+./...` — then runs the union: the whole directory, `--runs` times, in a
+pre-push hook, under `gate: 1 changed test file`. The printed selection no
+longer describes what ran, and "a handful of tests twenty times is seconds"
+becomes the suite twenty times (#138). The README documented it; the run
+itself said nothing.
+
+Refusing is the house rule, but a refusal has to be right: blocking a push
+over a wrong guess is worse than the union it prevents. Telling a selection
+from an option's value takes each runner's whole option table — `phpunit
+--testdox tests/` is a selection, `phpunit --testsuite tests` is a value,
+and plugins add options sooth has never heard of. So the gate refuses only
+what needs no such table:
+
+- the argument is not an option and does not follow one that may be waiting
+  for a value (an option without `=`; a bare `--` waits for nothing), and
+- it names something that exists on disk — or, for go, is a `...` package
+  pattern, which is no path at all.
+
+Everything else passes as before: `pytest -q tests/` looks exactly like `-q`
+taking `tests/` as its value. That gap is stated in the README rather than
+closed with a guess. A check that needs no option table would compare the
+report's files with the selection after the run; PHPUnit's report carries
+them, pytest's and jest's do not by default, so it is left for when the
+report layer grows file information.
+
+Like the paratest refusal, this comes before the selection is resolved, so
+a hook with such a command is told on its first run.
