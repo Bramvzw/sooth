@@ -1052,10 +1052,8 @@ the user to "commit or stash" a tree they had not touched. So:
   plain `status` refreshes the index under `index.lock` and can collide
   with an IDE or a commit in another terminal while a suite runs.
 
-Ignoring `.sooth/` in `.gitignore` remains worth doing for `git add -A`,
-and #102 (writing it to `.git/info/exclude`) is still open for that half.
-The evidence no longer depends on it — in line with "sooth never requires
-the host project to change for sooth's sake".
+The evidence no longer depends on `.sooth/` being ignored. Keeping it out
+of `git add -A` is the next entry.
 
 ## A streak says what was witnessed: regression, never seen passing, or a flake gone red
 
@@ -1094,3 +1092,29 @@ a 50% flake does one time in four.
 
 In `--json` these are additions: verdict `never_passed`, `red_since` on a
 known flake, and `never_passed` in the counts and under `history`.
+
+## Sooth never requires the host project to change for sooth's sake
+
+Presets inject reporter flags at runtime instead of asking for config, no
+sooth file has to be committed, `import` consumes reports that already
+exist, and the log route mines what CI keeps by default. The untracked
+`.sooth/` was the one place that broke the rule: the README told the user
+to add a line to the project's `.gitignore`, and a warning that says "go
+edit your project" is that requirement in disguise (#102).
+
+Git has a mechanism made for this: `.git/info/exclude` — per-clone ignores,
+never committed, invisible to teammates. So when sooth creates `.sooth/`
+and `git check-ignore` reports it not ignored, sooth appends `.sooth/` to
+that file and says so, once:
+
+```
+sooth: added `.sooth/` to .git/info/exclude — the history is local and yours, and this keeps it out of `git status` and `git add -A`
+```
+
+Boundaries: only at the moment the directory is created, so a later run
+never spawns git for it; best-effort and never fatal, like every other
+history failure; silent outside a repository; a project that already
+ignores `.sooth/` by either mechanism is left untouched. Committing the
+line to `.gitignore` stays a fine team choice — sooth just never depends
+on it. It is the only file outside `.sooth/` that sooth writes, and it is
+one line in the clone's own metadata.

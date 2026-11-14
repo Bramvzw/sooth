@@ -277,22 +277,60 @@ pub fn resolve_commit(dir: &Path, given: &str) -> Result<String, CommitError> {
     git(dir, &["rev-parse", "--verify", "--quiet", &revision]).ok_or(CommitError::Unknown)
 }
 
-#[expect(
-    clippy::disallowed_methods,
-    reason = "Every git call goes through this one helper."
-)]
 pub(crate) fn git(dir: &Path, args: &[&str]) -> Option<String> {
-    let output = Command::new("git")
-        .arg("-C")
-        .arg(dir)
-        .args(args)
-        .output()
-        .ok()?;
+    let output = git_run(dir, args)?;
     if !output.status.success() {
         return None;
     }
     let text = String::from_utf8(output.stdout).ok()?;
     Some(text.trim().to_owned())
+}
+
+#[expect(
+    clippy::disallowed_methods,
+    reason = "Every git call goes through this one helper."
+)]
+fn git_run(dir: &Path, args: &[&str]) -> Option<std::process::Output> {
+    Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(args)
+        .output()
+        .ok()
+}
+
+/// Keep sooth's own directory out of `git status` and `git add -A` in this
+/// clone, without asking the project to change anything: when git does not
+/// already ignore it, add it to `.git/info/exclude`. `true` when the line
+/// was added. Outside a repository, or when anything fails, nothing happens
+/// (see `DECISIONS.md`).
+pub fn exclude_from_git(dir: &Path) -> bool {
+    let Some(history_dir) = Path::new(HISTORY_PATH).parent().and_then(Path::to_str) else {
+        return false;
+    };
+    let pattern = format!("{history_dir}/");
+    // `check-ignore -q`: 0 is ignored, 1 is not; anything else is no answer.
+    let ignored = git_run(dir, &["check-ignore", "-q", &pattern]).and_then(|out| out.status.code());
+    if ignored != Some(1) {
+        return false;
+    }
+    let Some(exclude) = git(dir, &["rev-parse", "--git-path", "info/exclude"]) else {
+        return false;
+    };
+    append_line(&dir.join(exclude), &pattern).is_ok()
+}
+
+fn append_line(path: &Path, line: &str) -> std::io::Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let mut file = fs::OpenOptions::new()
+        .create(true)
+        .read(true)
+        .append(true)
+        .open(path)?;
+    let start = if ends_mid_line(&mut file)? { "\n" } else { "" };
+    file.write_all(format!("{start}{line}\n").as_bytes())
 }
 
 /// Append observations as JSON lines, creating `.sooth/` when missing.

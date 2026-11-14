@@ -559,7 +559,7 @@ fn record_history(
         }
     }
     let path = std::path::Path::new(history::HISTORY_PATH);
-    if let Err(err) = history::append(path, &observations) {
+    if let Err(err) = append_history(path, &observations) {
         eprintln!(
             "sooth: could not write {}: {err} — history skipped for this run",
             path.display()
@@ -581,6 +581,24 @@ fn record_history(
         prior_observations: prior,
         prior_unusable,
     })
+}
+
+/// Append to the history. The first write creates `.sooth/`; that is the
+/// moment sooth keeps it out of git's view, and the one time it says so.
+#[expect(clippy::print_stderr)]
+fn append_history(
+    path: &std::path::Path,
+    observations: &[history::Observation],
+) -> std::io::Result<()> {
+    let created = path.parent().is_some_and(|dir| !dir.exists());
+    history::append(path, observations)?;
+    if created && !observations.is_empty() && history::exclude_from_git(std::path::Path::new(".")) {
+        eprintln!(
+            "sooth: added `.sooth/` to .git/info/exclude — the history is local and yours, \
+             and this keeps it out of `git status` and `git add -A`"
+        );
+    }
+    Ok(())
 }
 
 /// Load the history file, warning once about lines it could not read.
@@ -829,7 +847,7 @@ fn import(args: &cli::ImportArgs) -> ExitCode {
         .flat_map(|entry| entry.observations.iter().cloned())
         .collect();
     let history_path = std::path::Path::new(history::HISTORY_PATH);
-    if let Err(err) = history::append(history_path, &observations) {
+    if let Err(err) = append_history(history_path, &observations) {
         eprintln!("sooth: could not write {}: {err}", history_path.display());
         return ExitCode::from(EXIT_SOOTH_ERROR);
     }

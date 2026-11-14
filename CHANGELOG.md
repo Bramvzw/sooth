@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- The first time sooth creates `.sooth/` in a repository that does not
+  ignore it, it adds `.sooth/` to `.git/info/exclude` (local to the clone,
+  never committed) and says so once. The history then stays out of `git
+  status` and `git add -A` without a line in the project's `.gitignore`.
 - `--json`: `explanation.failures[].verdict` can be `never_passed` (with
   `first_commit`); a `known_flake` entry and `history.flaky[]` carry
   `red_since` (`null`, or `commit` and `failed_runs`);
