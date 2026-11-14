@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- A clean tree stays clean in the history. sooth read the code identity
+  after the run and counted every untracked file, so the report a run wrote
+  into the repository (the README's own `--junit report.xml` example) and an
+  unignored `.sooth/` marked every observation dirty, and no evidence ever
+  accumulated. The identity is now read before the first run, `.sooth/` and
+  the `--junit` file are left out of the dirty check, and a `HEAD` that moved
+  during the run is recorded as unknown. The check no longer takes git's
+  index lock.
+
 ## [0.3.0] - 2026-11-12
 
 ### Added

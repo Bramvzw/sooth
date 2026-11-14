@@ -190,19 +190,60 @@ pub fn now_epoch_secs() -> u64 {
         .map_or(0, |elapsed| elapsed.as_secs())
 }
 
-/// Read the code identity from git. Every failure mode degrades to unknown
-/// instead of erroring: history must never make a run fail.
-pub fn code_identity(dir: &Path) -> CodeIdentity {
+/// Read the code identity from git: `HEAD`, and whether the tree differs
+/// from it. Call it before the run, so nothing the run writes can pass for a
+/// change to the code it ran. Every failure mode degrades to unknown instead
+/// of erroring: history must never make a run fail.
+pub fn code_identity(dir: &Path, report: Option<&Path>) -> CodeIdentity {
     let Some(commit) = git(dir, &["rev-parse", "HEAD"]) else {
         return CodeIdentity::default();
     };
-    // Untracked files count as dirty: a new test file is code the commit
-    // does not describe. `.sooth/` itself must be gitignored (see README).
-    let dirty = git(dir, &["status", "--porcelain"]).map(|out| !out.is_empty());
     CodeIdentity {
         commit: Some(commit),
-        dirty,
+        dirty: tree_differs_from_head(dir, report),
     }
+}
+
+/// Untracked files count: a new test file is code the commit does not
+/// describe. What sooth and the run write themselves does not — `.sooth/`,
+/// and `report`, the user's `--junit` file (see `DECISIONS.md`).
+fn tree_differs_from_head(dir: &Path, report: Option<&Path>) -> Option<bool> {
+    let history_dir = Path::new(HISTORY_PATH).parent()?.to_str()?;
+    let own_history = format!(":(exclude,literal){history_dir}");
+    let differs = |also_excluded: Option<&str>| {
+        // `--no-optional-locks`: a plain `status` refreshes the index under
+        // `index.lock`, which can collide with an IDE or a commit elsewhere.
+        let mut args = vec![
+            "--no-optional-locks",
+            "status",
+            "--porcelain",
+            "--",
+            ":/",
+            &own_history,
+        ];
+        args.extend(also_excluded);
+        git(dir, &args).map(|changes| !changes.is_empty())
+    };
+    if !differs(None)? {
+        return Some(false);
+    }
+    // Something differs; it may be only the report. Git refuses a path
+    // outside the repository, and then the first answer stands.
+    let Some(report) = report.and_then(Path::to_str) else {
+        return Some(true);
+    };
+    let own_report = format!(":(exclude,literal){report}");
+    Some(differs(Some(&own_report)).unwrap_or(true))
+}
+
+/// The identity to record once the runs are over: the one read before them,
+/// or unknown when `HEAD` moved meanwhile — the observations cannot be
+/// pinned on either commit.
+pub fn identity_after_run(before: CodeIdentity, dir: &Path) -> CodeIdentity {
+    if before.commit.is_some() && git(dir, &["rev-parse", "HEAD"]) != before.commit {
+        return CodeIdentity::default();
+    }
+    before
 }
 
 /// Why a given commit cannot be stored as the sha local runs record.
@@ -508,10 +549,11 @@ fn extract_string_or_null(line: &str, key: &str) -> Option<Option<String>> {
 )]
 mod tests {
     use super::{
-        append, code_identity, current_environment, load, resolve_commit, CommitError, Observation,
+        append, code_identity, current_environment, identity_after_run, load, resolve_commit,
+        CodeIdentity, CommitError, Observation,
     };
     use crate::junit::TestStatus;
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
     use std::process::Command;
 
     fn temp_path(tag: &str) -> PathBuf {
@@ -847,16 +889,36 @@ mod tests {
         git(&["add", "."]);
         git(&["commit", "-q", "-m", "init"]);
 
-        let clean = code_identity(&dir);
+        let clean = code_identity(&dir, None);
         assert!(clean.commit.is_some());
         assert_eq!(clean.dirty, Some(false));
 
+        // What sooth writes is never a change to the code under test.
+        std::fs::create_dir_all(dir.join(".sooth")).unwrap();
+        std::fs::write(dir.join(".sooth/history.jsonl"), "").unwrap();
+        assert_eq!(code_identity(&dir, None).dirty, Some(false));
+
+        // Nor is the report the run writes — once sooth knows which file it is.
+        std::fs::write(dir.join("report *.xml"), "<testsuite/>").unwrap();
+        assert_eq!(code_identity(&dir, None).dirty, Some(true));
+        let report = Path::new("report *.xml");
+        assert_eq!(code_identity(&dir, Some(report)).dirty, Some(false));
+        // A report outside the repository excuses nothing inside it.
+        let elsewhere = std::env::temp_dir().join("sooth-report-elsewhere.xml");
+        assert_eq!(code_identity(&dir, Some(&elsewhere)).dirty, Some(true));
+
         std::fs::write(dir.join("b.txt"), "untracked").unwrap();
-        let dirty = code_identity(&dir);
+        let dirty = code_identity(&dir, Some(report));
         assert_eq!(dirty.commit, clean.commit);
         assert_eq!(dirty.dirty, Some(true));
 
-        let nowhere = code_identity(&std::env::temp_dir().join("sooth-no-such-dir"));
+        // HEAD moving under a run leaves nothing to pin the observations on.
+        assert_eq!(identity_after_run(clean.clone(), &dir), clean);
+        git(&["add", "b.txt"]);
+        git(&["commit", "-q", "-m", "second"]);
+        assert_eq!(identity_after_run(clean, &dir), CodeIdentity::default());
+
+        let nowhere = code_identity(&std::env::temp_dir().join("sooth-no-such-dir"), None);
         assert_eq!(nowhere.commit, None);
         let _ = std::fs::remove_dir_all(&dir);
     }
