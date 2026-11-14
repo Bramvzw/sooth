@@ -15,7 +15,10 @@ use crate::junit::TestStatus;
 /// The history file, relative to the directory sooth runs from.
 pub const HISTORY_PATH: &str = ".sooth/history.jsonl";
 
-/// How many of a test's most recent observations the analysis considers.
+/// How many of a test's most recent invocations the analysis considers,
+/// with every run they made. Invocations, because that is the unit of
+/// evidence: counted in runs, three `--runs 20` gates would push a proven
+/// flake out. A line without an invocation is one of its own.
 pub const WINDOW_PER_TEST: usize = 50;
 
 /// How much of the history file's tail one load reads. The file is
@@ -181,6 +184,9 @@ pub fn iso8601_to_epoch(text: &str) -> Option<u64> {
 pub struct Loaded {
     pub observations: Vec<Observation>,
     pub skipped_lines: usize,
+    /// The file is larger than one load reads: these are its newest
+    /// observations, not all of them.
+    pub truncated: bool,
 }
 
 /// Seconds since the Unix epoch; zero when the clock predates it.
@@ -387,6 +393,7 @@ fn load_tail(path: &Path, max_bytes: u64) -> Loaded {
     let empty = Loaded {
         observations: Vec::new(),
         skipped_lines: 0,
+        truncated: false,
     };
     let Ok(mut file) = fs::File::open(path) else {
         return empty;
@@ -430,6 +437,7 @@ fn load_tail(path: &Path, max_bytes: u64) -> Loaded {
     Loaded {
         observations,
         skipped_lines,
+        truncated,
     }
 }
 
@@ -695,6 +703,8 @@ mod tests {
         );
         // The cut-off first line is expected truncation, not corruption.
         assert_eq!(loaded.skipped_lines, 0);
+        assert!(loaded.truncated, "a tail must say it is one");
+        assert!(!load(&path).truncated);
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 
