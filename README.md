@@ -141,6 +141,12 @@ commit. The abbreviated sha your CI shows is fine — sooth resolves it against
 your clone, and refuses one your clone does not know. Importing the same
 file twice is harmless: sooth keeps a ledger and skips it.
 
+One thing has to match for local runs and CI reports to meet: the runner. A
+test is known by the name its report gives it, and Pest (`php artisan test`
+included) writes a class-based test as `That true is true` where
+`vendor/bin/phpunit` writes `test_that_true_is_true`. Use the same runner
+in both places; the same goes for the ids in `.sooth-quarantine`.
+
 With local runs and CI reports in one history, the difference becomes
 visible:
 

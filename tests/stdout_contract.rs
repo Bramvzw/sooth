@@ -633,6 +633,70 @@ fn a_verified_failure_that_reproduces_reads_real() {
 }
 
 #[test]
+fn verify_selects_a_test_by_the_name_its_report_gave_it() {
+    use std::os::unix::fs::PermissionsExt;
+    // The fixture applies `--filter` with perl, as PHPUnit does with PCRE.
+    if Command::new("perl").arg("-v").output().is_err() {
+        return;
+    }
+    // (the method PHPUnit filters on, the name the report carries)
+    let cases = [
+        // Plain PHPUnit reports the method name itself.
+        ("test_ships", "test_ships"),
+        (
+            "test_numbers with data set #0",
+            "test_numbers with data set #0",
+        ),
+        // A Pest-style test is filtered on its description.
+        ("ships on time", "ships on time"),
+        // Pest prettifies a class-based method: the prefix goes, underscores
+        // and camelCase humps become spaces, the first letter is raised.
+        ("test_that_true_is_true", "That true is true"),
+        ("testCamelCaseName", "Camel case name"),
+        ("testHttp2Works", "Http 2 works"),
+        ("it_is_attribute_based", "It is attribute based"),
+        ("test_UPPER_and_lower", "UPPER and lower"),
+        ("test_numbers with data set #1", "Numbers with data set #1"),
+        (
+            "testNamedSets with data set \"big.one\"",
+            "Named sets with data set &quot;big.one&quot;",
+        ),
+    ];
+    for (method, reported) in cases {
+        let (cwd, mut command) = sooth_in("verify-spelling");
+        let fixture = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/filter_runner.sh"
+        );
+        let runner = cwd.join("pest");
+        std::fs::copy(fixture, &runner).expect("copy runner");
+        std::fs::set_permissions(&runner, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+        let output = command
+            .env("SOOTH_TEST_METHOD", method)
+            .env("SOOTH_TEST_NAME", reported)
+            .args([
+                "run",
+                "--verify",
+                "--no-history",
+                "--preset",
+                "phpunit",
+                "--color",
+                "never",
+                "--",
+                "./pest",
+            ])
+            .output()
+            .expect("sooth should run");
+        let stdout = String::from_utf8(output.stdout).expect("stdout should be UTF-8");
+
+        assert!(
+            stdout.contains("real (reproduced on re-run)"),
+            "`{method}`, reported as `{reported}`, must be found again: {stdout:?}"
+        );
+    }
+}
+
+#[test]
 fn verify_with_an_unselectable_preset_is_rejected_up_front_with_exit_two() {
     let (_cwd, mut command) = sooth_in("verify-unselectable");
     let output = command

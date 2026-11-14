@@ -1264,3 +1264,48 @@ Known limit: there is no flag to force the old report-less run of a known
 runner. The only setups that would want it are ones where the runner cannot
 write JUnit at all (pytest with `-p no:junitxml`); add an opt-out when one
 shows up, not before.
+
+## The phpunit selection matches a name in any spelling its report can have given it
+
+`--verify` selects by the `name` a report carries, and under Pest that name
+is not the method's. Pest's JUnit logger prints a class-based test the way
+PHPUnit's TestDox does: the `test` prefix goes, underscores and camelCase
+humps become spaces, the first letter is raised. `test_that_true_is_true`,
+`testThatTrueIsTrue` and an attribute-marked `that_true_is_true` all read
+`That true is true`, and `--filter '/::(That true is true)/'` matches none
+of them. In a Laravel + Pest app every class-based failure, the skeleton's
+`ExampleTest` first, came back `unverified` (#234).
+
+The report does not say which spelling the method has, and the transform is
+not reversible (`testFoo` and `testFoo2` can both read `Foo`). So the filter
+does not try to reverse it; it accepts every spelling that prettifies to the
+name:
+
+```
+/::(?:test_?)?(That[_ ]?true[_ ]?is[_ ]?true|…)/i
+```
+
+An optional `test` prefix, each space an optional underscore or nothing, and
+either case. That is the over-matching the verification entry above already
+chose ("extra passing tests merely confirm they pass"), and it is why this
+is one rule rather than a Pest mode: a plain PHPUnit name has no spaces
+outside its `with data set …` suffix and still matches itself, a Pest-style
+description is matched on its own words, and sooth never has to decide which
+runner wrote the report.
+
+The issue's other suggestion — select through the report's `class`
+attribute — was not needed: the name alone finds the method, and anchoring
+on the class would have reopened the dotted-versus-backslashed mismatch the
+verification entry describes.
+
+What this does not solve is the identity itself: the same test is
+`Tests.Unit.ExampleTest::That true is true` under Pest and
+`…::test_that_true_is_true` under plain PHPUnit, so history recorded with one
+runner says nothing about runs made with the other. Sooth does not translate
+between them: the README says to use the same runner locally and in CI.
+Whether history and quarantine should compare such names by a common key
+is a separate decision, still open in #235.
+
+The contract test for this applies the filter with perl (PCRE, as PHP's
+`preg_match`), because a test that only compares the pattern's text cannot
+tell whether it matches anything. It is skipped where perl is missing.

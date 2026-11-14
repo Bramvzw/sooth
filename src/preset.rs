@@ -439,14 +439,16 @@ fn selection_args(preset: Preset, names: &[String]) -> Option<Vec<String>> {
     }
     match preset {
         // The JUnit classname is dotted but --filter wants the backslashed
-        // FQCN; only the name half survives both (#93).
+        // FQCN; only the name half survives both (#93). And that half is
+        // matched in any spelling the report may have given it: see
+        // `any_spelling`.
         Preset::Phpunit => {
-            let mut methods: Vec<String> = names.iter().map(|name| regex_escape(name)).collect();
+            let mut methods: Vec<String> = names.iter().map(|name| any_spelling(name)).collect();
             methods.sort_unstable();
             methods.dedup();
             Some(vec![
                 "--filter".to_owned(),
-                format!("/::({})/", methods.join("|")),
+                format!("/::(?:test_?)?({})/i", methods.join("|")),
             ])
         }
         // A JUnit classname is not a pytest node id; select by test name.
@@ -570,6 +572,21 @@ fn parse_phpunit_major(banner: &str) -> Option<u32> {
 /// The name without its `[parameters]` suffix (brackets break a `-k` expression).
 fn base_name(name: &str) -> &str {
     name.split_once('[').map_or(name, |(base, _)| base)
+}
+
+/// A `PHPUnit` test name as a pattern that also matches the method it may
+/// have been prettified from. Pest reports a class-based test the way
+/// `PHPUnit`'s `TestDox` prints it: `test_that_true_is_true`,
+/// `testThatTrueIsTrue` and an attribute-marked `that_true_is_true` all
+/// become `That true is true`. So every space may have been an underscore or
+/// a camelCase hump; with the optional `test` prefix and the `i` flag of the
+/// enclosing filter, the reported name finds its method again. A name that
+/// was never prettified still matches itself.
+fn any_spelling(name: &str) -> String {
+    name.split(' ')
+        .map(regex_escape)
+        .collect::<Vec<_>>()
+        .join("[_ ]?")
 }
 
 /// Escape regex metacharacters so an identity matches literally.
@@ -714,7 +731,7 @@ mod tests {
                 "--log-junit",
                 "/tmp/r.xml",
                 "--filter",
-                "/::(test_x)/"
+                "/::(?:test_?)?(test_x)/i"
             ])
         );
     }
@@ -825,7 +842,7 @@ mod tests {
                 "--log-junit",
                 "/tmp/r.xml",
                 "--filter",
-                "/::(test_x)/"
+                "/::(?:test_?)?(test_x)/i"
             ])
         );
         let (full, _) = plan.run(
@@ -1238,7 +1255,7 @@ mod tests {
                 "--log-junit",
                 "/tmp/r.xml",
                 "--filter",
-                "/::(test_b|test_it_journals_a_flag)/",
+                "/::(?:test_?)?(test_b|test_it_journals_a_flag)/i",
             ])
         );
     }
@@ -1259,8 +1276,24 @@ mod tests {
                 "--log-junit",
                 "/tmp/r.xml",
                 "--filter",
-                r#"/::(test_a with data set "x\.y")/"#,
+                r#"/::(?:test_?)?(test_a[_ ]?with[_ ]?data[_ ]?set[_ ]?"x\.y")/i"#,
             ])
+        );
+    }
+
+    #[test]
+    fn phpunit_selection_lets_a_space_be_an_underscore_or_a_camel_hump() {
+        // Pest reports `test_that_true_is_true` as `That true is true`.
+        let (full, _) = inject_selected(
+            &command(&["vendor/bin/pest"]),
+            Preset::Phpunit,
+            Path::new("/tmp/r.xml"),
+            &names(&["That true is true", "Http 2 works"]),
+        )
+        .expect("phpunit supports selection");
+        assert_eq!(
+            full.last().map(String::as_str),
+            Some("/::(?:test_?)?(Http[_ ]?2[_ ]?works|That[_ ]?true[_ ]?is[_ ]?true)/i")
         );
     }
 

@@ -56,6 +56,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   when that gate writes no report, sooth now names paratest as the first
   thing to check. Runs without `--changed` are unaffected.
 
+### Fixed
+
+- `--verify` in a Pest project: a class-based PHPUnit test is found again.
+  Pest reports `test_that_true_is_true` as `That true is true`, so the
+  re-run's `--filter` matched nothing and every such failure — the
+  skeleton's `ExampleTest` to begin with — read `unverified (the re-run did
+  not cover it)`. The filter now matches the name in any spelling it can
+  have been prettified from: an optional `test` prefix, a space for an
+  underscore or a camelCase hump, either case. Plain PHPUnit names and
+  Pest-style descriptions match as before.
+
 ## [0.3.1] - 2026-11-14
 
 ### Changed
