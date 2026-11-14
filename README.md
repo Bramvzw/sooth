@@ -288,7 +288,11 @@ path) runs the union — the whole suite, `--runs` times. Deleted or
 renamed-away tests select nothing (there is nothing left to run). PHPUnit
 before 10 accepts a single path argument, so gating several changed files at
 once needs PHPUnit 10+ — the gate checks `--version` and refuses loudly
-rather than gate one file while claiming them all. What the gate cannot
+rather than gate one file while claiming them all. For the same reason the
+gate's command must not run in parallel: paratest (`--parallel`, `-p`)
+takes a single path too, so sooth refuses that command on its first use
+and tells you to drop the flag. A handful of files gains nothing from it.
+What the gate cannot
 catch — flakes that need CI's own clock, machines, or parallelism — the
 history's CI evidence still does.
 
