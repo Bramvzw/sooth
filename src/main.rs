@@ -65,6 +65,8 @@ fn run(args: &cli::RunArgs) -> ExitCode {
         Err(exit) => return exit,
     };
 
+    let identity = identity_before_run(args, report_source.as_ref());
+
     // Repetition lives here, not in the runner: the report is parsed per
     // run, and per-test outcomes across runs feed the flaky pass. Fixed
     // order on purpose — see DECISIONS.md.
@@ -109,7 +111,7 @@ fn run(args: &cli::RunArgs) -> ExitCode {
     }
 
     let (junit_summary, flaky_analysis) = summarize_reports(args, &reports);
-    let history_pass = record_history(args, &reports);
+    let history_pass = record_history(identity, &reports);
     let history_analysis = history_pass.as_ref().map(|pass| &pass.analysis);
     // The raw command: inject_selected re-injects the report flags itself.
     let verify_verdict = verify_failures(args, &args.command, reports.last());
@@ -490,15 +492,38 @@ impl HistoryPass {
     }
 }
 
+/// The identity of the code about to run, when this invocation will record
+/// history. Read before the first run: what the run writes — the user's
+/// `--junit` report included — is not a change to the code it ran.
+fn identity_before_run(
+    args: &cli::RunArgs,
+    report_source: Option<&ReportSource>,
+) -> Option<history::CodeIdentity> {
+    if args.no_history {
+        return None;
+    }
+    let user_report = match report_source? {
+        ReportSource::User(path) => Some(path.as_path()),
+        ReportSource::Preset(_) => None,
+    };
+    Some(history::code_identity(
+        std::path::Path::new("."),
+        user_report,
+    ))
+}
+
 /// Record this invocation's runs into the local history and classify the
 /// accumulated observations. Every failure degrades to a stderr warning:
 /// the passive layer must never change the run's outcome.
 #[expect(clippy::print_stderr)]
-fn record_history(args: &cli::RunArgs, reports: &[junit::JunitReport]) -> Option<HistoryPass> {
-    if args.no_history || reports.is_empty() {
+fn record_history(
+    identity: Option<history::CodeIdentity>,
+    reports: &[junit::JunitReport],
+) -> Option<HistoryPass> {
+    if reports.is_empty() {
         return None;
     }
-    let identity = history::code_identity(std::path::Path::new("."));
+    let identity = history::identity_after_run(identity?, std::path::Path::new("."));
     let environment = history::current_environment();
     let at_epoch_secs = history::now_epoch_secs();
     let invocation = history::run_invocation(at_epoch_secs);

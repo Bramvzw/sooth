@@ -904,6 +904,43 @@ fn write_green_runner(dir: &std::path::Path) {
 }
 
 #[test]
+fn what_sooth_and_the_run_write_does_not_make_a_clean_tree_dirty() {
+    let Some(dir) = scratch_repo("own-files") else {
+        return;
+    };
+    // The harshest case: `.sooth/` is not ignored, and the report the run
+    // writes sits inside the repository, as in the README's own example.
+    std::fs::write(dir.join(".gitignore"), "").expect("write");
+    git_in(&dir, &["commit", "-q", "-am", "ignore nothing"]);
+    let run = || {
+        Command::new(env!("CARGO_BIN_EXE_sooth"))
+            .current_dir(&dir)
+            .args([
+                "run",
+                "--junit",
+                "report.xml",
+                "--color",
+                "never",
+                "--",
+                "sh",
+                "-c",
+                "printf '<testsuite><testcase classname=\"c\" name=\"t\"/></testsuite>' > report.xml",
+            ])
+            .output()
+            .expect("sooth should run")
+    };
+    assert_eq!(run().status.code(), Some(0));
+    assert_eq!(run().status.code(), Some(0));
+
+    let history = std::fs::read_to_string(dir.join(".sooth/history.jsonl")).expect("history");
+    assert_eq!(history.lines().count(), 2, "got: {history}");
+    assert!(
+        !history.contains(r#""dirty":true"#),
+        "the run's own report or sooth's own history marked a clean tree dirty: {history}"
+    );
+}
+
+#[test]
 fn history_accumulates_across_invocations_and_reports_proven_flakes() {
     let Some(dir) = scratch_repo("history") else {
         return; // no git: identity degrades to unknown, covered by unit tests

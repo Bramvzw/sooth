@@ -1002,3 +1002,35 @@ This is recognising one well-known command shape, not general wrapper
 detection: `npm test`, `composer test` or `python -m pytest` can hide any
 command, and guessing what they run would break the "never guess" rule.
 `artisan test` is one fixed command with documented forwarding.
+
+## The identity is the code the run started on, and sooth's own files are not changes
+
+An observation is evidence only when it was made on a clean, known commit.
+Two things made clean trees read as dirty (#229, #102):
+
+- The identity was read *after* the run. Whatever the run wrote into an
+  unignored path — the report in the README's own `--junit report.xml`
+  example — was then an untracked file, and the observation was dirty.
+- An unignored `.sooth/` did the same from the second run on.
+
+For such a project the history silently proved nothing, and the note told
+the user to "commit or stash" a tree they had not touched. So:
+
+- **Read before the first run.** The identity describes the code that is
+  about to run; nothing the run writes can pass for a change to it. If
+  `HEAD` is different once the runs are over — a commit or checkout during
+  a long suite — the observations cannot be pinned on either commit and are
+  recorded as unknown.
+- **Sooth's own files are not changes.** `.sooth/` and the user's `--junit`
+  file are left out of the dirty check. This does not weaken the rule that
+  untracked files count: those two are the only paths sooth knows it and
+  the run write. A cache or coverage directory the suite leaves behind is
+  still an untracked file like any other, and belongs in `.gitignore`.
+- **No index lock.** The check runs `git --no-optional-locks status`: a
+  plain `status` refreshes the index under `index.lock` and can collide
+  with an IDE or a commit in another terminal while a suite runs.
+
+Ignoring `.sooth/` in `.gitignore` remains worth doing for `git add -A`,
+and #102 (writing it to `.git/info/exclude`) is still open for that half.
+The evidence no longer depends on it — in line with "sooth never requires
+the host project to change for sooth's sake".
