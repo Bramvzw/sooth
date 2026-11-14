@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- sooth never exits 101. A panic is reported as `sooth: internal error …`
+  with exit 2, and a reader that closes the pipe (`sooth history | head`)
+  ends sooth quietly with exit 2 instead of a panic message.
 - A suite that is red everywhere no longer makes sooth itself slow. Listing
   the failed tests was quadratic in their number: 20,000 failures cost 16
   seconds per report, and now 0.3.

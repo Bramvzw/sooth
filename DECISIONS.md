@@ -168,6 +168,15 @@ failures. Users who deliberately configure exit-0-on-failure runners see
 their pipeline turn red behind sooth; that is the product, not a bug. An
 explicit escape hatch (e.g. `--exit-code=runner`) waits for real demand.
 
+Refinement (#231): nothing leaves through Rust's `101`. A panic is sooth
+failing, so `main` catches it and exits 2, with one line that says it is a
+bug and where to report it. A reader that closes the pipe (`sooth history |
+head`) also arrives as a panic — the failed `println!` — and exits 2 as
+well, but without a word: nobody is left to read it. Not 0, because a `run`
+whose report could not be delivered must never look like a pass, and not
+the tests' own verdict, because the reader can leave before there is one.
+Any Unix tool under `set -o pipefail` fails the same pipeline (141).
+
 ## `quick-xml` (event-based, not `serde`) for the JUnit parser
 
 There is no real JUnit-XML standard (see above): the union schema `sooth`
