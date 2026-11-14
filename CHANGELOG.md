@@ -19,6 +19,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   first) still writes no report; the error now names Composer's
   `@no_additional_args` instead of asking whether `composer` is the runner.
 
+### Changed
+
+- The gate refuses a command that runs through paratest: `--changed` with
+  `php artisan test --parallel`, `pest --parallel` (or `-p`) or
+  `vendor/bin/paratest` exits 2 before anything runs, and says which flag
+  to drop. paratest takes a single path, so such a gate worked with one
+  changed test file and died on paratest's `Too many arguments` — exit 2,
+  push blocked, no reason given — as soon as two had changed. A
+  `--parallel` hidden inside a Composer script cannot be seen up front;
+  when that gate writes no report, sooth now names paratest as the first
+  thing to check. Runs without `--changed` are unaffected.
+
 ## [0.3.1] - 2026-11-14
 
 ### Changed

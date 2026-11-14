@@ -145,6 +145,21 @@ impl Plan {
         self.preset
     }
 
+    /// The part of the user's command that reaches the runner: what
+    /// follows the program, the `artisan test` subcommand, or Composer's `--`.
+    fn runner_arguments(&self) -> &[String] {
+        let from = match self.shape {
+            Shape::Runner => 1,
+            Shape::Artisan(artisan) => artisan + 2,
+            Shape::Composer => self
+                .command
+                .iter()
+                .position(|arg| arg == "--")
+                .map_or(self.command.len(), |separator| separator + 1),
+        };
+        &self.command[from..]
+    }
+
     /// The command with `extra` at the injection point.
     fn with(&self, extra: Vec<String>) -> Vec<String> {
         let (head, tail) = self.command.split_at(self.point);
@@ -180,6 +195,47 @@ impl Plan {
             }
             Shape::Composer => PathBuf::from("vendor/bin/phpunit"),
         }
+    }
+
+    /// Why the gate cannot run this command, if it cannot. The gate hands
+    /// the runner one path per changed test file; paratest — what
+    /// `--parallel` runs under `artisan test` and Pest — accepts exactly one
+    /// and stops on a second with "Too many arguments".
+    pub fn gate_refusal(&self) -> Option<String> {
+        const WHY: &str = "the gate gives the runner one path per changed test file, and \
+                           paratest takes a single path";
+        if self.preset != Preset::Phpunit {
+            return None;
+        }
+        if self.shape == Shape::Runner && is_named(&self.command, 0, &["paratest"]) {
+            return Some(format!(
+                "{WHY}. Gate with the runner it drives (`vendor/bin/phpunit`) instead: a \
+                 handful of files gains nothing from running in parallel"
+            ));
+        }
+        let flag = self
+            .runner_arguments()
+            .iter()
+            .find(|arg| matches!(arg.as_str(), "--parallel" | "-p"))?;
+        Some(format!(
+            "{WHY} — `{flag}` runs the tests through it. Drop `{flag}` from the gate's \
+             command: a handful of files gains nothing from running in parallel"
+        ))
+    }
+
+    /// What a gate of several `files` that got no report should check
+    /// first, for a Composer script: a `--parallel` inside the script is
+    /// invisible to [`Plan::gate_refusal`], and paratest's own "Too many
+    /// arguments" does not say which arguments. Any other shape has no
+    /// script to hide one in — a visible `--parallel` was refused already.
+    pub fn single_path_note(&self, files: usize) -> Option<String> {
+        (self.shape == Shape::Composer && files > 1).then(|| {
+            format!(
+                "the gate passed {files} test files — if the script runs them through \
+                 paratest (`--parallel`), that is what stopped it: paratest takes a \
+                 single path"
+            )
+        })
     }
 
     /// What a run that wrote no report most likely ran into, in this
@@ -695,6 +751,48 @@ mod tests {
         assert!(hint(&["composer", "test"]).contains("@no_additional_args"));
         // `php` is not what the user thinks of as their runner.
         assert!(!hint(&["php", "artisan", "test"]).contains("`php`"));
+    }
+
+    #[test]
+    fn the_gate_refuses_a_command_that_runs_through_paratest() {
+        let refusal =
+            |parts: &[&str], preset| Plan::resolve(&command(parts), preset).gate_refusal();
+        for parallel in [
+            &["php", "artisan", "test", "--parallel"][..],
+            &["php", "artisan", "test", "--stop-on-failure", "-p"][..],
+            &["vendor/bin/pest", "--parallel"][..],
+            &["composer", "test", "--", "--parallel"][..],
+            &["composer", "--", "test", "-p"][..],
+        ] {
+            let reason = refusal(parallel, Preset::Phpunit).expect("paratest takes one path");
+            assert!(reason.contains("Drop `"), "got: {reason}");
+        }
+        // paratest itself has no flag to drop.
+        let reason = refusal(&["vendor/bin/paratest"], Preset::Phpunit).expect("paratest");
+        assert!(reason.contains("vendor/bin/phpunit") && !reason.contains("Drop"));
+
+        for serial in [
+            &["php", "artisan", "test"][..],
+            &["vendor/bin/phpunit", "--stop-on-failure"][..],
+            &["composer", "test"][..],
+        ] {
+            assert_eq!(refusal(serial, Preset::Phpunit), None);
+        }
+        // What a script hides cannot be refused, only named afterwards — and
+        // one file is a path paratest takes.
+        let hidden = Plan::resolve(&command(&["composer", "test"]), Preset::Phpunit);
+        assert!(hidden
+            .single_path_note(2)
+            .is_some_and(|note| note.contains("2 test files")));
+        assert_eq!(hidden.single_path_note(1), None);
+        // Outside a script there is nowhere to hide one.
+        let visible = Plan::resolve(&command(&["php", "artisan", "test"]), Preset::Phpunit);
+        assert_eq!(visible.single_path_note(2), None);
+        // Another runner's `-p` is another option: pytest loads a plugin with it.
+        assert_eq!(
+            refusal(&["pytest", "-p", "no:cacheprovider"], Preset::Pytest),
+            None
+        );
     }
 
     #[test]

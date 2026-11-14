@@ -84,6 +84,7 @@ fn run(args: &cli::RunArgs) -> ExitCode {
         &(command, envs),
         report_source.as_ref(),
         plan.as_ref(),
+        files.len(),
     ) {
         Ok(executed) => executed,
         Err(exit) => return exit,
@@ -162,6 +163,7 @@ fn execute_runs(
     (command, envs): &preset::Spawn,
     report_source: Option<&ReportSource>,
     plan: Option<&preset::Plan>,
+    gated_files: usize,
 ) -> Result<(Vec<runner::RunOutcome>, Vec<junit::JunitReport>), ExitCode> {
     let mut outcomes = Vec::with_capacity(runs as usize);
     let mut reports: Vec<junit::JunitReport> = Vec::with_capacity(runs as usize);
@@ -195,8 +197,8 @@ fn execute_runs(
                 source,
                 plan,
                 report_before,
-                &outcomes,
-                runs,
+                (&outcomes, runs),
+                gated_files,
             )?);
         }
     }
@@ -274,6 +276,12 @@ fn gate_selection(
     };
     let plan = plan.expect("rejected_flag guarantees a preset");
     let preset = plan.preset();
+    // Before the selection is even resolved: a hook that works until the
+    // day two test files change fails at the worst moment.
+    if let Some(reason) = plan.gate_refusal() {
+        eprintln!("sooth: {reason}");
+        return Err(ExitCode::from(EXIT_SOOTH_ERROR));
+    }
     let selection = match gate::resolve(base.as_deref(), preset, std::path::Path::new(".")) {
         Ok(selection) => selection,
         Err(reason) => {
@@ -1141,8 +1149,8 @@ fn load_run_report(
     source: &ReportSource,
     plan: Option<&preset::Plan>,
     report_before: Option<(std::time::SystemTime, u64)>,
-    outcomes: &[runner::RunOutcome],
-    requested_runs: u32,
+    (outcomes, requested_runs): (&[runner::RunOutcome], u32),
+    gated_files: usize,
 ) -> Result<junit::JunitReport, ExitCode> {
     if let ReportSource::User(path) = source {
         if report_before.is_some() && file_state(path) == report_before {
@@ -1160,6 +1168,12 @@ fn load_run_report(
     };
     load_report(source.path(), preset_plan).map_err(|message| {
         eprintln!("sooth: {message}");
+        let unwritten = !source.path().exists();
+        if let Some(note) = preset_plan.and_then(|plan| plan.single_path_note(gated_files)) {
+            if unwritten {
+                eprintln!("sooth: {note}");
+            }
+        }
         if let Some(context) = crash_context(outcomes, requested_runs) {
             eprintln!("sooth: {context}");
         }

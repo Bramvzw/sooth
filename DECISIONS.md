@@ -1160,3 +1160,41 @@ place: `preset::Plan`, resolved once per run from the command and the
 preset. Injection, the `--verify` selection, the gate's files, the version
 probe and the wording of a missing report all ask it, so a further command
 shape is one entry in one `match` rather than a check in three files (#247).
+
+## The gate refuses a parallel command on its first use
+
+paratest — what `--parallel` runs under `artisan test` and Pest — accepts
+exactly one path. A gate hands the runner one path per changed test file,
+so `sooth run --changed -- php artisan test --parallel` worked while one
+test file had changed and died on paratest's `Too many arguments, expected
+arguments "path"` the day two had: exit 2, the push blocked, and nothing
+that named the cause (#233). The README advertised that very command.
+
+Two ways out were on the table:
+
+- **Drop the flag and say so.** Friendlier, and wrong in practice: checked
+  on Laravel 13, `--processes=4` and `--recreate-databases` are unknown
+  options once `--parallel` is gone, so sooth would have to know and strip
+  every parallel-only option of every paratest version. It would also be
+  the first time sooth removes something the user typed.
+- **Refuse, with the reason and the fix.** Chosen. It is the neighbour of
+  the PHPUnit < 10 refusal above: the gate never hands a runner paths it
+  will not run.
+
+The refusal comes **before the selection is resolved**, so even a push that
+changes no tests is refused. That is on purpose: a hook that works until
+the day two test files change fails at the worst moment, while one that is
+refused the first time it runs gets fixed once, at setup. Nothing is lost —
+a handful of files gains nothing from parallel workers, and their startup
+(a database per process) costs more than the tests.
+
+What is recognised, under the phpunit preset only: `--parallel` or `-p`
+among the arguments the runner receives, and a program named `paratest`
+(which has no flag to drop, so the message names `vendor/bin/phpunit`).
+Another preset's `-p` is another option — pytest loads a plugin with it.
+
+What cannot be recognised is a `--parallel` inside a Composer script. That
+gate still fails on its second changed file. Sooth does the one thing left:
+when a Composer script gated on two or more files comes back without a
+report, the error adds that paratest takes a single path, as the first
+thing to check.

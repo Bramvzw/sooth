@@ -2890,6 +2890,137 @@ fn a_composer_script_that_cannot_take_the_flags_is_told_what_composer_does() {
 }
 
 #[test]
+fn a_gate_of_several_files_that_got_no_report_is_pointed_at_paratest() {
+    // A `--parallel` inside a script cannot be seen up front; when such a
+    // gate comes back empty-handed, sooth names the one thing it knows.
+    let Some(dir) = scratch_repo("gate-hidden-parallel") else {
+        return;
+    };
+    write_fake_composer(&dir, "false");
+    std::fs::write(dir.join("ATest.php"), "<?php\n").expect("write");
+    std::fs::write(dir.join("BTest.php"), "<?php\n").expect("write");
+    let gate = |dir: &std::path::Path| {
+        Command::new(env!("CARGO_BIN_EXE_sooth"))
+            .current_dir(dir)
+            .args([
+                "run",
+                "--changed=HEAD",
+                "--runs",
+                "2",
+                "--no-history",
+                "--preset",
+                "phpunit",
+                "--color",
+                "never",
+                "--",
+                "./composer",
+                "test",
+            ])
+            .output()
+            .expect("sooth should run")
+    };
+    let stderr = String::from_utf8(gate(&dir).stderr).expect("stderr should be UTF-8");
+    assert!(
+        stderr.contains("the gate passed 2 test files") && stderr.contains("paratest"),
+        "got: {stderr:?}"
+    );
+
+    // One file is a path paratest takes: nothing to point at.
+    std::fs::remove_file(dir.join("BTest.php")).expect("remove");
+    let stderr = String::from_utf8(gate(&dir).stderr).expect("stderr should be UTF-8");
+    assert!(
+        stderr.contains("wrote no JUnit-XML report") && !stderr.contains("paratest"),
+        "got: {stderr:?}"
+    );
+}
+
+/// A gate invocation in `dir`, where the fixture runner stands in for
+/// `./artisan`, with `extra` after `./artisan test`.
+fn gate_under_artisan(dir: &std::path::Path, extra: &[&str]) -> std::process::Output {
+    use std::os::unix::fs::PermissionsExt;
+    // Laravel's `artisan test`: the subcommand, then what it forwards.
+    std::fs::write(
+        dir.join("artisan"),
+        "#!/bin/sh\nshift\nexec ./runner.sh \"$@\"\n",
+    )
+    .expect("write artisan");
+    std::fs::set_permissions(dir.join("artisan"), std::fs::Permissions::from_mode(0o755))
+        .expect("chmod");
+    write_gate_runner(dir);
+    Command::new(env!("CARGO_BIN_EXE_sooth"))
+        .current_dir(dir)
+        .args([
+            "run",
+            "--changed=HEAD",
+            "--runs",
+            "2",
+            "--no-history",
+            "--preset",
+            "phpunit",
+            "--color",
+            "never",
+            "--",
+            "./artisan",
+            "test",
+        ])
+        .args(extra)
+        .output()
+        .expect("sooth should run")
+}
+
+#[test]
+fn the_gate_refuses_a_parallel_command_before_anything_runs() {
+    // paratest takes a single path: two changed files would end in its
+    // "Too many arguments" and a gate that blocks the push without a reason.
+    for flag in ["--parallel", "-p"] {
+        let Some(dir) = scratch_repo("gate-parallel") else {
+            return;
+        };
+        std::fs::write(dir.join("ATest.php"), "<?php\n").expect("write");
+        std::fs::write(dir.join("BTest.php"), "<?php\n").expect("write");
+        let output = gate_under_artisan(&dir, &[flag]);
+        let stderr = String::from_utf8(output.stderr).expect("stderr should be UTF-8");
+
+        assert_eq!(output.status.code(), Some(2), "got: {stderr:?}");
+        assert!(
+            stderr.contains(&format!("Drop `{flag}`")) && stderr.contains("single path"),
+            "the refusal names the flag and the reason: {stderr:?}"
+        );
+        assert!(!dir.join("ran-tests").exists(), "nothing may have run");
+    }
+}
+
+#[test]
+fn the_gate_refuses_a_parallel_command_even_when_nothing_changed() {
+    // A hook that works until the day two test files change fails at the
+    // worst moment; one that is refused on its first push gets fixed once.
+    let Some(dir) = scratch_repo("gate-parallel-empty") else {
+        return;
+    };
+    let output = gate_under_artisan(&dir, &["--parallel"]);
+    let stdout = String::from_utf8(output.stdout).expect("stdout should be UTF-8");
+    let stderr = String::from_utf8(output.stderr).expect("stderr should be UTF-8");
+
+    assert_eq!(output.status.code(), Some(2), "got: {stdout:?} {stderr:?}");
+    assert!(stderr.contains("Drop `--parallel`"), "got: {stderr:?}");
+    assert!(!stdout.contains("nothing to prove"), "got: {stdout:?}");
+}
+
+#[test]
+fn the_same_gate_without_parallel_runs() {
+    let Some(dir) = scratch_repo("gate-serial") else {
+        return;
+    };
+    std::fs::write(dir.join("ATest.php"), "<?php\n").expect("write");
+    std::fs::write(dir.join("BTest.php"), "<?php\n").expect("write");
+    let output = gate_under_artisan(&dir, &["--stop-on-failure"]);
+    let stderr = String::from_utf8(output.stderr).expect("stderr should be UTF-8");
+
+    assert_eq!(output.status.code(), Some(0), "got: {stderr:?}");
+    assert!(dir.join("ran-tests").exists(), "the gate must have run");
+}
+
+#[test]
 fn a_single_file_gate_on_old_phpunit_proceeds_without_a_word() {
     let Some(dir) = scratch_repo("gate-old-single") else {
         return;
