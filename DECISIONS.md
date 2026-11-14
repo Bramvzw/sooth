@@ -1198,3 +1198,69 @@ gate still fails on its second changed file. Sooth does the one thing left:
 when a Composer script gated on two or more files comes back without a
 report, the error adds that paratest takes a single path, as the first
 thing to check.
+
+## A command that names its runner names its preset
+
+The most natural first command, `sooth run -- php artisan test`, ran the
+tests and added two lines: no totals, no failure list, no history, and not a
+word about `--preset` being what turns a run into an analysis (#236). The
+audit's newcomer got nothing in their first minute.
+
+`pytest`, `vendor/bin/phpunit`, `vendor/bin/pest`, `gotestsum` and `php
+artisan test` say which runner they are. The preset list encodes exactly
+that fact, so making the user repeat it was a formality. Without `--preset`
+or `--junit`, sooth now reads the preset from the program's own name and
+says which one it took, on stderr, before the run:
+
+```
+sooth: using `--preset phpunit`, inferred from `php artisan test`
+```
+
+This is a lookup, not the guess the "never guess" rule forbids. The line
+between the two:
+
+- **Only the program position names a runner** (`artisan test` being the one
+  known two-word form, as the program or behind a PHP binary). `composer
+  test`, `npm test`, `make test`, `sh -c pytest` and `python -m pytest`
+  *might* run a known runner; sooth does not look inside and infers nothing.
+  Composer is a deliberate case: the phpunit preset can drive a Composer
+  script, but only on the user's word. `sail artisan test`, `ddev artisan
+  test` and the like are another: they run in a container, where a report
+  path on this machine means nothing, so `artisan` behind any program but
+  PHP is that program's argument — for an explicit `--preset` as well.
+- **An inference must not break a command that works.** Two named runners
+  are therefore left alone. `jest`: its preset needs the `jest-junit`
+  package, and injecting the reporter into a project without it stops jest
+  before a test runs. And a command that already asks for a report of its
+  own — `--log-junit build.xml`, `--junitxml=…`, `--junitfile …` on the
+  command line, or where the runner reads more of the same: pytest's
+  `PYTEST_ADDOPTS`, gotestsum's `GOTESTSUM_JUNITFILE`. The runner writes one
+  report, sooth's flag would win, and the file the user asked for would go
+  missing.
+- **An explicit flag is never second-guessed**, and is silent. The
+  announcement is the price of not typing it; a hook that wants one line
+  less passes `--preset`.
+
+One case stays out of reach: a report set up in a config file (`<junit
+outputFile=…>` in `phpunit.xml`, `addopts` in `pytest.ini`). Sooth reads no
+project configuration, so it does not see it, and a preset's flag takes
+that report's place for the run — as it always did under an explicit
+`--preset`. The README says so, with the way to keep the file: `--junit
+<that file>`.
+
+For everything that stays without a report source, the run closes with one
+stderr line naming the flag that adds one — tailored where sooth knows
+more: `--preset jest` with its package for jest, `--junit build.xml` for
+the command that already writes that file, `--preset phpunit` for a
+Composer script. Anything else is pointed at `--junit` first, because a
+preset only helps when the command is the runner itself. Stdout keeps its
+contract.
+
+`--preset pest` is accepted as an alias: Pest runs on PHPUnit and takes the
+same flags, and its users look for their runner's name. clap used to answer
+with "a similar value exists: 'jest'", which sent them to the wrong preset.
+
+Known limit: there is no flag to force the old report-less run of a known
+runner. The only setups that would want it are ones where the runner cannot
+write JUnit at all (pytest with `-p no:junitxml`); add an opt-out when one
+shows up, not before.

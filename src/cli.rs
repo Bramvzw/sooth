@@ -101,7 +101,10 @@ pub struct RunArgs {
     /// The command after `--` must be the runner itself (pytest, phpunit,
     /// pest, jest, gotestsum) — not a wrapper like `python -m pytest` or `npm
     /// test`. The exceptions are Laravel's `php artisan test` and Composer
-    /// scripts (`composer test`), which the phpunit preset understands.
+    /// scripts (`composer test`), which the phpunit preset understands. Left
+    /// out, the preset is read from a command that names its runner
+    /// (`pytest`, `vendor/bin/pest`, `php artisan test`); `pest` is accepted
+    /// as a name for `phpunit`.
     #[arg(long, value_enum, conflicts_with = "junit")]
     pub preset: Option<Preset>,
 
@@ -186,9 +189,24 @@ fn positive_usize(value: &str) -> Result<usize, String> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum Preset {
     Pytest,
+    /// Pest runs on `PHPUnit` and takes the same flags, so `--preset pest`
+    /// is this preset under the name its users look for.
+    #[value(alias = "pest")]
     Phpunit,
     Jest,
     Go,
+}
+
+impl Preset {
+    /// The name `--preset` takes.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Pytest => "pytest",
+            Self::Phpunit => "phpunit",
+            Self::Jest => "jest",
+            Self::Go => "go",
+        }
+    }
 }
 
 /// When to color the human report.
@@ -246,6 +264,25 @@ mod tests {
         assert_eq!(args.slowest, Some(3));
         assert_eq!(args.json, Some(None));
         assert_eq!(args.color, ColorChoice::Never);
+    }
+
+    #[test]
+    fn pest_names_the_phpunit_preset() {
+        let args = parse_run_args(&["sooth", "run", "--preset", "pest", "--", "vendor/bin/pest"]);
+        assert_eq!(args.preset, Some(Preset::Phpunit));
+    }
+
+    #[test]
+    fn a_preset_name_is_the_value_the_flag_takes() {
+        use clap::ValueEnum;
+        for preset in Preset::value_variants() {
+            assert_eq!(
+                Preset::from_str(preset.name(), false).ok(),
+                Some(*preset),
+                "`--preset {}` must parse back to itself",
+                preset.name()
+            );
+        }
     }
 
     #[test]

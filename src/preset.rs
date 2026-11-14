@@ -284,18 +284,152 @@ fn is_named(command: &[String], index: usize, names: &[&str]) -> bool {
 }
 
 /// The index of `artisan` in an `artisan test` command: the program itself,
-/// or the script `php` runs.
+/// or the script a PHP binary runs. Behind any other program (`sail artisan
+/// test`, `ddev artisan test`) it is that program's argument: those run it
+/// in a container, where a report path on this machine means nothing.
 fn artisan_test(command: &[String]) -> Option<usize> {
-    let artisan = (0..2).find(|&index| is_named(command, index, &["artisan"]))?;
+    let artisan = script_position(command, &["artisan"])?;
     (command.get(artisan + 1).map(String::as_str) == Some("test")).then_some(artisan)
 }
 
 /// Whether the program is Composer: `composer …`, or `php composer.phar …`.
 /// Only the program position counts — `phpunit tests/composer` is a path.
 fn is_composer(command: &[String]) -> bool {
-    const COMPOSER: &[&str] = &["composer", "composer.phar"];
-    is_named(command, 0, COMPOSER)
-        || (is_named(command, 0, &["php"]) && is_named(command, 1, COMPOSER))
+    script_position(command, &["composer", "composer.phar"]).is_some()
+}
+
+/// Where a script called one of `names` sits when it is what the command
+/// runs: the program itself, or the first argument of a PHP binary.
+fn script_position(command: &[String], names: &[&str]) -> Option<usize> {
+    if is_named(command, 0, names) {
+        Some(0)
+    } else if command.first().is_some_and(|program| is_php(program)) && is_named(command, 1, names)
+    {
+        Some(1)
+    } else {
+        None
+    }
+}
+
+/// Whether `program` is a PHP binary: `php`, `php8.4`, `/usr/bin/php`.
+fn is_php(program: &str) -> bool {
+    Path::new(program)
+        .file_name()
+        .and_then(std::ffi::OsStr::to_str)
+        .and_then(|name| name.strip_prefix("php"))
+        .is_some_and(|version| version.chars().all(|c| c.is_ascii_digit() || c == '.'))
+}
+
+/// The preset a command names by its own program, with the words that name
+/// it — for a run that came without `--preset` or `--junit`. A lookup, never
+/// a guess: `None` for anything that only *might* run a known runner
+/// (`composer test`, `npm test`, `sail artisan test`, a script), and for two
+/// commands that do name one:
+///
+/// - `jest`, whose preset needs the `jest-junit` package: injecting its
+///   reporter into a project without it breaks a command that works;
+/// - a command that already asks for a report of its own (`--log-junit
+///   build.xml`, or through the runner's environment): the runner writes
+///   one report, and it would not be the one the user asked for.
+pub fn infer(command: &[String]) -> Option<(Preset, String)> {
+    infer_in(command, &|key| std::env::var(key).ok())
+}
+
+/// [`infer`], with the environment as a lookup.
+fn infer_in(command: &[String], env: &dyn Fn(&str) -> Option<String>) -> Option<(Preset, String)> {
+    let preset = named_runner(command)?;
+    if preset == Preset::Jest || own_report(command, preset, env).is_some() {
+        return None;
+    }
+    let words = match artisan_test(command) {
+        Some(artisan) => command[..artisan + 2].join(" "),
+        None => command[0].clone(),
+    };
+    Some((preset, words))
+}
+
+/// What would give a run without a report source one, as the flag to pass.
+pub fn report_advice(command: &[String]) -> String {
+    advice_in(command, &|key| std::env::var(key).ok())
+}
+
+/// [`report_advice`], with the environment as a lookup.
+fn advice_in(command: &[String], env: &dyn Fn(&str) -> Option<String>) -> String {
+    let named = named_runner(command);
+    let written = named
+        .and_then(|preset| own_report(command, preset, env))
+        .filter(|path| !path.is_empty());
+    if let Some(path) = written {
+        return format!("pass `--junit {path}` — this command already writes that report");
+    }
+    if named == Some(Preset::Jest) {
+        return "pass `--preset jest` (it needs the `jest-junit` package)".to_owned();
+    }
+    if is_composer(command) {
+        return "pass `--preset phpunit` if this script runs PHPUnit or Pest".to_owned();
+    }
+    "pass `--junit <PATH>` with the JUnit report this command writes, or `--preset \
+     <RUNNER>` (pytest, phpunit, jest, go) when the command is that runner itself"
+        .to_owned()
+}
+
+/// The preset whose runner `command` is: the program's own name, or
+/// Laravel's `artisan test`.
+fn named_runner(command: &[String]) -> Option<Preset> {
+    if artisan_test(command).is_some() || is_named(command, 0, &["phpunit", "pest", "paratest"]) {
+        Some(Preset::Phpunit)
+    } else if is_named(command, 0, &["pytest", "py.test"]) {
+        Some(Preset::Pytest)
+    } else if is_named(command, 0, &["jest"]) {
+        Some(Preset::Jest)
+    } else if is_named(command, 0, &["gotestsum"]) {
+        Some(Preset::Go)
+    } else {
+        None
+    }
+}
+
+/// The path of the `JUnit` report `preset`'s runner is already asked for:
+/// on the command line as `--flag PATH` or `--flag=PATH`, or where the
+/// runner itself reads more of them — pytest takes extra arguments from
+/// `PYTEST_ADDOPTS`, gotestsum its `--junitfile` from `GOTESTSUM_JUNITFILE`.
+/// Empty when the flag is there without a path. A report set up in a config
+/// file (`phpunit.xml`, `pytest.ini`) is not seen: sooth reads no project
+/// configuration.
+fn own_report(
+    command: &[String],
+    preset: Preset,
+    env: &dyn Fn(&str) -> Option<String>,
+) -> Option<String> {
+    let flags: &[&str] = match preset {
+        Preset::Phpunit => &["--log-junit"],
+        Preset::Pytest => &["--junit-xml", "--junitxml"],
+        Preset::Go => &["--junitfile"],
+        // jest-junit takes its path from the environment.
+        Preset::Jest => &[],
+    };
+    let among = |arguments: &[String]| {
+        arguments.iter().enumerate().find_map(|(index, arg)| {
+            flags.iter().find_map(|flag| {
+                if arg == flag {
+                    Some(arguments.get(index + 1).cloned().unwrap_or_default())
+                } else {
+                    arg.strip_prefix(flag)?.strip_prefix('=').map(str::to_owned)
+                }
+            })
+        })
+    };
+    among(command).or_else(|| match preset {
+        Preset::Pytest => {
+            let extra: Vec<String> = env("PYTEST_ADDOPTS")?
+                .split_whitespace()
+                .map(str::to_owned)
+                .collect();
+            among(&extra)
+        }
+        Preset::Go => env("GOTESTSUM_JUNITFILE").filter(|path| !path.is_empty()),
+        Preset::Phpunit | Preset::Jest => None,
+    })
 }
 
 /// The selection flag(s) that restrict `preset` to the tests named `names`.
@@ -792,6 +926,207 @@ mod tests {
         assert_eq!(
             refusal(&["pytest", "-p", "no:cacheprovider"], Preset::Pytest),
             None
+        );
+    }
+
+    /// No environment: what the command says is all there is.
+    fn bare(_: &str) -> Option<String> {
+        None
+    }
+
+    #[test]
+    fn a_command_that_names_its_runner_names_its_preset() {
+        use super::infer_in;
+        for (parts, preset, words) in [
+            (&["pytest", "-k", "x"][..], Preset::Pytest, "pytest"),
+            (
+                &["vendor/bin/phpunit"][..],
+                Preset::Phpunit,
+                "vendor/bin/phpunit",
+            ),
+            (
+                &["vendor/bin/pest", "--parallel"][..],
+                Preset::Phpunit,
+                "vendor/bin/pest",
+            ),
+            (
+                &["vendor/bin/paratest"][..],
+                Preset::Phpunit,
+                "vendor/bin/paratest",
+            ),
+            (
+                &["php", "artisan", "test", "--parallel"][..],
+                Preset::Phpunit,
+                "php artisan test",
+            ),
+            (
+                &["/opt/homebrew/bin/php8.4", "artisan", "test"][..],
+                Preset::Phpunit,
+                "/opt/homebrew/bin/php8.4 artisan test",
+            ),
+            (
+                &["./artisan", "test"][..],
+                Preset::Phpunit,
+                "./artisan test",
+            ),
+            (&["gotestsum", "--", "./..."][..], Preset::Go, "gotestsum"),
+        ] {
+            assert_eq!(
+                infer_in(&command(parts), &bare),
+                Some((preset, words.to_owned())),
+                "{parts:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_command_that_only_might_run_a_runner_names_nothing() {
+        use super::infer_in;
+        for parts in [
+            // A script can hide any command.
+            &["composer", "test"][..],
+            &["npm", "test"][..],
+            &["make", "test"][..],
+            &["python", "-m", "pytest"][..],
+            // `php artisan` without `test` is not a test command, and a
+            // runner's name further down the line is an argument.
+            &["php", "artisan", "migrate"][..],
+            &["sh", "-c", "pytest"][..],
+            // Sail, DDEV and Lando run `artisan test` in a container: a
+            // report path on this machine means nothing there.
+            &["vendor/bin/sail", "artisan", "test"][..],
+            &["ddev", "artisan", "test"][..],
+            &["docker", "compose", "exec", "app", "php", "artisan", "test"][..],
+            // jest's preset needs a package the project may not have.
+            &["jest"][..],
+            &["node_modules/.bin/jest", "--ci"][..],
+        ] {
+            assert_eq!(infer_in(&command(parts), &bare), None, "{parts:?}");
+        }
+    }
+
+    #[test]
+    fn a_command_that_writes_its_own_report_is_not_given_a_second_one() {
+        use super::{advice_in, infer_in};
+        for (parts, path) in [
+            (
+                &["vendor/bin/phpunit", "--log-junit", "build/junit.xml"][..],
+                "build/junit.xml",
+            ),
+            (
+                &["php", "artisan", "test", "--log-junit=out.xml"][..],
+                "out.xml",
+            ),
+            (&["pytest", "--junitxml=r.xml"][..], "r.xml"),
+            (&["pytest", "--junit-xml", "r.xml"][..], "r.xml"),
+            (
+                &["gotestsum", "--junitfile", "unit.xml", "--", "./..."][..],
+                "unit.xml",
+            ),
+        ] {
+            assert_eq!(infer_in(&command(parts), &bare), None, "{parts:?}");
+            assert!(
+                advice_in(&command(parts), &bare).contains(&format!("`--junit {path}`")),
+                "{parts:?}"
+            );
+        }
+        // A flag that only starts the same way is another flag.
+        for parts in [
+            &["vendor/bin/phpunit", "--log-junit-foo", "x"][..],
+            &["pytest", "--junitxml-something", "x"][..],
+        ] {
+            assert!(infer_in(&command(parts), &bare).is_some(), "{parts:?}");
+        }
+    }
+
+    #[test]
+    fn a_report_flag_without_a_path_stops_the_inference_but_names_no_path() {
+        use super::{advice_in, infer_in};
+        // The flag is there, so the command is left as typed; there is no
+        // path to hand to `--junit`.
+        for parts in [
+            &["vendor/bin/phpunit", "--log-junit="][..],
+            &["vendor/bin/phpunit", "--log-junit"][..],
+        ] {
+            assert_eq!(infer_in(&command(parts), &bare), None, "{parts:?}");
+            let advice = advice_in(&command(parts), &bare);
+            assert!(advice.contains("`--junit <PATH>`"), "{parts:?}: {advice}");
+        }
+    }
+
+    #[test]
+    fn a_report_the_environment_asks_for_counts_as_the_commands_own() {
+        use super::{advice_in, infer_in};
+        // pytest reads more arguments from PYTEST_ADDOPTS; gotestsum takes
+        // its --junitfile default from GOTESTSUM_JUNITFILE. Sooth's flag
+        // would override both, and the file the user asked for would go
+        // missing.
+        let pytest =
+            |key: &str| (key == "PYTEST_ADDOPTS").then(|| "-q --junitxml=ci.xml".to_owned());
+        assert_eq!(infer_in(&command(&["pytest"]), &pytest), None);
+        assert!(advice_in(&command(&["pytest"]), &pytest).contains("`--junit ci.xml`"));
+
+        let go = |key: &str| (key == "GOTESTSUM_JUNITFILE").then(|| "unit.xml".to_owned());
+        assert_eq!(infer_in(&command(&["gotestsum"]), &go), None);
+        assert!(advice_in(&command(&["gotestsum"]), &go).contains("`--junit unit.xml`"));
+
+        // Another runner's variable is not this runner's report.
+        assert!(infer_in(&command(&["vendor/bin/phpunit"]), &pytest).is_some());
+        let unrelated = |key: &str| (key == "PYTEST_ADDOPTS").then(|| "-q -x".to_owned());
+        assert!(infer_in(&command(&["pytest"]), &unrelated).is_some());
+    }
+
+    #[test]
+    fn the_advice_names_the_flag_that_fits_the_command() {
+        use super::advice_in;
+        let jest = advice_in(&command(&["jest"]), &bare);
+        assert!(jest.contains("`--preset jest`") && jest.contains("jest-junit"));
+        // The phpunit preset can drive a Composer script, on the user's word.
+        let composer = advice_in(&command(&["composer", "test"]), &bare);
+        assert!(composer.contains("`--preset phpunit`") && composer.contains("if this script"));
+        // Anything else: a preset only helps when the command is the runner.
+        for parts in [
+            &["npm", "test"][..],
+            &["cargo", "test"][..],
+            &["make", "test"][..],
+        ] {
+            let advice = advice_in(&command(parts), &bare);
+            assert!(
+                advice.contains("`--junit <PATH>`")
+                    && advice.contains("`--preset <RUNNER>`")
+                    && advice.contains("runner itself"),
+                "{parts:?}: {advice}"
+            );
+        }
+    }
+
+    #[test]
+    fn artisan_behind_another_program_is_that_programs_business() {
+        // `sail artisan test` runs in a container; only `php` (any version)
+        // or `artisan` itself makes the command Laravel's own.
+        let (full, _) = inject(
+            &command(&["vendor/bin/sail", "artisan", "test"]),
+            Preset::Phpunit,
+            Path::new("/tmp/r.xml"),
+        );
+        assert_eq!(
+            full,
+            command(&[
+                "vendor/bin/sail",
+                "--log-junit",
+                "/tmp/r.xml",
+                "artisan",
+                "test"
+            ])
+        );
+        let (full, _) = inject(
+            &command(&["php8.3", "artisan", "test"]),
+            Preset::Phpunit,
+            Path::new("/tmp/r.xml"),
+        );
+        assert_eq!(
+            full,
+            command(&["php8.3", "artisan", "test", "--log-junit", "/tmp/r.xml"])
         );
     }
 
