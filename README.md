@@ -57,6 +57,13 @@ then accumulates from runs you make anyway:
 - **failing since `<commit>`** — green until a commit, red ever since: a
   regression pointer, deliberately *not* called flaky. Start at `git show
   <commit>`.
+- **never seen passing** — red in every observed run. No commit is blamed:
+  sooth only knows where it first looked.
+
+A proven flake that has failed every run since a commit, in three
+invocations or more, says so on its line (`…, and every run since <commit>
+(3 runs)`) and no longer counts as "nothing new": a flake can break for
+real too.
 
 Runs on a dirty working tree count in the totals but are never used as
 evidence — sooth does not draw conclusions from code it can no longer
@@ -161,7 +168,7 @@ Every failing test gets one line with two answers. **What this run saw** —
 when the runs did not share one order — `--order-by=defects` and
 `--random-order` do that, and then order-dependence looks exactly like a flake.) And **whether sooth knew it already** — `known flake` (proven by
 the history), `failing since <commit>` (a regression: known, but real, so it
-never counts as "nothing new"), `quarantined`, or `new`. Those two are
+never counts as "nothing new"), `never seen passing`, `quarantined`, or `new`. Those two are
 independent: a test can be broken *and* never seen before.
 
 The verdict and exit code do not change: sooth explains failures, it never

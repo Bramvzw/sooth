@@ -307,6 +307,11 @@ pub fn print_history(analyses: &Analyses<'_>, style: Style) {
         .iter()
         .filter(|test| !explained.contains(test.id.as_str()))
         .collect();
+    let never_passed: Vec<&history::NeverPassed> = pass
+        .never_passed
+        .iter()
+        .filter(|test| !explained.contains(test.id.as_str()))
+        .collect();
 
     if !flaky.is_empty() {
         let heading = if explained.is_empty() {
@@ -328,10 +333,11 @@ pub fn print_history(analyses: &Analyses<'_>, style: Style) {
                 flaky_mark(style),
                 identity(&test.outcomes.id, style),
                 style.red(&format!(
-                    "failed {} of {} observed runs ({}%{confined})",
+                    "failed {} of {} observed runs ({}%{confined}){}",
                     test.outcomes.failed,
                     test.outcomes.observed(),
-                    test.outcomes.failure_rate_percent()
+                    test.outcomes.failure_rate_percent(),
+                    red_streak_phrase(test.red_since.as_ref())
                 ))
             );
         }
@@ -351,6 +357,33 @@ pub fn print_history(analyses: &Analyses<'_>, style: Style) {
             );
         }
     }
+    if !never_passed.is_empty() {
+        println!("{}", style.red("never seen passing:"));
+        for test in never_passed {
+            println!(
+                "  {} {} {}",
+                style.bold_red("✗"),
+                identity(&test.id, style),
+                style.dim(&format!(
+                    "(failed all {} observed runs, first on {})",
+                    test.failed_runs,
+                    short_commit(&test.first_commit)
+                ))
+            );
+        }
+    }
+}
+
+/// `, and every run since abc1234 (3 runs)` — the fact that keeps a known
+/// flake from being waved through; empty without a streak.
+fn red_streak_phrase(streak: Option<&history::RedStreak>) -> String {
+    streak.map_or_else(String::new, |streak| {
+        format!(
+            ", and every run since {} ({} runs)",
+            short_commit(&streak.commit),
+            streak.failed_runs
+        )
+    })
 }
 
 /// The one-glance glyph opening a per-test line: what the reader should do
@@ -365,6 +398,7 @@ fn glyph(explanation: &explain::Explanation, style: Style) -> String {
     match &explanation.verdict {
         explain::Verdict::KnownFlake { .. } => flaky_mark(style),
         explain::Verdict::FailingSince { .. } => regression_mark(style),
+        explain::Verdict::NeverPassed { .. } => style.bold_red("✗"),
         explain::Verdict::Unknown => match &explanation.observed {
             Some(
                 explain::Observed::Flaky { .. }
@@ -512,6 +546,7 @@ fn familiarity_phrase(explanation: &explain::Explanation, style: Style) -> Strin
             failed_runs,
             observed_runs,
             failures_confined_to,
+            red_since,
         } => {
             // Where it breaks is the first thing to check, so it rides along
             // with the rate rather than waiting in a section below.
@@ -520,10 +555,17 @@ fn familiarity_phrase(explanation: &explain::Explanation, style: Style) -> Strin
                 .map_or_else(String::new, |environment| {
                     format!("; every failure in {environment}")
                 });
-            style.yellow(&format!(
-                "known flake ({failed_runs} of {observed_runs} in history, {}%{confined}){listed}",
-                flaky::failure_rate_percent(*failed_runs, *observed_runs)
-            ))
+            let phrase = format!(
+                "known flake ({failed_runs} of {observed_runs} in history, {}%{confined}){}{listed}",
+                flaky::failure_rate_percent(*failed_runs, *observed_runs),
+                red_streak_phrase(red_since.as_ref())
+            );
+            // A flake that stopped passing is attention, not calm.
+            if red_since.is_some() {
+                style.red(&phrase)
+            } else {
+                style.yellow(&phrase)
+            }
         }
         explain::Verdict::FailingSince {
             commit,
@@ -531,6 +573,13 @@ fn familiarity_phrase(explanation: &explain::Explanation, style: Style) -> Strin
         } => style.red(&format!(
             "failing since {} (the last {failed_runs} observed runs){listed}",
             short_commit(commit)
+        )),
+        explain::Verdict::NeverPassed {
+            first_commit,
+            failed_runs,
+        } => style.red(&format!(
+            "never seen passing (failed all {failed_runs} observed runs, first on {}){listed}",
+            short_commit(first_commit)
         )),
         explain::Verdict::Unknown if explanation.quarantined => style.yellow(&format!(
             "quarantined (listed in {})",
@@ -550,6 +599,11 @@ fn explanation_headline(counts: &explain::Counts) -> String {
     let parts: Vec<String> = [
         (counts.known_flakes, "known flake", "known flakes"),
         (counts.failing_since, "regression", "regressions"),
+        (
+            counts.never_passed,
+            "never seen passing",
+            "never seen passing",
+        ),
         (counts.quarantined, "quarantined", "quarantined"),
         (counts.new, "new", "new"),
     ]
@@ -808,8 +862,10 @@ fn explanation_object(explanations: &[explain::Explanation]) -> String {
                     // The environment belongs to the human line; the JSON
                     // carries it under `history`, where the pass owns it.
                     failures_confined_to: _,
+                    red_since,
                 } => format!(
-                    r#"{{"name":"{name}","verdict":"known_flake","quarantined":{quarantined},"failed_runs":{failed_runs},"observed_runs":{observed_runs}}}"#
+                    r#"{{"name":"{name}","verdict":"known_flake","quarantined":{quarantined},"failed_runs":{failed_runs},"observed_runs":{observed_runs},"red_since":{}}}"#,
+                    red_streak_json(red_since.as_ref())
                 ),
                 explain::Verdict::FailingSince {
                     commit,
@@ -817,6 +873,13 @@ fn explanation_object(explanations: &[explain::Explanation]) -> String {
                 } => format!(
                     r#"{{"name":"{name}","verdict":"failing_since","quarantined":{quarantined},"commit":"{}","failed_runs":{failed_runs}}}"#,
                     json::escape(commit)
+                ),
+                explain::Verdict::NeverPassed {
+                    first_commit,
+                    failed_runs,
+                } => format!(
+                    r#"{{"name":"{name}","verdict":"never_passed","quarantined":{quarantined},"first_commit":"{}","failed_runs":{failed_runs}}}"#,
+                    json::escape(first_commit)
                 ),
                 explain::Verdict::Unknown => {
                     let verdict = if quarantined { "quarantined" } else { "new" };
@@ -829,10 +892,11 @@ fn explanation_object(explanations: &[explain::Explanation]) -> String {
         .collect();
     let counts = explain::Counts::of(explanations);
     format!(
-        r#"{{"failures":[{}],"counts":{{"known_flakes":{},"failing_since":{},"quarantined":{},"new":{}}},"only_known_flakes":{}}}"#,
+        r#"{{"failures":[{}],"counts":{{"known_flakes":{},"failing_since":{},"never_passed":{},"quarantined":{},"new":{}}},"only_known_flakes":{}}}"#,
         entries.join(","),
         counts.known_flakes,
         counts.failing_since,
+        counts.never_passed,
         counts.quarantined,
         counts.new,
         counts.only_known_flakes()
@@ -876,10 +940,23 @@ fn history_object(pass: &history::Analysis) -> String {
                 |environment| format!(r#""{}""#, json::escape(environment)),
             );
             format!(
-                r#"{{"name":"{}","failed_runs":{},"observed_runs":{},"failures_confined_to":{confined}}}"#,
+                r#"{{"name":"{}","failed_runs":{},"observed_runs":{},"failures_confined_to":{confined},"red_since":{}}}"#,
                 json::escape(&test.outcomes.id),
                 test.outcomes.failed,
-                test.outcomes.observed()
+                test.outcomes.observed(),
+                red_streak_json(test.red_since.as_ref())
+            )
+        })
+        .collect();
+    let never_entries: Vec<String> = pass
+        .never_passed
+        .iter()
+        .map(|test| {
+            format!(
+                r#"{{"name":"{}","first_commit":"{}","failed_runs":{}}}"#,
+                json::escape(&test.id),
+                json::escape(&test.first_commit),
+                test.failed_runs
             )
         })
         .collect();
@@ -896,9 +973,24 @@ fn history_object(pass: &history::Analysis) -> String {
         })
         .collect();
     format!(
-        r#","history":{{"flaky":[{}],"failing_since":[{}]}}"#,
+        r#","history":{{"flaky":[{}],"failing_since":[{}],"never_passed":[{}]}}"#,
         flaky_entries.join(","),
-        since_entries.join(",")
+        since_entries.join(","),
+        never_entries.join(",")
+    )
+}
+
+/// `null`, or the streak a proven flake has been red for.
+fn red_streak_json(streak: Option<&history::RedStreak>) -> String {
+    streak.map_or_else(
+        || "null".to_owned(),
+        |streak| {
+            format!(
+                r#"{{"commit":"{}","failed_runs":{}}}"#,
+                json::escape(&streak.commit),
+                streak.failed_runs
+            )
+        },
     )
 }
 
@@ -1211,6 +1303,7 @@ mod tests {
                 failed_runs: 2,
                 observed_runs: 6,
                 failures_confined_to: None,
+                red_since: None,
             },
             quarantined: true,
         };
@@ -1267,6 +1360,7 @@ mod tests {
             failing_since: 1,
             quarantined: 0,
             new: 1,
+            ..explain::Counts::default()
         };
         assert_eq!(
             super::explanation_headline(&counts),
@@ -1281,6 +1375,7 @@ mod tests {
             failing_since: 0,
             quarantined: 1,
             new: 0,
+            ..explain::Counts::default()
         };
         assert_eq!(
             super::explanation_headline(&counts),
@@ -1295,6 +1390,7 @@ mod tests {
             failing_since: 1,
             quarantined: 0,
             new: 0,
+            ..explain::Counts::default()
         };
         assert_eq!(
             super::explanation_headline(&counts),
@@ -1312,6 +1408,7 @@ mod tests {
                     failed_runs: 4,
                     observed_runs: 50,
                     failures_confined_to: None,
+                    red_since: None,
                 },
                 quarantined: true,
             },
@@ -1327,11 +1424,11 @@ mod tests {
         assert!(json.starts_with(r#"{"schema_version":1,"#));
         assert!(json.contains(r#""report":"out/report.xml""#));
         assert!(json.contains(
-            r#"{"name":"c::wobbly","verdict":"known_flake","quarantined":true,"failed_runs":4,"observed_runs":50}"#
+            r#"{"name":"c::wobbly","verdict":"known_flake","quarantined":true,"failed_runs":4,"observed_runs":50,"red_since":null}"#
         ));
         assert!(json.contains(r#"{"name":"c::fresh","verdict":"new","quarantined":false}"#));
         assert!(json
-            .contains(r#""counts":{"known_flakes":1,"failing_since":0,"quarantined":0,"new":1}"#));
+            .contains(r#""counts":{"known_flakes":1,"failing_since":0,"never_passed":0,"quarantined":0,"new":1}"#));
         assert!(json.contains(r#""only_known_flakes":false"#));
     }
 
@@ -1470,12 +1567,14 @@ mod tests {
                     failed: 1,
                 },
                 failures_confined_to: Some("ci".to_owned()),
+                red_since: None,
             }],
             failing_since: vec![crate::analyzers::history::FailingSince {
                 id: "c::reg".to_owned(),
                 commit: "abc1234def".to_owned(),
                 failed_runs: 3,
             }],
+            never_passed: Vec::new(),
         };
         let json = to_json(
             &[outcome(false)],
@@ -1487,7 +1586,7 @@ mod tests {
         );
         assert!(
             json.contains(
-                r#""history":{"flaky":[{"name":"c::wob","failed_runs":1,"observed_runs":4,"failures_confined_to":"ci"}],"failing_since":[{"name":"c::reg","commit":"abc1234def","failed_runs":3}]}"#
+                r#""history":{"flaky":[{"name":"c::wob","failed_runs":1,"observed_runs":4,"failures_confined_to":"ci","red_since":null}],"failing_since":[{"name":"c::reg","commit":"abc1234def","failed_runs":3}],"never_passed":[]}"#
             ),
             "got: {json}"
         );
