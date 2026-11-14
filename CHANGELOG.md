@@ -33,6 +33,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **jest identities carry the file.** A test is now
+  `src/cart.test.js Cart::renders` (file, `describe` path, title) where it
+  was `Cart::renders`. Two files with a `renders` test shared one identity:
+  one history, one quarantine entry pardoning both. History recorded and
+  quarantine ids written under the old names no longer match; there is no
+  migration.
+- Whitespace at either end of a report's `name` or `classname` is dropped.
+  jest-junit's default templates leave a leading space on a test outside
+  any `describe`; such a name could not be selected by `--verify`, and a
+  report read through `--junit` or `import` kept it in the identity.
 - The gate refuses a command that already selects tests itself.
   `--changed -- vendor/bin/phpunit tests/` ran all of `tests/` plus the
   changed files, `--runs` times, under a line that named only the changed
@@ -66,6 +76,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The jest gate no longer counts a snapshot as a test.
+  `__snapshots__/a.test.js.snap` and `data.test.json` matched because their
+  names contain `.test.`; a snapshot-only change then ended in jest's `No
+  tests found` and a blocked push. A jest test file needs a source
+  extension now (`js`, `jsx`, `ts`, `tsx` and their `m`/`c` forms).
 - The gate no longer loses a changed test file whose name git would quote.
   A path holding a `"` or a backslash came back C-quoted, was no test file
   in that form, and silently left the selection — the gate reported fewer

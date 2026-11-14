@@ -1349,3 +1349,34 @@ report layer grows file information.
 
 Like the paratest refusal, this comes before the selection is resolved, so
 a hook with such a command is told on its first run.
+
+## A jest test is known by its file, its describes and its title
+
+A jest title is unique within a file at best. `a.test.js` and `b.test.js`
+may each have `test('renders', …)`, and under the templates the preset
+asked jest-junit for (`{classname}` and `{title}`) both were the test
+`renders`: one history, one `failing since`, one quarantine entry that
+pardoned both (#238). pytest and PHPUnit never had this problem, because
+their classname is the module or the class.
+
+The preset now asks for `JEST_JUNIT_CLASSNAME="{filepath} {classname}"`:
+the path relative to jest's root directory, then the `describe` path. The
+title stays on its own in `name`, because `-t` selects by it. A test reads
+`src/cart.test.js Cart::renders`, or `src/cart.test.js::renders` outside any
+`describe`.
+
+That second form is why the parser now trims `name` and `classname`: the
+template leaves a trailing space when there is no `describe`, and jest-junit
+has no way to say "only if non-empty". The trim is general, not a jest
+rule — whitespace at either end of a name is a template's leftover in any
+report (jest-junit's own defaults leave a *leading* space on such a test,
+which is the bug that made `-t` miss in v0.2), and a runner cannot be
+pointed at a name that starts with a space anyway.
+
+This changes every jest identity, which is why it happens now, before the
+jest preset has users: history and quarantine ids recorded under the old
+names stop matching, and there is no migration.
+
+What `-t` selects is unchanged: the title, in any file. `--verify` may
+therefore re-run a same-titled test from another file too, which is the
+over-matching the verification entry chose.
