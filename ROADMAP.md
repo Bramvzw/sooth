@@ -36,8 +36,9 @@ brings it in scope:
   non-blocking.
 - Homebrew tap — once there are users asking for it. Prebuilt binaries and
   `install.sh` came forward to v0.2 (see `DECISIONS.md`).
-- 3-OS CI matrix — once the network-egress spike starts (the day-1 product is
-  portable and Linux-only CI is sufficient until then).
+- Windows in CI — with v1.0 distribution. Linux and macOS both run the test
+  suite; the contract tests are Unix-only, so a Windows job would pass while
+  testing none of the contract.
 - `CODE_OF_CONDUCT.md` / issue templates — once there is a first external
   contributor (`CONTRIBUTING.md`, the PR template and Dependabot already
   landed).
