@@ -13,7 +13,10 @@ maintainer follows, so quality and security stay consistent.
 3. **Build:** code **plus** a test for the behaviour, a line under
    `## [Unreleased]` in `CHANGELOG.md`, and — for any non-obvious choice — an
    entry in `DECISIONS.md`.
-4. **Run the gate locally:** `make check` (must be green).
+4. **Run the gate locally:** `make check` (must be green). A change to a
+   preset, the gate or `--verify` also runs `make smoke`: the same binary
+   against the real runners, which the fake runners of `make check` cannot
+   stand in for.
 5. **Commit** with the convention below. One concern per commit.
 6. **Open a PR** with `Closes #<n>` in the body. Keep the PR title in the same
    `PREFIX:` form — it becomes the squash-commit on `main`.

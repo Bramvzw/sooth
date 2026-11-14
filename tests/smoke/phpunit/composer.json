@@ -1,0 +1,10 @@
+{
+    "name": "sooth/smoke-phpunit",
+    "description": "Fixture for sooth's real-runner smoke tests (tests/smoke/run.sh).",
+    "require-dev": {
+        "phpunit/phpunit": "^11.5 || ^12.0"
+    },
+    "scripts": {
+        "test": "phpunit"
+    }
+}
