@@ -1846,3 +1846,42 @@ suite's does not: fifty invocations of ten thousand tests are about 120
 MB, and a load still reads the newest 64 MiB of that. The note that says
 the history was read only in part names the command, and promises no more
 than that it drops what no analysis reads.
+
+## The commands live in `src/commands/`, and only `report.rs` prints
+
+`main.rs` held all four commands, and about a quarter of it wrote to
+stdout and stderr with bare `println!` while `report.rs` called itself the
+presentation layer; `AGENTS.md` carried the exception (#192). `import`'s
+logic — one file named twice, the fallback from a report's own timestamp
+to the file's — could only be reached by spawning the binary.
+
+Each command is now a module with one entry, `run(args) -> Outcome`:
+`commands/run.rs`, `explain.rs`, `import.rs`, `history.rs`. `commands.rs`
+holds what they share. `main.rs` parses the command line, dispatches, and
+turns the outcome into the exit code, and nothing else.
+
+Nothing outside `report.rs` prints any more, and the lint that enforces
+that has no exception left. Where the words are written follows what they
+are:
+
+- **A line of the report is written in `report.rs`**, as a named function
+  beside the others: `print_empty_history`, `print_imported`,
+  `print_verdict`. Those lines are the product; tests pin them byte for
+  byte, and they belong where the rest of the report is worded.
+- **A note about what sooth did, or could not do, is worded where it is
+  known** and handed to `report::warn`, `report::note` or — for the lines
+  that end in exit 2 — `report::error`. "Could not read a PHPUnit version
+  from `vendor/bin/phpunit --version`" is the gate's knowledge. This is
+  the rule `SoothError` already followed: the lines say why, in the words
+  of the place that knows.
+
+Two functions took more than five parameters and carried the only
+exceptions to that rule. What they passed along piecemeal is one thing —
+what a run ends with — and is now a type, `report::RunReport`.
+
+The move changes no behaviour, and that was checked rather than assumed:
+the binary from before and the one from after were run through the same
+45 steps in copies of one repository — every command, its error paths, the
+gate, a pardon, `--verify`, both JSON forms, and the history file and
+import ledger they leave — and stdout, stderr and exit code were equal,
+measured durations aside.

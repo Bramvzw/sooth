@@ -85,8 +85,7 @@ Microsoft's [Pragmatic Rust Guidelines](https://microsoft.github.io/rust-guideli
   (*enforced*); `expect()` states the invariant it relies on (`M-PANIC-MESSAGE`). A `&str` is not
   sliced at a byte offset that input controls (#204).
 - **A function fits on a screen and takes at most five parameters** — more is a missing type
-  (*enforced*: `too_many_lines`, `too-many-arguments-threshold`). Exception: `emit_output` and
-  `verdict` in `main.rs` (#192).
+  (*enforced*: `too_many_lines`, `too-many-arguments-threshold`).
 - **A test checks behaviour, not the code's own arithmetic** (`M-TAUTOLOGICAL-TESTS`), is named as
   the sentence it proves, and fails against the code before the change.
 

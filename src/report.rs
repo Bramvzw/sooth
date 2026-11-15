@@ -50,6 +50,25 @@ pub fn warn(message: &str) {
     eprintln!("sooth: {message}");
 }
 
+/// Something sooth did or assumed on the user's behalf, said on stderr so
+/// it stays out of the report.
+pub fn note(message: &str) {
+    eprintln!("sooth: {message}");
+}
+
+/// Why sooth could not do what it was asked, a line each on stderr. The
+/// exit code that goes with it is the caller's.
+pub fn error(lines: &[String]) {
+    for line in lines {
+        eprintln!("sooth: {line}");
+    }
+}
+
+/// The machine output: one JSON document, one line of stdout.
+pub fn print_json(document: &str) {
+    println!("{document}");
+}
+
 /// Version of the `--json` shape. Fields are only added within a version;
 /// this number is bumped when the shape changes incompatibly.
 pub const JSON_SCHEMA_VERSION: u32 = 1;
@@ -234,6 +253,14 @@ pub fn print_replay(replay: &Replay<'_>, to_stderr: bool, style: Style) {
     let _ = writeln!(stream, "{closing}");
 }
 
+/// The gate found no test file to prove anything about.
+pub fn print_empty_gate(selection: &gate::Selection) {
+    println!(
+        "gate: no new or changed tests against {} — nothing to prove",
+        selection.base
+    );
+}
+
 /// What the gate selected: the files about to be repeated, so "why is my
 /// suite suddenly three tests" is answered before the first run.
 pub fn print_gate(selection: &gate::Selection, style: Style) {
@@ -328,6 +355,55 @@ pub fn interrupted_line(
         "result: interrupted after {finished} of {} — {how} ({total:.2?} total)",
         count(requested, "run")
     ))
+}
+
+/// Everything one `sooth run` ends with: its runs, the passes that ran on
+/// top of them, and the verdict the command settled on.
+pub struct RunReport<'a> {
+    pub outcomes: &'a [RunOutcome],
+    /// The final run's totals, when the runs had a report.
+    pub summary: Option<&'a JunitSummary>,
+    pub analyses: &'a Analyses<'a>,
+    /// The worst run's count of failing tests, over every run's report.
+    pub report_failures: usize,
+    /// Whether the suite failed, a pardon taken into account.
+    pub failed: bool,
+}
+
+/// The closing line of a run.
+pub fn print_verdict(ended: &RunReport<'_>, style: Style) {
+    println!("{}", verdict(ended, style));
+}
+
+/// The closing verdict line, pardon-aware: a pardoned run explains why it
+/// exits 0 instead of claiming a clean pass.
+fn verdict(ended: &RunReport<'_>, style: Style) -> String {
+    let RunReport {
+        outcomes, analyses, ..
+    } = *ended;
+    // Cut short, the runs carry no verdict — pardoned or not. A suite that
+    // ran to its end has one, verified or not.
+    if let Some(Interrupted::Runs { requested, failed }) = analyses.interrupted {
+        return interrupted_line(outcomes, requested, failed, style);
+    }
+    match analyses.pardoned {
+        Some(pardoned) => {
+            let not_flakes = analyses
+                .explanation
+                .unwrap_or_default()
+                .iter()
+                .filter(|explanation| explanation.listed_but_not_a_flake())
+                .count();
+            pardoned_verdict(outcomes, pardoned.len(), not_flakes, style)
+        }
+        None => verdict_line(
+            outcomes,
+            ended.summary,
+            ended.report_failures,
+            ended.failed,
+            style,
+        ),
+    }
 }
 
 /// The closing verdict line: sooth's suite-level judgement at a glance.
@@ -760,6 +836,70 @@ fn short_commit(commit: &str) -> Cow<'_, str> {
             .nth(7)
             .map_or(commit, |(end, _)| commit.split_at(end).0),
     )
+}
+
+/// `sooth explain` on a report without failures.
+pub fn print_nothing_to_explain(report: &std::path::Path) {
+    println!("no failures in `{}` — nothing to explain", report.display());
+}
+
+/// `sooth history` before anything was recorded.
+pub fn print_empty_history() {
+    println!("the history is empty — every `sooth run` and `sooth import` adds to it");
+}
+
+/// `sooth history` over evidence that proves nothing yet.
+pub fn print_nothing_stands_out() {
+    println!("nothing stands out: no proven flakes, no failing-since pointers");
+}
+
+/// One file handed to `sooth import`, and what became of it.
+pub struct ImportedFile<'a> {
+    pub path: &'a std::path::Path,
+    pub fate: ImportFate,
+}
+
+/// What became of a file handed to `sooth import`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ImportFate {
+    /// The same content as an earlier file of this import: one file.
+    SameContent,
+    /// Imported before, and `--replace` was not asked for.
+    AlreadyImported,
+    /// A console log of a green run, which names no tests.
+    NothingToRecord,
+    /// In the history now, in place of its earlier import or beside the
+    /// rest.
+    Recorded { observations: usize, replaced: bool },
+}
+
+/// What became of one imported file, in one line.
+pub fn print_imported(file: &ImportedFile<'_>) {
+    let path = file.path.display();
+    match file.fate {
+        ImportFate::SameContent => {
+            println!("{path}: skipped (same content as an earlier file of this import)");
+        }
+        ImportFate::AlreadyImported => println!(
+            "{path}: skipped (already imported) — pass `--replace` to import it again \
+             in place of its earlier observations"
+        ),
+        ImportFate::NothingToRecord => {
+            println!("{path}: no failures to record — a green log names no tests");
+        }
+        ImportFate::Recorded {
+            observations,
+            replaced,
+        } => println!(
+            "{path}: {}{}",
+            count(observations, "observation"),
+            if replaced {
+                ", replacing its earlier import"
+            } else {
+                ""
+            }
+        ),
+    }
 }
 
 /// How much history the analysis above rests on. A file larger than one

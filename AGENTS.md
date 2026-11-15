@@ -15,6 +15,9 @@ Everything below exists except `analyzers/slow.rs` and `analyzers/order.rs`; one
 
 ```
 src/
+├── main.rs        # EXISTS — parse the command line, dispatch to a command, turn its outcome into the exit code
+├── commands.rs    # EXISTS — what the commands share: how one fails (`SoothError`), reading and extending sooth's local files
+├── commands/      # EXISTS — run.rs, explain.rs, import.rs, history.rs: one command each, wiring modules together and handing what it found to report.rs
 ├── cli.rs        # EXISTS — clap definitions: `run`, `explain`, `import`, `history` and their flags
 ├── runner.rs      # EXISTS — spawns the test subprocess (with env injection), captures exit status + wall time
 ├── reported.rs    # EXISTS — one run and the report it leaves: the report source (user file or managed temp file), freshness, reading it
@@ -52,17 +55,16 @@ fails when it breaks (`[lints.clippy]` in `Cargo.toml`, `clippy.toml`); an excep
 an issue that removes it.
 
 - **Only `report.rs` prints.** No other module writes to stdout or stderr. *Enforced.*
-  Exception: `main.rs` until the commands move out (#191, #192).
 - **Only `runner.rs`, `preset.rs` and `history.rs` spawn processes** — the test command, the
   PHPUnit version probe, and git. *Enforced.*
 - **`analyzers/` does no I/O:** no files, no processes, no git, no printing. It classifies values
   it is handed. *By review* for files; the rest is enforced.
-- **Domain modules do not depend on `report.rs` or `main.rs`.** *By review.*
+- **Domain modules do not depend on `report.rs`, `commands/` or `main.rs`.** *By review.*
 - **`junit.rs` depends on no other sooth module**, so the parser can be tested and fuzzed alone.
   *By review.*
-- **Dependencies point one way and never form a cycle:** `main` → `analyzers/` → domain modules
-  (the analyzers read domain types; no domain module reads an analyzer), with `report.rs` reading
-  both and read by `main` alone. *By review.*
+- **Dependencies point one way and never form a cycle:** `main` → `commands/` → `analyzers/` →
+  domain modules (the analyzers read domain types; no domain module reads an analyzer), with
+  `report.rs` reading both and read by `commands/` and `main` alone. *By review.*
 - **Commands orchestrate, modules decide.** A command wires modules together; a decision with
   domain meaning lives in the module that owns the concept. *By review.*
 
