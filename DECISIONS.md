@@ -1597,3 +1597,27 @@ Not covered: another sooth appending to the history while this rewrite runs
 can lose its lines. The history has no lock; appends are single writes and
 have not needed one, and a lock for the one rewriting command is not worth
 its failure modes yet.
+
+## Evidence has one definition
+
+"Observations on dirty or unknown code count in the totals but are never
+evidence" is a rule the analysis applies and a sentence the report prints
+("all 40 earlier observations were made on a dirty tree and cannot be
+evidence"). It was written out five times — `dirty != Some(false)` in the
+analyzer and again in `run`, `explain` and `history`, where the counts for
+that sentence were rebuilt by hand (#187). Change one copy and the sentence
+describes a rule the analysis no longer follows; the mutation run showed
+two of the copies had no test at all.
+
+`analyzers::history::is_evidence` is now the only place the rule exists,
+and `PriorEvidence::of` the only place the counts are made. `PriorEvidence`
+moved out of `report.rs` with it: what earlier runs left behind is a fact
+about the history, and the report only words it.
+
+The same change gave four invariants the test each lacked (#186), checked
+with `cargo mutants` rather than by reading: a dirty red cannot carry a
+streak's address, a pardon needs a report for every run, the runner/report
+mismatch note fires in both directions and only then, and a self-closing
+root element is a report with no tests. One thing the tests turned up is
+not an invariant today and is left as a question (#276): a green seen only
+on a dirty tree is enough to call the streak after it a regression.

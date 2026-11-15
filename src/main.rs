@@ -156,7 +156,7 @@ fn run(args: &cli::RunArgs) -> ExitCode {
     let analyses = Analyses {
         flaky: flaky_analysis.as_ref(),
         history: history_analysis,
-        history_observations: history_pass.as_ref().map(HistoryPass::prior_evidence),
+        history_observations: history_pass.as_ref().map(|pass| pass.prior),
         verify: verify_verdict.as_ref(),
         pardoned: pardoned.as_deref(),
         explanation: explanation.as_deref(),
@@ -666,16 +666,27 @@ fn quarantine_pardon(
 /// either direction. The exit code is settled elsewhere; this explains it.
 #[expect(clippy::print_stderr)]
 fn print_disagreement(runs_failed: bool, report_failures: usize, has_reports: bool) {
+    if let Some(note) = disagreement(runs_failed, report_failures, has_reports) {
+        eprintln!("sooth: {note}");
+    }
+}
+
+/// What to say when the runner's exit and its report disagree about the
+/// suite — the run still exits 1, and this is why.
+fn disagreement(runs_failed: bool, report_failures: usize, has_reports: bool) -> Option<String> {
     if report_failures > 0 && !runs_failed {
-        eprintln!(
-            "sooth: the runner exited 0 but the report shows {report_failures} failing \
+        Some(format!(
+            "the runner exited 0 but the report shows {report_failures} failing \
              test(s) — exiting 1 (the runner and its report must agree for a 0)"
-        );
+        ))
     } else if runs_failed && report_failures == 0 && has_reports {
-        eprintln!(
-            "sooth: the runner failed but the report shows 0 failing tests — \
-             exiting 1 (a failure is never upgraded to a pass)"
-        );
+        Some(
+            "the runner failed but the report shows 0 failing tests — exiting 1 (a \
+             failure is never upgraded to a pass)"
+                .to_owned(),
+        )
+    } else {
+        None
     }
 }
 
@@ -752,20 +763,8 @@ fn verify_failures(
 /// many of those could never be evidence.
 struct HistoryPass {
     analysis: analyzers::history::Analysis,
-    prior_observations: usize,
-    /// Prior observations made on a dirty or unknown tree. They count in the
-    /// totals but prove nothing, so a history that is mostly these looks
-    /// broken when it is only blind.
-    prior_unusable: usize,
-}
-
-impl HistoryPass {
-    fn prior_evidence(&self) -> report::PriorEvidence {
-        report::PriorEvidence {
-            observations: self.prior_observations,
-            unusable: self.prior_unusable,
-        }
-    }
+    /// What the history held before this invocation added to it.
+    prior: analyzers::history::PriorEvidence,
 }
 
 /// The identity of the code about to run, when this invocation will record
@@ -828,17 +827,13 @@ fn record_history(
     let loaded = load_history(path);
     // This run's own observations are already in the file; only earlier ones
     // can make a failure read as anything but new.
-    let prior = loaded.observations.len().saturating_sub(observations.len());
-    let prior_unusable = loaded
-        .observations
-        .iter()
-        .take(prior)
-        .filter(|observation| observation.dirty != Some(false))
-        .count();
+    let earlier = loaded.observations.len().saturating_sub(observations.len());
+    let prior = analyzers::history::PriorEvidence::of(
+        loaded.observations.get(..earlier).unwrap_or_default(),
+    );
     Some(HistoryPass {
         analysis: analyzers::history::analyze(&loaded.observations),
-        prior_observations: prior,
-        prior_unusable,
+        prior,
     })
 }
 
@@ -912,14 +907,7 @@ fn explain(args: &cli::ExplainArgs) -> ExitCode {
     report::print_explanation(
         &Analyses {
             explanation: Some(&explanations),
-            history_observations: Some(report::PriorEvidence {
-                observations: loaded.observations.len(),
-                unusable: loaded
-                    .observations
-                    .iter()
-                    .filter(|observation| observation.dirty != Some(false))
-                    .count(),
-            }),
+            history_observations: Some(analyzers::history::PriorEvidence::of(&loaded.observations)),
             ..Analyses::default()
         },
         style,
@@ -1238,16 +1226,8 @@ fn history_command(args: &cli::HistoryArgs) -> ExitCode {
         },
         style,
     );
-    let unusable = loaded
-        .observations
-        .iter()
-        .filter(|observation| observation.dirty != Some(false))
-        .count();
     report::print_history_gap(
-        Some(report::PriorEvidence {
-            observations: loaded.observations.len(),
-            unusable,
-        }),
+        Some(analyzers::history::PriorEvidence::of(&loaded.observations)),
         style,
     );
     report::print_history_size(loaded.observations.len(), loaded.truncated);
@@ -1810,6 +1790,29 @@ mod tests {
     fn a_pardon_needs_a_report_for_every_run() {
         let quarantine = BTreeSet::from(["case".to_owned()]);
         assert_eq!(quarantine_pardon(&quarantine, &[outcome(false)], &[]), None);
+        // Some reports are not all reports: the run without one may have
+        // failed on anything.
+        assert_eq!(
+            quarantine_pardon(
+                &quarantine,
+                &[outcome(false), outcome(false)],
+                &[report_of(TestStatus::Failed)]
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn the_runner_and_its_report_disagreeing_is_said_in_both_directions() {
+        use super::disagreement;
+        // Exit 0 over a red report.
+        assert!(disagreement(false, 2, true).is_some_and(|note| note.contains("shows 2 failing")));
+        // A red exit over a green report — only when there is a report.
+        assert!(disagreement(true, 0, true).is_some_and(|note| note.contains("0 failing tests")));
+        assert_eq!(disagreement(true, 0, false), None);
+        // Agreement, in either colour, needs no note.
+        assert_eq!(disagreement(false, 0, true), None);
+        assert_eq!(disagreement(true, 3, true), None);
     }
 
     fn known_flake(id: &str, quarantined: bool) -> Explanation {

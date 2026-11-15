@@ -9,6 +9,7 @@
 use std::borrow::Cow;
 use std::time::Duration;
 
+use crate::analyzers::history::PriorEvidence;
 use crate::analyzers::{explain, flaky, history};
 
 /// The panic hook. A panic is a bug in sooth and is said as one. A reader
@@ -785,14 +786,6 @@ fn history_gap_note(evidence: Option<PriorEvidence>) -> Option<String> {
             prior.observations
         )
     })
-}
-
-/// What earlier runs left behind: how many observations, and how many of them
-/// a dirty or unknown tree made unusable as evidence.
-#[derive(Debug, Clone, Copy)]
-pub struct PriorEvidence {
-    pub observations: usize,
-    pub unusable: usize,
 }
 
 /// Why a run whose failures are all known still exits 1: the pardon rests on
