@@ -109,6 +109,22 @@ pub(crate) fn run_outcomes(report: &JunitReport) -> BTreeMap<String, TestStatus>
     run_outcome
 }
 
+/// How long each test id took in one run, for the ids the report timed:
+/// the sum over the cases that share the id, like the status collapse
+/// above. An id none of whose cases carries a duration is absent — sooth
+/// does not record a time nobody measured. The sum stops at the largest
+/// duration there is: the times are input, and `+=` panics past it.
+pub(crate) fn run_durations(report: &JunitReport) -> BTreeMap<String, std::time::Duration> {
+    let mut durations: BTreeMap<String, std::time::Duration> = BTreeMap::new();
+    for case in &report.test_cases {
+        if let Some(duration) = case.duration {
+            let total = durations.entry(case.qualified_name()).or_default();
+            *total = total.saturating_add(duration);
+        }
+    }
+    durations
+}
+
 /// Aggregate per-test outcomes across the runs' reports and split them by
 /// what the *sequence* supports: flaky (bounced), monotone (flipped once,
 /// never back), lone (one sighting), or broken (failed every observed run).
@@ -260,6 +276,27 @@ mod tests {
         assert_eq!(analysis.flaky[1].id, "c::rare");
         assert_eq!(analysis.flaky[1].failure_rate_percent(), 33);
         assert!(analysis.broken.is_empty());
+    }
+
+    #[test]
+    fn durations_of_one_id_add_up_and_stop_at_the_largest_a_duration_holds() {
+        use std::time::Duration;
+        let timed = report(
+            r#"<testcase classname="c" name="t" time="1.5"/><testcase classname="c" name="t" time="0.5"/><testcase classname="c" name="untimed"/>"#,
+        );
+        let durations = super::run_durations(&timed);
+        assert_eq!(durations.get("c::t"), Some(&Duration::from_secs(2)));
+        assert_eq!(durations.get("c::untimed"), None);
+
+        // A report is input: two times that do not fit together are the
+        // largest duration there is, not a crash.
+        let absurd = report(
+            r#"<testcase classname="c" name="t" time="1e19"/><testcase classname="c" name="t" time="1e19"/>"#,
+        );
+        assert_eq!(
+            super::run_durations(&absurd).get("c::t"),
+            Some(&Duration::MAX)
+        );
     }
 
     /// Two tests in the order given, both passing — order is the only variable.

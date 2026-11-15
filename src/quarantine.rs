@@ -128,7 +128,7 @@ mod tests {
             test_cases: vec![TestCase {
                 name: "case".to_owned(),
                 classname: None,
-                duration: Duration::from_millis(100),
+                duration: Some(Duration::from_millis(100)),
                 status,
                 failure_type: None,
             }],

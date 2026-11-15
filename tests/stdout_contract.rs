@@ -848,6 +848,61 @@ fn sooth_leaves_nothing_behind_in_the_temp_dir_however_it_ends() {
 }
 
 #[test]
+fn the_history_records_how_long_each_test_took() {
+    // What a later slow-test pass reads: "slower since X" needs a before.
+    let (cwd, mut command) = sooth_in("history-durations");
+    std::fs::write(
+        cwd.join("src.xml"),
+        concat!(
+            r#"<testsuite>"#,
+            r#"<testcase classname="c" name="slow" time="1.840"/>"#,
+            r#"<testcase classname="c" name="quick" time="0.000"/>"#,
+            r#"<testcase classname="c" name="untimed"/>"#,
+            r#"</testsuite>"#
+        ),
+    )
+    .expect("write");
+    let output = command
+        .args(["run", "--color", "never", "--junit", "report.xml"])
+        .args(["--", "cp", "src.xml", "report.xml"])
+        .output()
+        .expect("sooth should run");
+    assert_eq!(output.status.code(), Some(0));
+
+    let history = std::fs::read_to_string(cwd.join(".sooth/history.jsonl")).expect("history");
+    let line_of = |id: &str| {
+        history
+            .lines()
+            .find(|line| line.ends_with(&format!(r#""id":"{id}"}}"#)))
+            .unwrap_or_else(|| panic!("no line for {id}: {history}"))
+    };
+    assert!(line_of("c::slow").contains(r#""ms":1840,"#), "{history}");
+    assert!(
+        line_of("c::quick").contains(r#""ms":0,"#),
+        "timed at nothing is still timed: {history}"
+    );
+    assert!(
+        !line_of("c::untimed").contains(r#""ms":"#),
+        "a time nobody measured is not recorded: {history}"
+    );
+
+    // An imported report brings its durations along.
+    let import = Command::new(env!("CARGO_BIN_EXE_sooth"))
+        .current_dir(&cwd)
+        .args(["import", "--color", "never", "--env", "ci", "src.xml"])
+        .output()
+        .expect("sooth should run");
+    assert_eq!(import.status.code(), Some(0));
+    let history = std::fs::read_to_string(cwd.join(".sooth/history.jsonl")).expect("history");
+    assert!(
+        history
+            .lines()
+            .any(|line| line.contains(r#""env":"ci""#) && line.contains(r#""ms":1840,"#)),
+        "{history}"
+    );
+}
+
+#[test]
 fn json_to_a_file_keeps_the_human_report_on_stdout() {
     let (cwd, mut command) = sooth_in("json-file");
     let (report, write_report) = fresh_report(&cwd);
@@ -2229,18 +2284,16 @@ fn a_test_never_seen_passing_is_not_called_a_regression() {
     );
 }
 
+/// Any panic will do, and no input is known to cause one any more (the
+/// last was a `time` no `Duration` holds, #158): a debug build of sooth
+/// panics when asked to. A release build has no such switch.
+#[cfg(debug_assertions)]
 #[test]
 fn a_panic_is_sooth_failing_exit_two_never_101() {
-    let (cwd, mut command) = sooth_in("panic-exit");
-    let report = cwd.join("huge-time.xml");
-    // Any panic will do; this one exists (#158): a `time` no Duration holds.
-    std::fs::write(
-        &report,
-        r#"<testsuite><testcase classname="c" name="t" time="1e300"/></testsuite>"#,
-    )
-    .expect("report should write");
+    let (_cwd, mut command) = sooth_in("panic-exit");
     let output = command
-        .args(["explain", "--junit", &report.display().to_string()])
+        .env("SOOTH_TEST_PANIC", "1")
+        .arg("history")
         .output()
         .expect("sooth should run");
     let stderr = String::from_utf8(output.stderr).expect("stderr should be UTF-8");

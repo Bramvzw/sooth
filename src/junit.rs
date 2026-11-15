@@ -44,7 +44,10 @@ impl JunitReport {
 pub struct TestCase {
     pub name: String,
     pub classname: Option<String>,
-    pub duration: Duration,
+    /// How long the test took, when the report says. `None` is a report
+    /// that does not: no `time` attribute, or one that is not a duration.
+    /// `Some(0)` is a runner that measured and rounded to nothing.
+    pub duration: Option<Duration>,
     pub status: TestStatus,
     /// The `type` attribute of the `<failure>`/`<error>` child that set the
     /// status — the exception class, when the runner writes one.
@@ -270,7 +273,7 @@ pub fn report_timestamp(xml: &str) -> Option<String> {
 struct OpenTestCase {
     name: String,
     classname: Option<String>,
-    duration: Duration,
+    duration: Option<Duration>,
     status: TestStatus,
     failure_type: Option<String>,
     /// The `depth` value the matching `Event::End` brings the reader back to.
@@ -281,7 +284,7 @@ impl OpenTestCase {
     fn new(tag: &BytesStart, close_depth: i64) -> Result<Self, JunitError> {
         let mut name = String::new();
         let mut classname = None;
-        let mut duration = Duration::ZERO;
+        let mut duration = None;
 
         for attribute in tag.attributes() {
             let attribute = attribute.map_err(|err| JunitError::Xml(err.to_string()))?;
@@ -361,18 +364,16 @@ fn type_attribute(tag: &BytesStart) -> Option<String> {
 }
 
 /// Parse a `time` attribute value (seconds, possibly fractional) into a
-/// [`Duration`], defaulting to zero for anything that is not a finite,
-/// non-negative number. `Duration::from_secs_f64` panics on negative,
-/// infinite or NaN input, so this guard is load-bearing, not defensive
-/// styling: a `time="-1"` or `time="nan"` in the wild must not crash `sooth`.
-fn parse_seconds(value: &str) -> Duration {
+/// [`Duration`]; `None` for anything a duration cannot hold. The fallible
+/// conversion is load-bearing: `Duration::from_secs_f64` panics on a
+/// negative, infinite, NaN or too-large number, and a `time="-1"`,
+/// `time="nan"` or `time="1e30"` in the wild must not crash `sooth`.
+fn parse_seconds(value: &str) -> Option<Duration> {
     // Some non-English locales emit a decimal comma ("12,5"); normalize it so
     // those durations are not silently dropped to zero and lost from rankings.
     let normalized = value.trim().replace(',', ".");
-    match normalized.parse::<f64>() {
-        Ok(seconds) if seconds.is_finite() && seconds >= 0.0 => Duration::from_secs_f64(seconds),
-        _ => Duration::ZERO,
-    }
+    let seconds = normalized.parse::<f64>().ok()?;
+    Duration::try_from_secs_f64(seconds).ok()
 }
 
 #[cfg(test)]
@@ -470,7 +471,7 @@ mod tests {
         let report = super::parse_str(include_str!("../tests/fixtures/missing_durations.xml"))
             .expect("missing time attributes are tolerated");
         assert_eq!(report.test_cases.len(), 3);
-        assert_eq!(report.test_cases[0].duration, std::time::Duration::ZERO);
+        assert_eq!(report.test_cases[0].duration, None);
         assert_eq!(report.test_cases[1].status, super::TestStatus::Skipped);
         assert_eq!(report.test_cases[2].status, super::TestStatus::Error);
     }
@@ -536,7 +537,7 @@ mod tests {
         let case = &report.test_cases[0];
         assert_eq!(case.name, "test_ok");
         assert_eq!(case.classname, Some("pkg.Mod".to_owned()));
-        assert_eq!(case.duration, Duration::from_secs_f64(0.5));
+        assert_eq!(case.duration, Some(Duration::from_secs_f64(0.5)));
         assert_eq!(case.status, TestStatus::Passed);
     }
 
@@ -559,7 +560,10 @@ mod tests {
         )
         .unwrap();
         assert_eq!(report.test_cases[0].status, TestStatus::Failed);
-        assert_eq!(report.test_cases[0].duration, Duration::from_secs_f64(1.5));
+        assert_eq!(
+            report.test_cases[0].duration,
+            Some(Duration::from_secs_f64(1.5))
+        );
     }
 
     #[test]
@@ -595,17 +599,41 @@ mod tests {
     }
 
     #[test]
-    fn a_missing_time_attribute_is_zero_duration() {
+    fn a_missing_time_attribute_is_no_duration() {
         let report = parse_str(r#"<testsuite><testcase name="a"/></testsuite>"#).unwrap();
-        assert_eq!(report.test_cases[0].duration, Duration::ZERO);
+        assert_eq!(report.test_cases[0].duration, None);
     }
 
     #[test]
-    fn a_negative_or_non_numeric_time_defaults_to_zero_instead_of_panicking() {
+    fn a_time_of_zero_is_a_measurement() {
+        // pytest writes `0.000` for a sub-millisecond test, jest-junit `0`:
+        // measured and rounded, which is not the same as not measured.
+        for time in ["0", "0.000"] {
+            let xml = format!(r#"<testsuite><testcase name="a" time="{time}"/></testsuite>"#);
+            let report = parse_str(&xml).unwrap();
+            assert_eq!(
+                report.test_cases[0].duration,
+                Some(Duration::ZERO),
+                "time={time}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_negative_or_non_numeric_time_is_no_duration_instead_of_a_panic() {
         for time in ["-1", "nan", "inf", "-inf", "not-a-number", ""] {
             let xml = format!(r#"<testsuite><testcase name="a" time="{time}"/></testsuite>"#);
             let report = parse_str(&xml).unwrap();
-            assert_eq!(report.test_cases[0].duration, Duration::ZERO, "time={time}");
+            assert_eq!(report.test_cases[0].duration, None, "time={time}");
+        }
+    }
+
+    #[test]
+    fn a_time_too_large_to_hold_is_no_duration_instead_of_a_panic() {
+        for time in ["1e30", "1e300", "18446744073709551616"] {
+            let xml = format!(r#"<testsuite><testcase name="a" time="{time}"/></testsuite>"#);
+            let report = parse_str(&xml).unwrap();
+            assert_eq!(report.test_cases[0].duration, None, "time={time}");
         }
     }
 
@@ -613,7 +641,10 @@ mod tests {
     fn a_decimal_comma_time_is_parsed_not_dropped() {
         let report =
             parse_str(r#"<testsuite><testcase name="a" time="12,5"/></testsuite>"#).unwrap();
-        assert_eq!(report.test_cases[0].duration, Duration::from_secs_f64(12.5));
+        assert_eq!(
+            report.test_cases[0].duration,
+            Some(Duration::from_secs_f64(12.5))
+        );
     }
 
     #[test]
