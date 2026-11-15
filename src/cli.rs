@@ -88,6 +88,14 @@ pub enum LogFormat {
 /// Arguments for `sooth history`.
 #[derive(Debug, Args)]
 pub struct HistoryArgs {
+    /// Drop the observations the analysis no longer reads.
+    ///
+    /// Rewrites `.sooth/history.jsonl`, keeping each test's last 50
+    /// invocations in which it ran — the window every analysis looks at —
+    /// and removing what is older. The history only grows otherwise.
+    #[arg(long)]
+    pub prune: bool,
+
     /// Color the report.
     ///
     /// `auto` respects `NO_COLOR` and whether stdout is a terminal.

@@ -410,9 +410,10 @@ hand-parsed like the `--json` output (same no-serde reasoning); unreadable
 lines are counted and skipped, never fatal. Analysis looks at each test's
 last 50 invocations (see "One invocation is one piece of evidence"), and
 loading reads at most the file's last 64 MiB —
-the file is append-only and never pruned by sooth, so the read must be
-bounded or every run would pay for the entire past. Drift ages out; the
-user prunes (or doesn't) a file they own.
+the file is append-only and never pruned by sooth on its own, so the read
+must be bounded or every run would pay for the entire past. Drift ages out;
+the user prunes (or doesn't) a file they own — since #246 with a tool for
+it, see "Pruning is the user's decision and sooth's job".
 
 Time order comes from each observation's `at`, not from file position: the
 analysis sorts (stably — one run stamps all its observations alike, so ties
@@ -1611,7 +1612,12 @@ sooth says exactly that rather than guessing which lines were the file's.
 Not covered: another sooth appending to the history while this rewrite runs
 can lose its lines. The history has no lock; appends are single writes and
 have not needed one, and a lock for the one rewriting command is not worth
-its failure modes yet.
+its failure modes yet. The same holds for the second rewriting command,
+`history --prune` (#246). What two rewrites at once can no longer do is
+damage the file: each writes its temp file under its own process id, where
+one shared name had them truncate each other's and rename a mix of both
+over the history. The later rename still wins, and the earlier rewrite's
+change is lost.
 
 ## Evidence has one definition
 
@@ -1793,3 +1799,50 @@ ignored. A `sooth run … &` in a script without job control used to ignore
 a Ctrl-C at the terminal and pass that on to its runner; now both stop.
 Leaving an inherited ignore alone needs the old disposition, and asking for
 it is `unsafe`.
+
+## Pruning is the user's decision and sooth's job
+
+"The user prunes a file they own" was the plan for the history's growth,
+and the audit put numbers on why it was not enough (#246). One observation
+is about 240 bytes, so one run of a 5,000-test suite is 1.2 MB; the 64 MiB
+that a load reads is 56 such runs, two days of work at thirty runs a day;
+and the file itself grows 13 GB a year. The user owned the file and had no
+tool for it — a hand-rolled format is not something to `sed` safely.
+
+`sooth history --prune` is that tool. What it keeps is not a setting: each
+test's last 50 invocations, which is exactly the window every analysis
+reads (`WINDOW_PER_TEST`). Anything older cannot change a finding, so
+removing it is safe by construction, and a contract test holds the two
+together — the history reads the same before and after.
+
+- **A skip takes no place in the window.** The analysis leaves skips out
+  before it counts fifty invocations, so a test that has been skipped for a
+  hundred runs still has every run before that inside its window. The
+  prune first counted every invocation, removed those runs, and a proven
+  flake was gone after pruning (found in review, before release). The
+  window is now counted the way the analysis counts it. Skips themselves
+  are kept for the test's last fifty invocations of any kind, so they are
+  bounded as well. A unit test runs the analysis before and after a prune
+  over 150 generated histories — skips, ties in time, invocations that
+  come back, dirty trees — and requires the same findings.
+- **Explicit, never automatic.** A run that silently rewrote the history
+  would break "sooth observes"; a file that only ever grows until its owner
+  says otherwise does not.
+- **By time, not by position.** An import appended last can be the oldest
+  evidence in the file. The window is found the way the analysis orders
+  observations: by `at`, then by position.
+- **A stream, read twice.** First to find where each test's window begins,
+  then to copy what lies inside. Memory is a few dozen invocations per
+  test, whatever the file's size: 270 MB of history took four seconds.
+- **Lines that are not observations are kept.** A fragment, bytes that are
+  no text: not this command's to judge, the same as for `import --replace`.
+- **One rename.** Written beside the history and renamed over it. When
+  nothing is older than a window the history is not rewritten at all.
+
+A side effect worth knowing: for a suite of up to about five thousand
+tests the pruned file fits in one load, so evidence that had slid beyond
+the 64 MiB tail — a test that runs rarely — is back in reach. A larger
+suite's does not: fifty invocations of ten thousand tests are about 120
+MB, and a load still reads the newest 64 MiB of that. The note that says
+the history was read only in part names the command, and promises no more
+than that it drops what no analysis reads.

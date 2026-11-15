@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `sooth history --prune`: rewrite `.sooth/history.jsonl` down to each
+  test's last 50 invocations in which it ran, the window every analysis
+  reads. The file only grew before (about 1.2 MB per run of a 5,000-test
+  suite), and past 64 MiB the oldest observations were out of sooth's
+  reach with no tool to do anything about it. Pruning changes the file's
+  size, not its findings.
 - **Stopping sooth is safe.** On a Ctrl-C, or a `SIGTERM` from CI or a
   timeout wrapper, sooth reports the runs that had finished, with
   `result: interrupted after 5 of 20 runs — none of them failed` in place
