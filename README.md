@@ -307,6 +307,37 @@ enough for a pre-push hook:
 exec sooth run --changed --runs 20 --preset phpunit -- vendor/bin/phpunit
 ```
 
+### Share the gate with your team
+
+`.git/hooks` is not part of the repository, so a hook there is yours alone.
+To give everyone the same gate, commit the command and the hook, and point
+git at them once per clone:
+
+```jsonc
+// composer.json
+"scripts": {
+    "gate": "sooth run --changed --runs 20 -- php artisan test"
+}
+```
+
+```bash
+#!/bin/sh
+# .githooks/pre-push — committed, and executable (chmod +x)
+exec composer gate
+```
+
+```bash
+git config core.hooksPath .githooks    # once per clone
+```
+
+`composer gate` is then also what you type to run the gate by hand. Outside
+PHP the same works with an npm script or a Makefile target, and a project
+that already has a hook manager (CaptainHook, lefthook, husky) adds the one
+command there instead. Everyone who pushes needs `sooth` on their `PATH`
+(see [Install](#install)). Composer stops a script after five minutes; a
+gate over a handful of files takes seconds, but if yours can run longer,
+make `"Composer\\Config::disableProcessTimeout"` the script's first entry.
+
 Repeated runs are quiet. With `--runs` above 1 — the gate always is — the
 test command's output stays off the screen: you get one line per run, and if
 any run failed, the output of the first one that did, once. Twenty copies of
@@ -314,8 +345,8 @@ the same output would bury the verdict. `--show-output` brings every run's
 output back; a single run always shows it, as if you had run the tests
 yourself.
 
-Needs `--preset` (which files are tests is runner knowledge) and an explicit
-`--runs`. Give the gate the bare runner: it appends the changed files itself,
+Needs a preset — given, or read from the command — because which files are
+tests is runner knowledge, and an explicit `--runs`. Give the gate the bare runner: it appends the changed files itself,
 and a command that already carries its own selection (`./...`, a `tests/`
 path) would run the union — the whole suite, `--runs` times. Sooth refuses
 such a command when it is sure the argument is a selection; behind a
