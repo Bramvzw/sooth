@@ -5,6 +5,10 @@ use std::collections::BTreeSet;
 use std::io;
 use std::path::Path;
 
+use crate::junit::JunitReport;
+use crate::runner::RunOutcome;
+use crate::verify;
+
 /// The file sooth reads from the working directory — committed, unlike
 /// the gitignored `.sooth/` history.
 pub const FILE_NAME: &str = ".sooth-quarantine";
@@ -37,10 +41,49 @@ fn parse(content: &str) -> BTreeSet<String> {
         .collect()
 }
 
+/// The pardon: the ids that failed, when every failure of every run is on
+/// the list — all or nothing. `None` when anything stands in the way: a run
+/// without a report, a run killed by a signal, a red run whose report shows
+/// no failure, or one failure the list does not name. A failure is never
+/// upgraded to a pass on less than that (see `DECISIONS.md`).
+pub fn pardon(
+    quarantine: &BTreeSet<String>,
+    outcomes: &[RunOutcome],
+    reports: &[JunitReport],
+) -> Option<Vec<String>> {
+    if reports.is_empty() || reports.len() != outcomes.len() {
+        return None;
+    }
+    let mut pardoned = BTreeSet::new();
+    for (outcome, report) in outcomes.iter().zip(reports) {
+        // A signal-killed run is a crash, never a pardonable flake — even
+        // when the report was written before the kill.
+        if outcome.signal.is_some() {
+            return None;
+        }
+        let failing = verify::failed_ids(report);
+        if !outcome.success && failing.is_empty() {
+            return None;
+        }
+        for id in failing {
+            if !quarantine.contains(&id) {
+                return None;
+            }
+            pardoned.insert(id);
+        }
+    }
+    (!pardoned.is_empty()).then(|| pardoned.into_iter().collect())
+}
+
 #[cfg(test)]
 mod tests {
+    use super::pardon;
     use super::{load, parse};
+    use crate::junit::{JunitReport, TestCase, TestStatus};
+    use crate::runner::RunOutcome;
+    use std::collections::BTreeSet;
     use std::path::Path;
+    use std::time::Duration;
 
     #[test]
     fn parse_skips_comments_and_blank_lines_and_trims() {
@@ -69,5 +112,89 @@ mod tests {
     fn an_unreadable_file_is_an_error_not_an_empty_quarantine() {
         // A directory exists but cannot be read as a list.
         assert!(load(&std::env::temp_dir()).is_err());
+    }
+
+    fn outcome(success: bool) -> RunOutcome {
+        RunOutcome {
+            exit_code: Some(i32::from(!success)),
+            signal: None,
+            success,
+            duration: Duration::from_millis(1),
+        }
+    }
+
+    fn report_of(status: TestStatus) -> JunitReport {
+        JunitReport {
+            test_cases: vec![TestCase {
+                name: "case".to_owned(),
+                classname: None,
+                duration: Duration::from_millis(100),
+                status,
+                failure_type: None,
+            }],
+        }
+    }
+
+    #[test]
+    fn quarantine_pardons_when_every_failure_is_listed() {
+        let quarantine = BTreeSet::from(["case".to_owned()]);
+        let pardoned = pardon(
+            &quarantine,
+            &[outcome(false), outcome(true)],
+            &[report_of(TestStatus::Failed), report_of(TestStatus::Passed)],
+        );
+        assert_eq!(pardoned, Some(vec!["case".to_owned()]));
+    }
+
+    #[test]
+    fn an_unlisted_failure_blocks_the_whole_pardon() {
+        let pardoned = pardon(
+            &BTreeSet::new(),
+            &[outcome(false)],
+            &[report_of(TestStatus::Failed)],
+        );
+        assert_eq!(pardoned, None);
+    }
+
+    #[test]
+    fn a_failed_run_with_a_green_report_is_never_pardoned() {
+        let quarantine = BTreeSet::from(["case".to_owned()]);
+        let pardoned = pardon(
+            &quarantine,
+            &[outcome(false)],
+            &[report_of(TestStatus::Passed)],
+        );
+        assert_eq!(pardoned, None);
+    }
+
+    #[test]
+    fn a_pardon_needs_a_report_for_every_run() {
+        let quarantine = BTreeSet::from(["case".to_owned()]);
+        assert_eq!(pardon(&quarantine, &[outcome(false)], &[]), None);
+        // Some reports are not all reports: the run without one may have
+        // failed on anything.
+        assert_eq!(
+            pardon(
+                &quarantine,
+                &[outcome(false), outcome(false)],
+                &[report_of(TestStatus::Failed)]
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn a_signal_killed_run_is_never_pardoned() {
+        let quarantine = BTreeSet::from(["case".to_owned()]);
+        let killed = RunOutcome {
+            exit_code: None,
+            signal: Some(9),
+            success: false,
+            duration: Duration::from_millis(1),
+        };
+        assert_eq!(
+            pardon(&quarantine, &[killed], &[report_of(TestStatus::Failed)]),
+            None
+        );
     }
 }
