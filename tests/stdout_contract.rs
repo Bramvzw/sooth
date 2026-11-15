@@ -2624,6 +2624,140 @@ fn an_abbreviated_commit_is_stored_as_the_full_sha_and_an_unknown_one_is_refused
 }
 
 #[test]
+fn an_import_made_with_the_wrong_label_can_be_replaced() {
+    let Some(dir) = scratch_repo("import-replace") else {
+        return;
+    };
+    std::fs::write(
+        dir.join("ci-report.xml"),
+        r#"<testsuite><testcase classname="c" name="wob"><failure/></testcase></testsuite>"#,
+    )
+    .expect("write artifact");
+    let import = |extra: &[&str]| {
+        let output = Command::new(env!("CARGO_BIN_EXE_sooth"))
+            .current_dir(&dir)
+            .args(["import", "--color", "never"])
+            .args(extra)
+            .arg("ci-report.xml")
+            .output()
+            .expect("sooth should run");
+        (
+            output.status.code(),
+            String::from_utf8(output.stdout).expect("stdout should be UTF-8"),
+        )
+    };
+    let history = || std::fs::read_to_string(dir.join(".sooth/history.jsonl")).expect("history");
+
+    let (code, stdout) = import(&["--env", "staging"]);
+    assert_eq!(code, Some(0), "got: {stdout:?}");
+    assert!(history().contains(r#""env":"staging""#));
+
+    // The same file under the right label: skipped, and told how.
+    let (_, stdout) = import(&["--env", "ci"]);
+    assert!(
+        stdout.contains("skipped (already imported)") && stdout.contains("--replace"),
+        "got: {stdout:?}"
+    );
+    assert!(!history().contains(r#""env":"ci""#), "nothing changed yet");
+
+    let (code, stdout) = import(&["--env", "ci", "--replace"]);
+    assert_eq!(code, Some(0), "got: {stdout:?}");
+    assert!(
+        stdout.contains("ci-report.xml: 1 observation, replacing its earlier import"),
+        "got: {stdout:?}"
+    );
+    assert!(
+        stdout.contains("history now holds 1 observation"),
+        "the wrong observation is gone, not joined: {stdout:?}"
+    );
+    let recorded = history();
+    assert!(
+        recorded.contains(r#""env":"ci""#) && !recorded.contains(r#""env":"staging""#),
+        "got: {recorded:?}"
+    );
+    let ledger = std::fs::read_to_string(dir.join(".sooth/imported")).expect("ledger");
+    assert_eq!(
+        ledger.lines().count(),
+        1,
+        "one file, one ledger line: {ledger:?}"
+    );
+}
+
+#[test]
+fn a_file_named_twice_in_one_import_is_one_file() {
+    let Some(dir) = scratch_repo("import-twice") else {
+        return;
+    };
+    std::fs::write(
+        dir.join("a.xml"),
+        r#"<testsuite><testcase classname="c" name="one"/><testcase classname="c" name="two"/></testsuite>"#,
+    )
+    .expect("write");
+    let import = |extra: &[&str]| {
+        let output = Command::new(env!("CARGO_BIN_EXE_sooth"))
+            .current_dir(&dir)
+            .args(["import", "--color", "never", "--env", "ci"])
+            .args(extra)
+            .args(["a.xml", "a.xml"])
+            .output()
+            .expect("sooth should run");
+        (
+            String::from_utf8(output.stdout).expect("stdout should be UTF-8"),
+            String::from_utf8(output.stderr).expect("stderr should be UTF-8"),
+        )
+    };
+
+    // Under --replace the second copy used to be taken for a re-import.
+    for extra in [&["--replace"][..], &["--replace"][..]] {
+        let (stdout, stderr) = import(extra);
+        assert!(
+            stdout.contains("a.xml: skipped (same content as an earlier file of this import)"),
+            "got: {stdout:?}"
+        );
+        assert!(
+            stdout.contains("history now holds 2 observations"),
+            "two tests, imported once: {stdout:?}"
+        );
+        assert!(stderr.is_empty(), "nothing to explain: {stderr:?}");
+    }
+}
+
+#[test]
+fn replacing_an_import_whose_history_is_gone_is_a_plain_import() {
+    let Some(dir) = scratch_repo("import-replace-no-history") else {
+        return;
+    };
+    std::fs::write(
+        dir.join("a.xml"),
+        r#"<testsuite><testcase classname="c" name="one"/></testsuite>"#,
+    )
+    .expect("write");
+    let import = |extra: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_sooth"))
+            .current_dir(&dir)
+            .args(["import", "--color", "never", "--env", "ci"])
+            .args(extra)
+            .arg("a.xml")
+            .output()
+            .expect("sooth should run")
+    };
+    assert_eq!(import(&[]).status.code(), Some(0));
+    std::fs::remove_file(dir.join(".sooth/history.jsonl")).expect("remove history");
+
+    let output = import(&["--replace"]);
+    let stdout = String::from_utf8(output.stdout).expect("stdout should be UTF-8");
+    let stderr = String::from_utf8(output.stderr).expect("stderr should be UTF-8");
+    assert!(
+        stdout.contains("history now holds 1 observation"),
+        "got: {stdout:?}"
+    );
+    assert!(
+        stderr.is_empty(),
+        "a missing history is not an old sooth's doing: {stderr:?}"
+    );
+}
+
+#[test]
 fn an_unreadable_file_fails_the_whole_import_before_anything_is_written() {
     let (cwd, mut command) = sooth_in("import-atomic");
     std::fs::write(

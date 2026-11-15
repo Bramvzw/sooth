@@ -21,10 +21,11 @@ pub const HISTORY_PATH: &str = ".sooth/history.jsonl";
 /// flake out. A line without an invocation is one of its own.
 pub const WINDOW_PER_TEST: usize = 50;
 
-/// How much of the history file's tail one load reads. The file is
-/// append-only and never pruned, so reads must be bounded or every run pays
-/// for the entire past: 64 MiB is roughly half a million observations —
-/// window-filling even for a ten-thousand-test suite.
+/// How much of the history file's tail one load reads. The file only grows
+/// — runs and imports append, and the one rewrite (`import --replace`)
+/// takes out a single file's observations — so reads must be bounded or
+/// every run pays for the entire past: 64 MiB is roughly half a million
+/// observations — window-filling even for a ten-thousand-test suite.
 pub const MAX_LOAD_BYTES: u64 = 64 * 1024 * 1024;
 
 /// The code state observations were made on. `None` means unknowable (no
@@ -76,6 +77,69 @@ pub fn current_environment() -> String {
     } else {
         "local".to_owned()
     }
+}
+
+/// Put `replacement` in the place of every observation recorded under one
+/// of `invocations`, and return how many of those went — for `import
+/// --replace`: an imported file's observations all carry its
+/// [`import_invocation`]. `None` when there is no history file, which
+/// leaves nothing to replace: the caller appends as usual.
+///
+/// One write: the kept records and the replacement go into a file beside
+/// the history, which is then renamed over it, so a crash or a full disk
+/// leaves the old history or the new one, never the old one minus the
+/// file. Every line without a named record is kept byte for byte, be it a
+/// fragment or not even text; a line that glued a named record to others
+/// comes back as its other records, one per line.
+///
+/// # Errors
+///
+/// Returns the I/O error when the history cannot be read or rewritten.
+pub fn replace_invocations(
+    path: &Path,
+    invocations: &[String],
+    replacement: &[Observation],
+) -> std::io::Result<Option<usize>> {
+    let bytes = match fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(err) => return Err(err),
+    };
+    let named = |record: &str| {
+        parse_line(record)
+            .and_then(|observation| observation.invocation)
+            .is_some_and(|invocation| invocations.contains(&invocation))
+    };
+    let mut rewritten: Vec<u8> = Vec::with_capacity(bytes.len());
+    let mut removed = 0;
+    for line in bytes.split_inclusive(|byte| *byte == b'\n') {
+        let records = std::str::from_utf8(line).map(records).unwrap_or_default();
+        if !records.iter().any(|record| named(record)) {
+            rewritten.extend_from_slice(line);
+            continue;
+        }
+        for record in records {
+            if named(&record) {
+                removed += 1;
+            } else {
+                rewritten.extend_from_slice(record.trim_end_matches('\n').as_bytes());
+                rewritten.push(b'\n');
+            }
+        }
+    }
+    if rewritten.last().is_some_and(|last| *last != b'\n') {
+        rewritten.push(b'\n');
+    }
+    for observation in replacement {
+        rewritten.extend_from_slice(to_line(observation).as_bytes());
+        rewritten.push(b'\n');
+    }
+    let beside = path.with_extension("jsonl.rewrite");
+    let renamed = fs::write(&beside, rewritten).and_then(|()| fs::rename(&beside, path));
+    if renamed.is_err() {
+        let _ = fs::remove_file(&beside);
+    }
+    renamed.map(|()| Some(removed))
 }
 
 /// The ledger of already-imported report files, one line per file:
@@ -882,6 +946,71 @@ mod tests {
         let hashes = super::imported_hashes(&path);
         assert!(hashes.contains(&0xdead_beef));
         assert!(hashes.contains(&0x1234));
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn replacing_an_invocation_swaps_its_observations_in_one_write() {
+        let path = temp_path("replace-invocation");
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+        let imported = |id: &str, invocation: &str| Observation {
+            invocation: Some(invocation.to_owned()),
+            ..observation(id, TestStatus::Failed)
+        };
+        // No history: nothing to replace, and nothing is created.
+        assert_eq!(
+            super::replace_invocations(&path, &[String::new()], &[]).unwrap(),
+            None
+        );
+        assert!(!path.exists());
+
+        super::append(
+            &path,
+            &[
+                imported("a::one", "import-0000000000000001"),
+                imported("a::two", "import-0000000000000001"),
+                imported("b::one", "import-0000000000000002"),
+                observation("c::local", TestStatus::Passed),
+            ],
+        )
+        .expect("append");
+        // What a crash, another tool or Windows left behind is not this
+        // command's to tidy: a fragment, bytes that are no text, a CRLF.
+        let mut bytes = std::fs::read(&path).unwrap();
+        bytes.extend_from_slice(b"{\"at\":12,\"comm\n");
+        bytes.extend_from_slice(b"garbage \xff\n");
+        let crlf = super::to_line(&observation("d::crlf", TestStatus::Passed));
+        bytes.extend_from_slice(crlf.as_bytes());
+        bytes.extend_from_slice(b"\r\n");
+        std::fs::write(&path, &bytes).unwrap();
+
+        let removed = super::replace_invocations(
+            &path,
+            &["import-0000000000000001".to_owned()],
+            &[imported("a::one", "import-0000000000000001")],
+        )
+        .expect("rewrite");
+        assert_eq!(removed, Some(2));
+        let ids: Vec<String> = super::load(&path)
+            .observations
+            .into_iter()
+            .map(|observation| observation.id)
+            .collect();
+        assert_eq!(ids, ["b::one", "c::local", "d::crlf", "a::one"]);
+        let after = std::fs::read(&path).unwrap();
+        for kept in [&b"{\"at\":12,\"comm\n"[..], b"garbage \xff\n", b"\"}\r\n"] {
+            assert!(
+                after.windows(kept.len()).any(|window| window == kept),
+                "kept byte for byte: {kept:?}"
+            );
+        }
+        assert!(!path.with_extension("jsonl.rewrite").exists());
+        // An id nobody recorded removes nothing; the replacement still lands.
+        assert_eq!(
+            super::replace_invocations(&path, &["import-ffffffffffffffff".to_owned()], &[])
+                .unwrap(),
+            Some(0)
+        );
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 

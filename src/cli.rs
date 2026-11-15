@@ -50,6 +50,14 @@ pub struct ImportArgs {
     #[arg(long, value_name = "SHA")]
     pub commit: Option<String>,
 
+    /// Import a file again, in place of its earlier observations.
+    ///
+    /// A file already imported is skipped. With this flag the observations
+    /// of that earlier import are removed from the history and the file is
+    /// recorded anew: the way to correct a wrong --commit or --env.
+    #[arg(long)]
+    pub replace: bool,
+
     /// Read the files as console logs of this format, not JUnit-XML reports.
     ///
     /// A log names only its failures, so only failures are recorded; the

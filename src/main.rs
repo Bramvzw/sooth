@@ -972,6 +972,8 @@ struct Incoming {
     observations: Vec<history::Observation>,
     hash: u64,
     name: String,
+    /// Imported before: `--replace` puts this in the earlier import's place.
+    replaces: bool,
 }
 
 /// One import file's yield: its per-test outcomes plus the timestamp the
@@ -1040,7 +1042,7 @@ fn imported_commit(given: &str) -> Result<String, ExitCode> {
     })
 }
 
-#[expect(clippy::print_stderr, clippy::print_stdout)]
+#[expect(clippy::print_stdout)]
 fn import(args: &cli::ImportArgs) -> ExitCode {
     let style = report::Style::resolved(args.color);
     let commit = match args.commit.as_deref().map(imported_commit).transpose() {
@@ -1048,81 +1050,24 @@ fn import(args: &cli::ImportArgs) -> ExitCode {
         Err(code) => return code,
     };
     let ledger_path = std::path::Path::new(history::IMPORTED_PATH);
-    let mut seen = history::imported_hashes(ledger_path);
-    let mut incoming: Vec<Incoming> = Vec::new();
-    for path in &args.reports {
-        let content = match std::fs::read_to_string(path) {
-            Ok(content) => content,
-            Err(err) => {
-                eprintln!("sooth: could not read `{}`: {err}", path.display());
-                return ExitCode::from(EXIT_SOOTH_ERROR);
-            }
-        };
-        let hash = history::fnv1a64(content.as_bytes());
-        if !seen.insert(hash) {
-            println!("{}: skipped (already imported)", path.display());
-            continue;
-        }
-        let Ok(parsed) = file_outcomes(&content, args.log, path) else {
-            return ExitCode::from(EXIT_SOOTH_ERROR);
-        };
-        let Some((outcomes, content_stamp)) = parsed else {
-            continue;
-        };
-        let at_epoch_secs = content_stamp
-            .and_then(|stamp| history::iso8601_to_epoch(&stamp))
-            .or_else(|| file_state(path).and_then(|(mtime, _)| epoch_secs(mtime)))
-            .unwrap_or_else(history::now_epoch_secs);
-        let observations: Vec<history::Observation> = outcomes
-            .into_iter()
-            .map(|(id, status)| history::Observation {
-                id,
-                status,
-                commit: commit.clone(),
-                // --commit asserts a clean checkout of that commit; without
-                // it the code state is unknowable, not clean.
-                dirty: commit.as_ref().map(|_| false),
-                environment: Some(args.env.clone()),
-                invocation: Some(history::import_invocation(hash)),
-                at_epoch_secs,
-            })
-            .collect();
-        println!(
-            "{}: {}",
-            path.display(),
-            report::count(observations.len(), "observation")
-        );
-        incoming.push(Incoming {
-            at_epoch_secs,
-            observations,
-            hash,
-            name: path.display().to_string(),
-        });
-    }
+    let ledger = history::imported_hashes(ledger_path);
+    let (mut incoming, lines) = match read_imports(args, commit.as_deref(), &ledger) {
+        Ok(read) => read,
+        Err(exit) => return exit,
+    };
 
     // Ascending time order, so the file stays readable front to back; the
     // analysis itself no longer depends on it.
     incoming.sort_by_key(|entry| entry.at_epoch_secs);
-    let observations: Vec<history::Observation> = incoming
-        .iter()
-        .flat_map(|entry| entry.observations.iter().cloned())
-        .collect();
     let history_path = std::path::Path::new(history::HISTORY_PATH);
-    if let Err(err) = append_history(history_path, &observations) {
-        eprintln!("sooth: could not write {}: {err}", history_path.display());
-        return ExitCode::from(EXIT_SOOTH_ERROR);
+    if let Err(exit) = write_imports(history_path, &incoming) {
+        return exit;
     }
-    let ledger: Vec<(u64, String)> = incoming
-        .iter()
-        .map(|entry| (entry.hash, entry.name.clone()))
-        .collect();
-    if let Err(err) = history::record_imported(ledger_path, &ledger) {
-        // The observations are recorded; only the dedupe bookkeeping failed.
-        eprintln!(
-            "sooth: could not write {}: {err} — re-importing these files will double-count",
-            ledger_path.display()
-        );
+    // Said once it is true: the files are in the history now.
+    for line in lines {
+        println!("{line}");
     }
+    record_ledger(ledger_path, &incoming);
 
     let loaded = load_history(history_path);
     let analysis = analyzers::history::analyze(&loaded.observations);
@@ -1135,6 +1080,141 @@ fn import(args: &cli::ImportArgs) -> ExitCode {
     );
     report::print_history_size(loaded.observations.len(), loaded.truncated);
     ExitCode::SUCCESS
+}
+
+/// Read every file of an import into observations, plus the line that
+/// says what became of each. Nothing is written here: a file that cannot
+/// be read or parsed fails the whole import before the history is touched.
+#[expect(clippy::print_stderr)]
+fn read_imports(
+    args: &cli::ImportArgs,
+    commit: Option<&str>,
+    ledger: &std::collections::BTreeSet<u64>,
+) -> Result<(Vec<Incoming>, Vec<String>), ExitCode> {
+    let mut incoming: Vec<Incoming> = Vec::new();
+    let mut lines = Vec::new();
+    let mut named_before = std::collections::BTreeSet::new();
+    for path in &args.reports {
+        let content = std::fs::read_to_string(path).map_err(|err| {
+            eprintln!("sooth: could not read `{}`: {err}", path.display());
+            ExitCode::from(EXIT_SOOTH_ERROR)
+        })?;
+        let hash = history::fnv1a64(content.as_bytes());
+        // The same content twice on one command line is one file.
+        if !named_before.insert(hash) {
+            lines.push(format!(
+                "{}: skipped (same content as an earlier file of this import)",
+                path.display()
+            ));
+            continue;
+        }
+        let replaces = ledger.contains(&hash);
+        if replaces && !args.replace {
+            lines.push(format!(
+                "{}: skipped (already imported) — pass `--replace` to import it again \
+                 in place of its earlier observations",
+                path.display()
+            ));
+            continue;
+        }
+        let parsed = file_outcomes(&content, args.log, path)
+            .map_err(|()| ExitCode::from(EXIT_SOOTH_ERROR))?;
+        let Some((outcomes, content_stamp)) = parsed else {
+            continue;
+        };
+        let at_epoch_secs = content_stamp
+            .and_then(|stamp| history::iso8601_to_epoch(&stamp))
+            .or_else(|| file_state(path).and_then(|(mtime, _)| epoch_secs(mtime)))
+            .unwrap_or_else(history::now_epoch_secs);
+        let observations: Vec<history::Observation> = outcomes
+            .into_iter()
+            .map(|(id, status)| history::Observation {
+                id,
+                status,
+                commit: commit.map(str::to_owned),
+                // --commit asserts a clean checkout of that commit; without
+                // it the code state is unknowable, not clean.
+                dirty: commit.map(|_| false),
+                environment: Some(args.env.clone()),
+                invocation: Some(history::import_invocation(hash)),
+                at_epoch_secs,
+            })
+            .collect();
+        lines.push(format!(
+            "{}: {}{}",
+            path.display(),
+            report::count(observations.len(), "observation"),
+            if replaces {
+                ", replacing its earlier import"
+            } else {
+                ""
+            }
+        ));
+        incoming.push(Incoming {
+            at_epoch_secs,
+            observations,
+            hash,
+            name: path.display().to_string(),
+            replaces,
+        });
+    }
+    Ok((incoming, lines))
+}
+
+/// Put an import's observations into the history: appended, or — when
+/// `--replace` imports a file again — written in the place of that file's
+/// earlier observations, in one rewrite.
+#[expect(clippy::print_stderr)]
+fn write_imports(history_path: &std::path::Path, incoming: &[Incoming]) -> Result<(), ExitCode> {
+    let observations: Vec<history::Observation> = incoming
+        .iter()
+        .flat_map(|entry| entry.observations.iter().cloned())
+        .collect();
+    let replaced: Vec<String> = incoming
+        .iter()
+        .filter(|entry| entry.replaces)
+        .map(|entry| history::import_invocation(entry.hash))
+        .collect();
+    let failed = |err: std::io::Error| {
+        eprintln!("sooth: could not write {}: {err}", history_path.display());
+        ExitCode::from(EXIT_SOOTH_ERROR)
+    };
+    if !replaced.is_empty() {
+        match history::replace_invocations(history_path, &replaced, &observations) {
+            Ok(Some(0)) => {
+                eprintln!(
+                    "sooth: found no observations of the earlier import in {} — nothing \
+                     was removed, and the file's observations were added. An import \
+                     recorded before v0.3.1 carries no id to find it by",
+                    history_path.display()
+                );
+                return Ok(());
+            }
+            Ok(Some(_)) => return Ok(()),
+            // No history file: nothing to replace, so this is a plain import.
+            Ok(None) => {}
+            Err(err) => return Err(failed(err)),
+        }
+    }
+    append_history(history_path, &observations).map_err(failed)
+}
+
+/// Note the newly imported files in the ledger. A replaced file is in it
+/// already.
+#[expect(clippy::print_stderr)]
+fn record_ledger(ledger_path: &std::path::Path, incoming: &[Incoming]) {
+    let ledger: Vec<(u64, String)> = incoming
+        .iter()
+        .filter(|entry| !entry.replaces)
+        .map(|entry| (entry.hash, entry.name.clone()))
+        .collect();
+    if let Err(err) = history::record_imported(ledger_path, &ledger) {
+        // The observations are recorded; only the dedupe bookkeeping failed.
+        eprintln!(
+            "sooth: could not write {}: {err} — re-importing these files will double-count",
+            ledger_path.display()
+        );
+    }
 }
 
 /// `sooth history` looks at the evidence without adding to it: nothing runs,
