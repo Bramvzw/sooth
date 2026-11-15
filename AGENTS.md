@@ -30,7 +30,8 @@ src/
 ├── json.rs        # EXISTS — JSON string escaping shared by the history file and the --json report
 ├── verify.rs      # EXISTS — failure re-verification: re-run only the failed tests and classify them
 ├── quarantine.rs  # EXISTS — committed .sooth-quarantine list, and the all-or-nothing pardon --fail-on-flaky grants from it
-├── report.rs      # EXISTS — colored human report + versioned machine JSON
+├── report.rs      # EXISTS — presentation: what both renderers read (the color style, the view of a run and its passes) and the plain lines on stderr
+├── report/        # EXISTS — human.rs (the printed report), json.rs (the versioned machine JSON; a document is a `String`, nothing is printed there)
 └── analyzers/     # EXISTS — flaky.rs (mixed outcomes over runs), history.rs (classify the accumulated history), explain.rs (label a red run's failures against that evidence); slow.rs, order.rs to come (strictly separate passes)
 ```
 
@@ -54,7 +55,8 @@ fails when it breaks (`[lints.clippy]` in `Cargo.toml`, `clippy.toml`); an excep
 `#[expect]` — which fails the build once the exception is gone — and every exception below has
 an issue that removes it.
 
-- **Only `report.rs` prints.** No other module writes to stdout or stderr. *Enforced.*
+- **Only `report.rs` and `report/human.rs` print.** No other module writes to stdout or stderr,
+  `report/json.rs` included. *Enforced.*
 - **Only `runner.rs`, `preset.rs` and `history.rs` spawn processes** — the test command, the
   PHPUnit version probe, and git. *Enforced.*
 - **`analyzers/` does no I/O:** no files, no processes, no git, no printing. It classifies values

@@ -75,7 +75,32 @@ pub struct Explanation {
     pub quarantined: bool,
 }
 
+/// What a failure is counted as: a partition of the failures, so every one
+/// has exactly one. The history decides first; the quarantine list only
+/// splits what the history could not classify.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Category {
+    KnownFlake,
+    FailingSince,
+    NeverPassed,
+    /// On the quarantine list, and unknown to the history.
+    Quarantined,
+    New,
+}
+
 impl Explanation {
+    /// The category this failure is counted in — the one rule the counts,
+    /// the printed report and the JSON all ask.
+    pub fn category(&self) -> Category {
+        match &self.verdict {
+            Verdict::KnownFlake { .. } => Category::KnownFlake,
+            Verdict::FailingSince { .. } => Category::FailingSince,
+            Verdict::NeverPassed { .. } => Category::NeverPassed,
+            Verdict::Unknown if self.quarantined => Category::Quarantined,
+            Verdict::Unknown => Category::New,
+        }
+    }
+
     /// On the quarantine list, while the history says it is no flake: a
     /// regression, or a test never seen passing. The pardon is the team's
     /// to give; the report must not repeat "flake" after it.
@@ -107,15 +132,15 @@ impl Counts {
     pub fn of(explanations: &[Explanation]) -> Self {
         let mut counts = Self::default();
         for explanation in explanations {
-            match &explanation.verdict {
-                Verdict::KnownFlake { red_since, .. } => {
-                    counts.known_flakes += 1;
-                    counts.red_flakes += usize::from(red_since.is_some());
-                }
-                Verdict::FailingSince { .. } => counts.failing_since += 1,
-                Verdict::NeverPassed { .. } => counts.never_passed += 1,
-                Verdict::Unknown if explanation.quarantined => counts.quarantined += 1,
-                Verdict::Unknown => counts.new += 1,
+            match explanation.category() {
+                Category::KnownFlake => counts.known_flakes += 1,
+                Category::FailingSince => counts.failing_since += 1,
+                Category::NeverPassed => counts.never_passed += 1,
+                Category::Quarantined => counts.quarantined += 1,
+                Category::New => counts.new += 1,
+            }
+            if let Verdict::KnownFlake { red_since, .. } = &explanation.verdict {
+                counts.red_flakes += usize::from(red_since.is_some());
             }
         }
         counts
@@ -318,6 +343,36 @@ mod tests {
         let counts = Counts::of(&explained);
         assert_eq!((counts.known_flakes, counts.new), (1, 1));
         assert!(!counts.only_known_flakes());
+    }
+
+    #[test]
+    fn every_failure_is_counted_in_exactly_one_category() {
+        use super::{Category, Counts, Explanation, Verdict};
+        let of = |verdict: Verdict, quarantined: bool| Explanation {
+            id: "c::t".to_owned(),
+            observed: None,
+            verdict,
+            quarantined,
+        };
+        let regression = || Verdict::FailingSince {
+            commit: "abc".to_owned(),
+            failed_runs: 3,
+        };
+        // The history decides first: the list only splits what it left open.
+        assert_eq!(of(Verdict::Unknown, false).category(), Category::New);
+        assert_eq!(of(Verdict::Unknown, true).category(), Category::Quarantined);
+        assert_eq!(of(regression(), true).category(), Category::FailingSince);
+        // And the counts are that rule, added up.
+        let counts = Counts::of(&[
+            of(Verdict::Unknown, false),
+            of(Verdict::Unknown, true),
+            of(regression(), true),
+        ]);
+        assert_eq!(
+            (counts.new, counts.quarantined, counts.failing_since),
+            (1, 1, 1)
+        );
+        assert_eq!(counts.total(), 3);
     }
 
     #[test]

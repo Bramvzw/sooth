@@ -1885,3 +1885,34 @@ the binary from before and the one from after were run through the same
 gate, a pardon, `--verify`, both JSON forms, and the history file and
 import ledger they leave — and stdout, stderr and exit code were equal,
 measured durations aside.
+
+## `report.rs` is three files, one per layer
+
+`report.rs` had grown to 2,100 lines holding four things: the color style,
+the view of a run that both renderers read, the printed report, and the
+JSON (#190). Human and machine output were already apart at function
+level — no function both printed and serialised — so the split is by file:
+
+- `report.rs`: `Style`, `JunitSummary`, `Analyses`, `RunReport` and the
+  other values a command hands over, plus the plain lines outside the
+  report (`warn`, `note`, `error`, `print_json`).
+- `report/human.rs`: every line of the printed report.
+- `report/json.rs`: the documents. It returns `String`s and prints nothing.
+
+The last point is enforced. The exception to "no module prints" used to
+cover all of `report.rs`; it now sits on `human.rs` and on the four plain
+functions, so a `println!` in the serialiser fails the build like one in
+`history.rs` would (tried: it does).
+
+One rule had two homes. The category a failure is counted in — known
+flake, regression, never passed, quarantined, new — was decided in
+`explain::Counts::of` and decided again in the JSON, where "quarantined or
+new" was re-derived from the flag. It is now `Explanation::category()`,
+which the counts and the document's `verdict` both ask. The names the JSON
+gives the categories stay in `json.rs`: they are the document's
+vocabulary, not the analyzer's.
+
+The JSON stays hand-rolled and its bytes are unchanged; the tests that pin
+them moved with the functions they test. Checked the same way as the
+commands' move: the binary from before both refactors and the one after,
+through the same 45 steps, with equal output.
