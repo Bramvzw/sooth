@@ -68,6 +68,14 @@ fn main() -> ExitCode {
 /// process exit — the one place exit 2 is decided for a command that ran.
 #[expect(clippy::print_stderr)]
 fn dispatch() -> ExitCode {
+    // No input is known to make sooth panic, and what a panic must look
+    // like (exit 2, said as a bug) is tested against the binary: a debug
+    // build panics on request. A release build has no such switch.
+    #[cfg(debug_assertions)]
+    assert!(
+        std::env::var_os("SOOTH_TEST_PANIC").is_none(),
+        "asked to panic by SOOTH_TEST_PANIC"
+    );
     let parsed = match Cli::try_parse() {
         Ok(parsed) => parsed,
         // clap prints and exits: 2 for a usage error, 0 for --help.
@@ -704,8 +712,10 @@ fn record_history(
     let invocation = history::run_invocation(at_epoch_secs);
     let mut observations = Vec::new();
     for report in reports {
+        let durations = analyzers::flaky::run_durations(report);
         for (id, status) in analyzers::flaky::run_outcomes(report) {
             observations.push(history::Observation {
+                duration_ms: durations.get(&id).map(history::whole_millis),
                 id,
                 status,
                 commit: identity.commit.clone(),
@@ -861,7 +871,7 @@ struct Incoming {
 /// One import file's yield: its per-test outcomes plus the timestamp the
 /// content itself carries. `None` is a valid file with nothing to record.
 type FileYield = Option<(
-    std::collections::BTreeMap<String, junit::TestStatus>,
+    std::collections::BTreeMap<String, (junit::TestStatus, Option<u64>)>,
     Option<String>,
 )>;
 
@@ -882,17 +892,32 @@ fn file_outcomes(
                 );
                 Ok(None)
             }
-            Ok(parsed) => Ok(Some((parsed.failures, parsed.at))),
+            // A console log names its failures and no durations.
+            Ok(parsed) => Ok(Some((
+                parsed
+                    .failures
+                    .into_iter()
+                    .map(|(id, status)| (id, (status, None)))
+                    .collect(),
+                parsed.at,
+            ))),
             Err(err) => Err(SoothError::new(format!(
                 "failed to parse PHPUnit log `{}`: {err}",
                 path.display()
             ))),
         },
         None => match junit::parse_str(content) {
-            Ok(report) => Ok(Some((
-                analyzers::flaky::run_outcomes(&report),
-                junit::report_timestamp(content),
-            ))),
+            Ok(report) => {
+                let durations = analyzers::flaky::run_durations(&report);
+                let outcomes = analyzers::flaky::run_outcomes(&report)
+                    .into_iter()
+                    .map(|(id, status)| {
+                        let millis = durations.get(&id).map(history::whole_millis);
+                        (id, (status, millis))
+                    })
+                    .collect();
+                Ok(Some((outcomes, junit::report_timestamp(content))))
+            }
             Err(err) => Err(SoothError::new(format!(
                 "failed to parse JUnit-XML report `{}`: {err}",
                 path.display()
@@ -991,9 +1016,10 @@ fn read_imports(
             .unwrap_or_else(history::now_epoch_secs);
         let observations: Vec<history::Observation> = outcomes
             .into_iter()
-            .map(|(id, status)| history::Observation {
+            .map(|(id, (status, duration_ms))| history::Observation {
                 id,
                 status,
+                duration_ms,
                 commit: commit.map(str::to_owned),
                 // --commit asserts a clean checkout of that commit; without
                 // it the code state is unknowable, not clean.
@@ -1387,7 +1413,7 @@ mod tests {
         TestCase {
             name: name.to_owned(),
             classname: None,
-            duration: Duration::from_secs_f64(duration_seconds),
+            duration: Some(Duration::from_secs_f64(duration_seconds)),
             status,
             failure_type: None,
         }

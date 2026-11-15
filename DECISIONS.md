@@ -178,6 +178,12 @@ whose report could not be delivered must never look like a pass, and not
 the tests' own verdict, because the reader can leave before there is one.
 Any Unix tool under `set -o pipefail` fails the same pipeline (141).
 
+That contract is tested against the binary, which needs a panic to test it
+with. The test used the one input known to cause one, a `time` no duration
+can hold; that input no longer panics (#249), and none is known that does.
+So a debug build panics when `SOOTH_TEST_PANIC` is set. It is compiled out
+of a release build: the binary a user runs has no such switch.
+
 ## `quick-xml` (event-based, not `serde`) for the JUnit parser
 
 There is no real JUnit-XML standard (see above): the union schema `sooth`
@@ -1667,3 +1673,37 @@ whether a missing report is fatal (the run loop) or a skipped pass
 
 `runner.rs` keeps its narrow job — spawn once, measure — and this module
 sits one step above it: a run that reports.
+
+## The history carries durations
+
+Before v0.4 one thing had to be decided, because it shapes the file every
+user accumulates: is the slow-test pass a report on one run, or a reading of
+the history (#249)? Bram chose the history.
+
+A list of the slowest tests of this run is a commodity — PHP has
+`ergebnis/phpunit-slow-test-detector` for it, and sooth has printed one
+since v0.1. What sooth adds everywhere else is evidence over time, and the
+same is true here: "slower since `<commit>`" is the timing twin of "failing
+since `<commit>`", and "slow in ci, fast locally" the twin of "every failure
+in ci". Both need a before, so the before has to be recorded, starting now.
+
+The format, and why:
+
+- **`"ms"`, whole milliseconds.** Finer than any slowness worth a line in a
+  report, an integer the existing hand-rolled parser already reads, and
+  short: a line grows by about 3%, measured on a Laravel suite.
+- **In front of `"id"`.** The parser takes the first occurrence of a key,
+  and the id is the one value that can contain anything — including text
+  that looks like a key. Every other key is written before it.
+- **Absent when unknown, zero when measured as zero.** A report without a
+  `time` attribute did not measure; pytest's `0.000` and jest-junit's `0`
+  did, and rounded. Those are different facts, so `TestCase::duration` is an
+  `Option` and the history omits the key for the first and writes `"ms":0`
+  for the second. A baseline of "under a millisecond" is exactly what makes
+  "now 1.8 s" a finding.
+- **Old lines are observations without a duration**, like lines from before
+  environments and invocations were recorded. No migration.
+
+Nothing reads the durations yet, on purpose: the pass that does is v0.4's,
+and it gets to be designed against real, accumulated data instead of
+against a format invented the same week.

@@ -154,7 +154,7 @@ impl JunitSummary {
         }
 
         let mut by_duration: Vec<&junit::TestCase> = report.test_cases.iter().collect();
-        by_duration.sort_by_key(|case| std::cmp::Reverse(case.duration));
+        by_duration.sort_by_key(|case| std::cmp::Reverse(case.duration.unwrap_or_default()));
 
         Self {
             total: report.test_cases.len(),
@@ -165,7 +165,7 @@ impl JunitSummary {
             slowest: by_duration
                 .into_iter()
                 .take(slowest)
-                .map(|case| (case.qualified_name(), case.duration))
+                .map(|case| (case.qualified_name(), case.duration.unwrap_or_default()))
                 .collect(),
         }
     }
@@ -1210,7 +1210,7 @@ mod tests {
         TestCase {
             name: name.to_owned(),
             classname: None,
-            duration: Duration::from_secs_f64(duration_seconds),
+            duration: Some(Duration::from_secs_f64(duration_seconds)),
             status,
             failure_type: None,
         }

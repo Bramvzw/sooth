@@ -7,8 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- The history records how long each test took: every observation in
+  `.sooth/history.jsonl` carries `"ms"`, the test's duration in whole
+  milliseconds, when the report has one. Nothing reads it yet — it is what
+  the slow-test pass of v0.4 needs to say "slower since `<commit>`". Lines
+  written by earlier versions stay valid; a line grows by about 3%.
+
 ### Fixed
 
+- A report with a `time` no duration can hold (`time="1e30"`) no longer
+  crashes sooth with an internal error: the test reads as not timed.
 - A run that dies on a closed pipe (`sooth run … | head -1`) no longer
   leaves its temp report directory behind. The directory is now removed on
   every way out of a run, a panic included.

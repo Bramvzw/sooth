@@ -354,6 +354,7 @@ mod tests {
             dirty,
             environment: None,
             invocation: None,
+            duration_ms: None,
             at_epoch_secs: 0,
         }
     }

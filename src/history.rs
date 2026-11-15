@@ -54,7 +54,18 @@ pub struct Observation {
     /// invocation as one piece of evidence (see `DECISIONS.md`). `None` for
     /// lines written before sooth recorded it; each such line stands alone.
     pub invocation: Option<String>,
+    /// How long the test took in this run, in whole milliseconds — what a
+    /// slow-test pass needs to say "slower since". `None` when the report
+    /// carried no duration for it (and for every line written before sooth
+    /// recorded this); `Some(0)` is a test the runner timed at under one.
+    pub duration_ms: Option<u64>,
     pub at_epoch_secs: u64,
+}
+
+/// A duration as the history stores it: whole milliseconds, which is finer
+/// than any slowness worth reporting and keeps the line short.
+pub fn whole_millis(duration: &std::time::Duration) -> u64 {
+    u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
 }
 
 /// The invocation id of this `sooth run`: unique per process and second.
@@ -456,8 +467,13 @@ fn to_line(observation: &Observation) -> String {
         .invocation
         .as_deref()
         .map_or_else(|| "null".to_owned(), |r| format!("\"{}\"", json::escape(r)));
+    // Left out when unknown, so a report without durations costs nothing;
+    // and in front of `id`, the one value that can hold any text.
+    let duration = observation
+        .duration_ms
+        .map_or_else(String::new, |millis| format!(r#""ms":{millis},"#));
     format!(
-        r#"{{"at":{},"commit":{commit},"dirty":{dirty},"env":{environment},"run":{invocation},"status":"{}","id":"{}"}}"#,
+        r#"{{"at":{},"commit":{commit},"dirty":{dirty},"env":{environment},"run":{invocation},{duration}"status":"{}","id":"{}"}}"#,
         observation.at_epoch_secs,
         status_str(observation.status),
         json::escape(&observation.id)
@@ -581,6 +597,8 @@ fn parse_line(line: &str) -> Option<Observation> {
     let environment = extract_string_or_null(line, "env").flatten();
     // Absent for the same reason: older lines each stand alone.
     let invocation = extract_string_or_null(line, "run").flatten();
+    // Absent when the report had no duration, or the line predates them.
+    let duration_ms = extract_u64(line, "ms");
     Some(Observation {
         id,
         status,
@@ -588,6 +606,7 @@ fn parse_line(line: &str) -> Option<Observation> {
         dirty,
         environment,
         invocation,
+        duration_ms,
         at_epoch_secs,
     })
 }
@@ -686,8 +705,72 @@ mod tests {
             dirty: Some(false),
             environment: Some("local".to_owned()),
             invocation: Some("run-1700000000-1".to_owned()),
+            duration_ms: None,
             at_epoch_secs: 1_700_000_000,
         }
+    }
+
+    #[test]
+    fn a_duration_rides_in_front_of_the_id_and_is_left_out_when_unknown() {
+        let path = temp_path("durations");
+        let timed = |id: &str, millis: Option<u64>| Observation {
+            duration_ms: millis,
+            ..observation(id, TestStatus::Passed)
+        };
+        // An id that looks like the key must not be read as one.
+        let tricky = r#"c::it logs {"ms":999}"#;
+        super::append(
+            &path,
+            &[
+                timed("c::slow", Some(1840)),
+                timed("c::fast", Some(0)),
+                timed(tricky, None),
+            ],
+        )
+        .expect("append");
+
+        let text = std::fs::read_to_string(&path).unwrap();
+        let lines: Vec<&str> = text.lines().collect();
+        assert!(
+            lines[0].contains(r#""ms":1840,"status":"passed","id":"c::slow""#),
+            "{}",
+            lines[0]
+        );
+        assert!(
+            lines[1].contains(r#""ms":0,"#),
+            "a measured zero is written: {}",
+            lines[1]
+        );
+        assert!(
+            !lines[2].contains(r#""ms":"#),
+            "an unknown one is not: {}",
+            lines[2]
+        );
+
+        let loaded = load(&path);
+        assert_eq!(loaded.skipped_lines, 0);
+        let read: Vec<(String, Option<u64>)> = loaded
+            .observations
+            .into_iter()
+            .map(|observation| (observation.id, observation.duration_ms))
+            .collect();
+        assert_eq!(
+            read,
+            [
+                ("c::slow".to_owned(), Some(1840)),
+                ("c::fast".to_owned(), Some(0)),
+                (tricky.to_owned(), None),
+            ]
+        );
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn a_line_from_before_durations_is_an_observation_without_one() {
+        let line = r#"{"at":1700000000,"commit":"aaa","dirty":false,"env":"local","run":"run-1-1","status":"failed","id":"c::t"}"#;
+        let observation = super::parse_line(line).expect("an old line still parses");
+        assert_eq!(observation.duration_ms, None);
+        assert_eq!(observation.id, "c::t");
     }
 
     #[test]
