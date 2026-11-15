@@ -211,7 +211,7 @@ fn classify(id: &str, signal: &[&Observation], analysis: &mut Analysis) {
     // outcomes inside one invocation are the active pass's to judge.
     let mut per_clean_commit: BTreeMap<&str, Outcomes> = BTreeMap::new();
     for (line, observation) in signal.iter().enumerate() {
-        if observation.dirty != Some(false) {
+        if !is_evidence(observation) {
             continue;
         }
         if let Some(commit) = &observation.commit {
@@ -303,10 +303,41 @@ fn classify(id: &str, signal: &[&Observation], analysis: &mut Analysis) {
 
 /// The commit an observation can testify about: known, and clean.
 fn clean_commit(observation: &Observation) -> Option<&str> {
-    if observation.dirty != Some(false) {
+    if !is_evidence(observation) {
         return None;
     }
     observation.commit.as_deref()
+}
+
+/// Whether an observation can ever be evidence: it was made on a tree known
+/// to be clean. A dirty tree, or one whose state is unknown (no git, a HEAD
+/// that moved during the run, an import without `--commit`), is code sooth
+/// cannot name — such an observation counts in the totals and proves
+/// nothing. The one definition: the analysis and the "all N earlier
+/// observations were made on a dirty tree" note must mean the same thing.
+pub fn is_evidence(observation: &Observation) -> bool {
+    observation.dirty == Some(false)
+}
+
+/// What earlier runs left behind: how many observations, and how many of
+/// them can never be evidence.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PriorEvidence {
+    pub observations: usize,
+    pub unusable: usize,
+}
+
+impl PriorEvidence {
+    /// Count `observations` and the ones among them that prove nothing.
+    pub fn of(observations: &[Observation]) -> Self {
+        Self {
+            observations: observations.len(),
+            unusable: observations
+                .iter()
+                .filter(|observation| !is_evidence(observation))
+                .count(),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -576,6 +607,50 @@ mod tests {
         assert_eq!(analysis.failing_since[0].commit, "bbb");
         // Dirty reds count in the streak; they only cannot carry the address.
         assert_eq!(analysis.failing_since[0].failed_runs, 3);
+    }
+
+    #[test]
+    fn only_a_tree_known_to_be_clean_is_evidence() {
+        use super::{is_evidence, PriorEvidence};
+        let clean_one = obs("c::t", TestStatus::Passed, Some("aaa"), Some(false));
+        let dirty = obs("c::t", TestStatus::Passed, Some("aaa"), Some(true));
+        let unknown = obs("c::t", TestStatus::Passed, None, None);
+        assert!(is_evidence(&clean_one));
+        assert!(!is_evidence(&dirty));
+        assert!(!is_evidence(&unknown), "unknowable is not clean");
+        assert_eq!(
+            PriorEvidence::of(&[clean_one, dirty, unknown]),
+            PriorEvidence {
+                observations: 3,
+                unusable: 2
+            }
+        );
+    }
+
+    #[test]
+    fn a_red_on_a_dirty_tree_cannot_carry_the_streaks_address() {
+        // The streak starts with a failure on uncommitted work on top of
+        // `ccc`. That run counts — it failed — but `ccc` is not where the
+        // code that failed lives, so the address is the first clean red.
+        let history = [
+            clean("c::t", TestStatus::Passed, "aaa"),
+            obs("c::t", TestStatus::Failed, Some("ccc"), Some(true)),
+            clean("c::t", TestStatus::Failed, "ddd"),
+            clean("c::t", TestStatus::Failed, "ddd"),
+        ];
+        let analysis = analyze(&history);
+        assert_eq!(analysis.failing_since.len(), 1, "got: {analysis:?}");
+        assert_eq!(analysis.failing_since[0].commit, "ddd");
+        assert_eq!(analysis.failing_since[0].failed_runs, 3);
+
+        // A streak with no clean red at all has no address, so no claim.
+        let history = [
+            clean("c::t", TestStatus::Passed, "aaa"),
+            obs("c::t", TestStatus::Failed, Some("ccc"), Some(true)),
+            obs("c::t", TestStatus::Failed, Some("ccc"), None),
+        ];
+        let analysis = analyze(&history);
+        assert!(analysis.failing_since.is_empty(), "got: {analysis:?}");
     }
 
     #[test]

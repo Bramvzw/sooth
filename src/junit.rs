@@ -435,6 +435,21 @@ mod tests {
     }
 
     #[test]
+    fn a_self_closing_root_is_a_report_with_no_tests() {
+        // What a runner writes when its selection matched nothing.
+        for xml in [
+            "<testsuite/>",
+            "<testsuites/>",
+            r#"<testsuite name="none" tests="0"/>"#,
+        ] {
+            let report = parse_str(xml).unwrap_or_else(|err| panic!("{xml}: {err}"));
+            assert!(report.test_cases.is_empty(), "{xml}");
+        }
+        // A self-closing element of another name is not a report.
+        assert!(parse_str("<html/>").is_err());
+    }
+
+    #[test]
     fn an_empty_classname_is_no_classname() {
         // jest-junit writes `classname=""` for a test outside any `describe`.
         let report =
