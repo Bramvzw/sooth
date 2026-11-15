@@ -126,6 +126,12 @@ variable is set, `local` otherwise.
 Look at the evidence any time with `sooth history` — the same analysis every
 run ends with, without running or recording anything.
 
+The history only grows: a 5,000-test suite adds about a megabyte per run.
+Every analysis looks at each test's last 50 invocations in which it ran, so
+what is older is dead weight. `sooth history --prune` rewrites the file down
+to that window — a 270 MB history of that suite comes back as 54 MB in four
+seconds, and says the same things.
+
 ## Bring your CI evidence home
 
 The failure that hurts most passes locally and fails on release. CI does not

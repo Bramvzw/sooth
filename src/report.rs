@@ -769,10 +769,47 @@ pub fn print_history_size(observations: usize, truncated: bool) {
     if truncated {
         println!(
             "history: the newest {observations} were read; the file holds more than sooth \
-             loads at once, so older ones are out of reach"
+             loads at once, so older ones are out of reach — `sooth history --prune` \
+             drops what no analysis reads"
         );
     } else {
         println!("history now holds {observations}");
+    }
+}
+
+/// What `sooth history --prune` did, in one line.
+pub fn print_pruned(pruned: crate::history::Pruned) {
+    if pruned.removed == 0 {
+        println!(
+            "pruned: nothing to remove — the history holds nothing older than each test's \
+             last {} invocations",
+            crate::history::WINDOW_PER_TEST
+        );
+        return;
+    }
+    println!(
+        "pruned: removed {} older than each test's last {} invocations, kept {} ({} → {})",
+        count(pruned.removed, "observation"),
+        crate::history::WINDOW_PER_TEST,
+        pruned.kept,
+        human_bytes(pruned.bytes_before),
+        human_bytes(pruned.bytes_after)
+    );
+}
+
+/// A file size for a sentence: `812 B`, `34.2 kB`, `1.3 GB`.
+fn human_bytes(bytes: u64) -> String {
+    const UNITS: [&str; 4] = ["B", "kB", "MB", "GB"];
+    let mut unit = 0;
+    let mut tenths = bytes.saturating_mul(10);
+    while tenths >= 10_000 && unit + 1 < UNITS.len() {
+        tenths /= 1000;
+        unit += 1;
+    }
+    if unit == 0 {
+        format!("{bytes} B")
+    } else {
+        format!("{}.{} {}", tenths / 10, tenths % 10, UNITS[unit])
     }
 }
 
@@ -1608,6 +1645,18 @@ mod tests {
             .is_some_and(|note| note.starts_with("no observations from earlier runs")));
         assert!(super::history_gap_note(None)
             .is_some_and(|note| note.starts_with("the run history was not consulted")));
+    }
+
+    #[test]
+    fn a_file_size_reads_in_the_unit_that_fits() {
+        use super::human_bytes;
+        assert_eq!(human_bytes(812), "812 B");
+        assert_eq!(human_bytes(999), "999 B");
+        assert_eq!(human_bytes(1_000), "1.0 kB");
+        assert_eq!(human_bytes(34_250), "34.2 kB");
+        assert_eq!(human_bytes(67_100_000), "67.1 MB");
+        assert_eq!(human_bytes(13_000_000_000), "13.0 GB");
+        assert_eq!(human_bytes(5_000_000_000_000), "5000.0 GB");
     }
 
     #[test]

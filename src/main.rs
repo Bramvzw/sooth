@@ -96,7 +96,7 @@ fn dispatch() -> ExitCode {
         }
         Command::Explain(args) => explain(&args),
         Command::Import(args) => import(&args),
-        Command::History(args) => Ok(history_command(&args)),
+        Command::History(args) => history_command(&args),
     };
     outcome.unwrap_or_else(|error| {
         for line in &error.lines {
@@ -1218,12 +1218,21 @@ fn record_ledger(ledger_path: &std::path::Path, incoming: &[Incoming]) {
 /// `sooth history` looks at the evidence without adding to it: nothing runs,
 /// so the observer principle leaves nothing to record.
 #[expect(clippy::print_stdout)]
-fn history_command(args: &cli::HistoryArgs) -> ExitCode {
+fn history_command(args: &cli::HistoryArgs) -> Outcome {
     let style = report::Style::resolved(args.color);
-    let loaded = load_history(std::path::Path::new(history::HISTORY_PATH));
+    let path = std::path::Path::new(history::HISTORY_PATH);
+    if args.prune {
+        let pruned = history::prune(path)
+            .map_err(|err| SoothError::new(format!("could not prune {}: {err}", path.display())))?;
+        // No file: the empty-history line below says all there is to say.
+        if let Some(pruned) = pruned {
+            report::print_pruned(pruned);
+        }
+    }
+    let loaded = load_history(path);
     if loaded.observations.is_empty() {
         println!("the history is empty — every `sooth run` and `sooth import` adds to it");
-        return ExitCode::SUCCESS;
+        return Ok(ExitCode::SUCCESS);
     }
     let analysis = analyzers::history::analyze(&loaded.observations);
     if analysis.is_empty() {
@@ -1241,7 +1250,7 @@ fn history_command(args: &cli::HistoryArgs) -> ExitCode {
         style,
     );
     report::print_history_size(loaded.observations.len(), loaded.truncated);
-    ExitCode::SUCCESS
+    Ok(ExitCode::SUCCESS)
 }
 
 /// Seconds since the epoch for a file timestamp; `None` before 1970.

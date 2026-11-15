@@ -1336,6 +1336,87 @@ fn interrupted_before_any_run_finished_there_is_nothing_to_report() {
 }
 
 #[test]
+fn pruning_the_history_changes_its_size_and_not_what_it_says() {
+    let Some(dir) = scratch_repo("history-prune") else {
+        return;
+    };
+    // `c::wob`: 120 invocations on one clean commit, failing every third —
+    // a proven flake. `c::ok`: green in the same runs. `c::once`: a flake
+    // proven in the first ten, and skipped ever since.
+    let lines: String = (1..=120)
+        .flat_map(|at| {
+            let wob = if at % 3 == 0 { "failed" } else { "passed" };
+            let once = match at {
+                11.. => "skipped",
+                _ if at % 2 == 0 => "passed",
+                _ => "failed",
+            };
+            [("c::wob", wob), ("c::ok", "passed"), ("c::once", once)].map(|(id, status)| {
+                format!(
+                    r#"{{"at":{at},"commit":"aaa","dirty":false,"env":"local","run":"run-{at}-1","status":"{status}","id":"{id}"}}"#
+                ) + "\n"
+            })
+        })
+        .collect();
+    std::fs::create_dir_all(dir.join(".sooth")).expect("mkdir");
+    std::fs::write(dir.join(".sooth/history.jsonl"), &lines).expect("write history");
+    let history = |extra: &[&str]| {
+        let output = Command::new(env!("CARGO_BIN_EXE_sooth"))
+            .current_dir(&dir)
+            .args(["history", "--color", "never"])
+            .args(extra)
+            .output()
+            .expect("sooth should run");
+        assert_eq!(output.status.code(), Some(0));
+        String::from_utf8(output.stdout).expect("stdout should be UTF-8")
+    };
+    // The analysis, without the line that states the size.
+    let findings = |stdout: &str| -> Vec<String> {
+        stdout
+            .lines()
+            .filter(|line| !line.starts_with("history now holds") && !line.starts_with("pruned:"))
+            .map(str::to_owned)
+            .collect()
+    };
+
+    let before = history(&[]);
+    assert!(
+        before.contains("c::wob") && before.contains("c::once"),
+        "both flakes are found: {before:?}"
+    );
+    assert!(
+        before.contains("history now holds 360 observations"),
+        "got: {before:?}"
+    );
+
+    // Each test keeps its last 50 invocations; `c::once` also the ten that
+    // said something, which the skips after them do not push out.
+    let pruned = history(&["--prune"]);
+    assert!(
+        pruned.contains(
+            "pruned: removed 200 observations older than each test's last 50 invocations, kept 160"
+        ),
+        "got: {pruned:?}"
+    );
+    assert!(
+        pruned.contains("history now holds 160 observations"),
+        "got: {pruned:?}"
+    );
+    assert_eq!(
+        findings(&pruned),
+        findings(&before),
+        "pruning changed a finding"
+    );
+
+    let again = history(&["--prune"]);
+    assert!(
+        again.contains("pruned: nothing to remove"),
+        "got: {again:?}"
+    );
+    assert_eq!(findings(&again), findings(&before));
+}
+
+#[test]
 fn json_to_a_file_keeps_the_human_report_on_stdout() {
     let (cwd, mut command) = sooth_in("json-file");
     let (report, write_report) = fresh_report(&cwd);
