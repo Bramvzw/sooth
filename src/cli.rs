@@ -29,6 +29,63 @@ pub enum Command {
     /// Classify the accumulated run history and print it. Runs no tests,
     /// records nothing.
     History(HistoryArgs),
+
+    /// Run the suite in its own order and in a shuffled one, and report the
+    /// tests whose result depends on the order.
+    Order(OrderArgs),
+}
+
+/// Arguments for `sooth order`.
+#[derive(Debug, Args)]
+pub struct OrderArgs {
+    /// Replay the shuffled order of an earlier pass.
+    ///
+    /// Every pass prints the seed of its shuffle. The same seed gives the
+    /// same order again, so a finding can be looked at twice. Left out, a
+    /// new seed is picked.
+    #[arg(long, value_name = "N", value_parser = clap::value_parser!(u32).range(1..=2_147_483_647))]
+    pub seed: Option<u32>,
+
+    /// Preset for a known runner.
+    ///
+    /// The order pass asks the runner itself for a shuffled order, so it
+    /// needs one sooth knows how to ask: phpunit (also Pest, `php artisan
+    /// test` and Composer scripts) or jest. Left out, the preset is read
+    /// from a command that names its runner.
+    #[arg(long, value_enum)]
+    pub preset: Option<Preset>,
+
+    /// Emit JSON: bare as the last stdout line, or `--json=PATH` to a file.
+    ///
+    /// Bare `--json` prints the document as sooth's only stdout line;
+    /// `--json=PATH` writes it to a file and keeps the human report on
+    /// stdout (note the `=`).
+    #[expect(
+        clippy::option_option,
+        reason = "Option<Option<_>> is clap's flag-with-optional-value shape, as on `run`."
+    )]
+    #[arg(long, value_name = "PATH", num_args = 0..=1, require_equals = true)]
+    pub json: Option<Option<PathBuf>>,
+
+    /// Do not record the run in the suite's own order, and do not read the
+    /// history.
+    ///
+    /// That run is an ordinary run and is recorded like one; the shuffled
+    /// runs never are. The history is also what tells a known flake from a
+    /// test that depends on the order.
+    #[arg(long)]
+    pub no_history: bool,
+
+    /// Color the report.
+    ///
+    /// `auto` respects `NO_COLOR` and whether stdout is a terminal.
+    #[arg(long, value_enum, default_value = "auto")]
+    pub color: ColorChoice,
+
+    /// The test command to run, given after `--` (e.g. `sooth order -- php
+    /// artisan test`).
+    #[arg(last = true, required = true, num_args = 1..)]
+    pub command: Vec<String>,
 }
 
 /// Arguments for `sooth import`.
@@ -260,12 +317,14 @@ pub fn with_tip(mut error: clap::Error, argv: &[String]) -> clap::Error {
 }
 
 /// The tip for the argument clap did not expect, if it is one of the two
-/// slips [`with_tip`] names. Only `sooth run` takes a command or these
-/// flags, an unknown `--flag` is neither slip, and the word may stand in
-/// more than one place on the line (`--junit pytest pytest`): every place
-/// is tried, and a corrected command is offered only if it parses.
+/// slips [`with_tip`] names. Only `sooth run` and `sooth order` take a
+/// command or these flags, an unknown `--flag` is neither slip, and the
+/// word may stand in more than one place on the line (`--junit pytest
+/// pytest`): every place is tried, and a corrected command is offered only
+/// if it parses.
 fn tip_for(argv: &[String], unexpected: &str) -> Option<String> {
-    if argv.get(1).map(String::as_str) != Some("run") || unexpected.starts_with('-') {
+    let takes_a_command = matches!(argv.get(1).map(String::as_str), Some("run" | "order"));
+    if !takes_a_command || unexpected.starts_with('-') {
         return None;
     }
     let places: Vec<usize> = (2..argv.len())

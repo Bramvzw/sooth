@@ -269,6 +269,56 @@ go preset yet.
 sooth run --verify --preset phpunit -- vendor/bin/phpunit
 ```
 
+## Does the order matter?
+
+A test that passes only because another one ran before it is a failure
+waiting for the day the order changes: a new test file, `--parallel`, a
+colleague who runs it alone. `sooth order` finds those tests before that day:
+
+```bash
+sooth order -- php artisan test
+```
+
+```
+your order: runner exit=0 (12.31s)
+shuffled, seed 48213: runner exit=1 (12.90s)
+shuffled again, seed 48213: runner exit=1 (12.74s)
+your order again: runner exit=0 (12.28s)
+tests: 412 tests compared in both orders
+2 tests depend on the order
+  ✗ Tests.Unit.PartnerTest::sends a message — passed in your order, failed shuffled, twice each
+  ✗ Tests.Unit.CartTest::totals add up — passed in your order, failed shuffled, twice each
+replay this order: sooth order --seed 48213 -- php artisan test
+result: ✗ ORDER-DEPENDENT — 2 of 412 tests (50.23s total)
+```
+
+The suite runs once the way it always runs and once in an order the runner
+shuffles under a seed. Two runs that differ are also what a flaky test
+produces, so when a result differs, both orders run a second time. A test is
+called order-dependent when it did one thing twice in your order and the
+other thing twice in the shuffled one. A difference that does not hold is
+listed as exactly that, and a test the history already proved flaky is never
+called order-dependent.
+
+- **The seed is the finding.** Every pass prints it, and `--seed N` runs that
+  order again: on your machine, a colleague's, or in CI.
+- **It is a sample, not a proof.** Two orders that agree say nothing about a
+  third; another seed is another sample. And four runs cannot tell a test
+  that fails half the time from one that depends on the order, which is
+  what replaying the seed is for.
+- **Exit codes as everywhere.** A test that fails in another order fails a
+  run, so the pass exits 1; 0 when both orders are green; 2 when the pass
+  could not be made.
+- **Its own command, on purpose.** `run --runs N` repeats one order to find
+  flakes. Shuffling inside it would make every order-dependent test look
+  flaky (see `DECISIONS.md`).
+- **Where it works.** PHPUnit, Pest, `php artisan test`, Composer scripts
+  and Jest, which shuffles the tests inside each file. Not with
+  `--parallel`: an order is what one process runs. Not yet for pytest and Go.
+- The run in your own order is recorded in the history like any run. The
+  shuffled runs are not: a test that fails only when shuffled would read as
+  a flake there.
+
 ## How many runs do I need?
 
 `--runs N` is a binomial experiment: a flake that fails a fraction *p* of

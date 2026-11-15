@@ -12,15 +12,16 @@ mod json;
 pub use human::{
     print_empty_gate, print_empty_history, print_explanation, print_gate, print_history,
     print_history_beyond_one_load, print_history_gap, print_history_size, print_imported,
-    print_nothing_stands_out, print_nothing_to_explain, print_pardon_gap, print_pruned,
-    print_replay, print_run, print_runs, print_summary, print_verdict,
+    print_nothing_stands_out, print_nothing_to_explain, print_order, print_order_run,
+    print_pardon_gap, print_pruned, print_replay, print_run, print_runs, print_summary,
+    print_verdict,
 };
-pub use json::{explanation_json, to_json};
+pub use json::{explanation_json, order_json, to_json};
 
 use std::time::Duration;
 
 use crate::analyzers::history::PriorEvidence;
-use crate::analyzers::{explain, flaky, history};
+use crate::analyzers::{explain, flaky, history, order};
 use crate::cli::ColorChoice;
 use crate::gate;
 use crate::junit;
@@ -201,8 +202,8 @@ impl JunitSummary {
 /// One quiet run's output, to be shown after all: which run, why this one,
 /// and what it wrote.
 pub struct Replay<'a> {
-    pub number: usize,
-    pub total: usize,
+    /// The run by the name its own line gave it: `run 2/20`.
+    pub run: &'a str,
     /// Why this run's output is shown, as it reads after "output of run
     /// 2/20, ".
     pub why: &'a str,
@@ -223,6 +224,29 @@ pub struct RunReport<'a> {
     pub failed_runs: usize,
     /// Whether the suite failed, a pardon taken into account.
     pub failed: bool,
+}
+
+/// Everything one `sooth order` ends with.
+pub struct OrderReport<'a> {
+    pub analysis: &'a order::Analysis,
+    /// The seed of the shuffled order.
+    pub seed: u32,
+    /// The pass's runs in the order they were made: the suite's own order
+    /// and the shuffled one, and both again when a test differed.
+    pub runs: &'a [OrderRun],
+    /// Whether any of those runs failed, by its exit or by its report.
+    pub failed: bool,
+    /// The command line that makes this pass again under the same seed.
+    pub replay: &'a str,
+    /// What the runner's shuffle does not reach, when that is worth a line.
+    pub scope: Option<&'a str>,
+}
+
+/// One run of an order pass.
+pub struct OrderRun {
+    /// The seed it was shuffled under; `None` for the suite's own order.
+    pub seed: Option<u32>,
+    pub outcome: RunOutcome,
 }
 
 /// One file handed to `sooth import`, and what became of it.

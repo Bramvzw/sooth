@@ -1954,3 +1954,67 @@ The JSON stays hand-rolled and its bytes are unchanged; the tests that pin
 them moved with the functions they test. Checked the same way as the
 commands' move: the binary from before both refactors and the one after,
 through the same 45 steps, with equal output.
+
+## The order pass: its own command, a seed that is said, and what it takes to be called order-dependent
+
+v0.4's order-dependence detection is `sooth order -- <command>` (#36, #13).
+
+**Its own command.** Bram's decision on 2026-11-15, against a `--shuffle`
+flag on `run`. The passes are separate by doctrine (see "Flaky and
+order-dependence are strictly separated"), and a command makes that visible
+where a flag would have had to be refused next to `--runs`, `--verify`,
+`--changed` and `--fail-on-flaky`, one by one.
+
+**The runner shuffles, sooth asks.** Sooth does not order tests; a preset
+knows how its runner is asked for a random order under a seed
+(`--order-by=random --random-order-seed=N` for PHPUnit, which Pest and
+`artisan test` hand through; `--randomize --seed=N` for Jest). Checked on
+real runners before building: the same seed gives the same order again.
+That reproducibility is the feature — "it failed under an order you can
+never get back" is half an answer — so the seed is always printed, and
+`--seed N` replays it. A fresh seed has at most six digits, because it is
+typed back.
+
+**What is refused.** A runner sooth cannot ask (pytest has no random order
+without a plugin; `go test -shuffle` sits behind gotestsum's `--`).
+`--parallel`: an order is what one process runs. A command that already sets
+an order. Only the command line is seen, so after the fact the pass checks
+whether its shuffle changed the order at all — an order set in
+`phpunit.xml` outranks the flag — and when it did not, that is exit 2 and
+not a green pass that compared an order with itself. A suite of three tests
+keeps its order under one seed in six, so a seed nobody asked for is
+followed by up to four more before giving up.
+
+**What it takes to be called order-dependent.** Two runs that differ are
+what a flaky test produces too. The first design ran the shuffled order a
+second time. Tried on the Laravel sandbox, which has a test that fails half
+the time, it called that test order-dependent at once: it had failed in the
+first run and passed twice shuffled. Replaying only the shuffled order makes
+every flake that happens to fail in run one a "test that fails in your
+order". So both orders run again, and a test is order-dependent only when
+it did one thing twice in the given order and the other thing twice in the
+shuffled one. Anything else that differed is listed as a difference that
+did not hold.
+
+That is still four observations. A test that fails with probability p
+produces the pattern by chance with probability 2p²(1−p)²: 12.5% for a coin
+flip, 1.6% at 10%, 0.02% at 1%. So the report says what was seen — "twice
+each" — the README says it is a sample, and three things stand between a
+flake and the label: the second runs, the history (a test it already proved
+flaky is never called order-dependent, however its runs went), and the
+seed, which lets anyone run the order a third time. The isolation check
+(#111) is the next one.
+
+**Two runs when the orders agree, four when they do not.** The second runs
+are made only when a test differed, so a suite without order-dependence
+pays for two runs.
+
+**The history gets the first run and no other.** The run in the suite's
+own order is an ordinary run and is recorded as one. A shuffled run is not:
+a test that fails only in another order would be a pass and a failure on
+one commit there, which is the history's definition of a flake.
+
+**No new exit code.** A test that fails in another order fails a run, and
+"at least one run failed" is exit 1 already. 0 when both orders are green.
+2 when the pass could not be made, an interruption included: it compares
+whole runs, and half a run compares to nothing.

@@ -11,14 +11,14 @@ per version, and `DECISIONS.md` for the reasoning behind non-obvious choices.
 
 ## `src/` module structure
 
-Everything below exists except `analyzers/slow.rs` and `analyzers/order.rs`; one module per concern:
+Everything below exists except `analyzers/slow.rs`; one module per concern:
 
 ```
 src/
 ├── main.rs        # EXISTS — parse the command line, dispatch to a command, turn its outcome into the exit code
 ├── commands.rs    # EXISTS — what the commands share: how one fails (`SoothError`), reading and extending sooth's local files
-├── commands/      # EXISTS — run.rs, explain.rs, import.rs, history.rs: one command each, wiring modules together and handing what it found to report.rs
-├── cli.rs        # EXISTS — clap definitions: `run`, `explain`, `import`, `history` and their flags
+├── commands/      # EXISTS — run.rs, explain.rs, import.rs, history.rs, order.rs: one command each, wiring modules together and handing what it found to report.rs; capture.rs is the output of quiet runs, shared by run and order
+├── cli.rs        # EXISTS — clap definitions: `run`, `explain`, `import`, `history`, `order` and their flags
 ├── runner.rs      # EXISTS — spawns the test subprocess (with env injection), captures exit status + wall time
 ├── reported.rs    # EXISTS — one run and the report it leaves: the report source (user file or managed temp file), freshness, reading it
 ├── interrupt.rs   # EXISTS — SIGINT/SIGTERM as a request to stop: the flag the runner and the run loop ask (signal-hook)
@@ -32,7 +32,7 @@ src/
 ├── quarantine.rs  # EXISTS — committed .sooth-quarantine list, and the all-or-nothing pardon --fail-on-flaky grants from it
 ├── report.rs      # EXISTS — presentation: what both renderers read (the color style, the view of a run and its passes) and the plain lines on stderr
 ├── report/        # EXISTS — human.rs (the printed report), json.rs (the versioned machine JSON; a document is a `String`, nothing is printed there)
-└── analyzers/     # EXISTS — flaky.rs (mixed outcomes over runs), history.rs (classify the accumulated history), explain.rs (label a red run's failures against that evidence); slow.rs, order.rs to come (strictly separate passes)
+└── analyzers/     # EXISTS — flaky.rs (mixed outcomes over runs), history.rs (classify the accumulated history), explain.rs (label a red run's failures against that evidence), order.rs (what differs between the suite's own order and a shuffled one); slow.rs to come (strictly separate passes)
 ```
 
 Flags sooth cannot honor are rejected loudly, never silently ignored: `--json`/`--slowest`
@@ -40,7 +40,8 @@ require a report source (`--junit` or `--preset`), `--preset` conflicts with `--
 `--verify` needs `--preset` and a single run, and `--fail-on-flaky` requires a report source. Exit
 codes are a contract: `0` every run passed, `1` at least one run failed, `2` sooth itself failed
 (see `DECISIONS.md`). `sooth explain` is diagnosis only: it runs nothing, records nothing, and
-uses just `0` and `2`.
+uses just `0` and `2`. `sooth order` is the order pass, never mixed into `run`: it makes its own
+runs, records only the one in the suite's own order, and refuses a runner it cannot shuffle.
 
 `egress` (network-egress detection) is a later, separate module tied to the spike in
 `DECISIONS.md` — do not start it as part of the core.

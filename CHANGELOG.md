@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`sooth order`: find the tests whose result depends on the order they
+  run in.** `sooth order -- php artisan test` runs the suite once in its
+  own order and once shuffled under a seed, and reports the tests whose
+  outcome differs — after running both orders a second time, because a
+  flaky test differs too. The seed is printed, and `--seed N` replays that
+  order. For PHPUnit, Pest, `php artisan test`, Composer scripts and Jest;
+  `--json` gives the findings as a document. A test that fails in another
+  order fails a run, so the pass exits 1.
+
 ## [0.3.4] - 2026-11-15
 
 ### Added

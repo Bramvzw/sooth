@@ -217,32 +217,40 @@ fn execution_order(report: &JunitReport) -> Vec<String> {
 /// is not mistaken for a reordering; fewer than two shared tests carry no
 /// order signal at all.
 fn reordered_runs(reports: &[JunitReport]) -> Vec<usize> {
-    let Some(first) = reports.first().map(execution_order) else {
+    let Some(first) = reports.first() else {
         return Vec::new();
     };
-    let mut reordered = Vec::new();
-    for (index, report) in reports.iter().enumerate().skip(1) {
-        let other = execution_order(report);
-        let shared: BTreeSet<&String> = first
-            .iter()
-            .collect::<BTreeSet<&String>>()
-            .intersection(&other.iter().collect())
-            .copied()
-            .collect();
-        if shared.len() < 2 {
-            continue;
-        }
-        let keep = |ids: &[String]| -> Vec<String> {
-            ids.iter()
-                .filter(|id| shared.contains(id))
-                .cloned()
-                .collect()
-        };
-        if keep(&first) != keep(&other) {
-            reordered.push(index + 1);
-        }
+    reports
+        .iter()
+        .enumerate()
+        .skip(1)
+        .filter(|(_, report)| reordered(first, report))
+        .map(|(index, _)| index + 1)
+        .collect()
+}
+
+/// Whether the tests two runs share ran in a different relative order in
+/// `other` than in `first`. The order pass asks this of the run it had
+/// shuffled: a shuffle that changed nothing compared an order with itself.
+pub(crate) fn reordered(first: &JunitReport, other: &JunitReport) -> bool {
+    let first = execution_order(first);
+    let other = execution_order(other);
+    let shared: BTreeSet<&String> = first
+        .iter()
+        .collect::<BTreeSet<&String>>()
+        .intersection(&other.iter().collect())
+        .copied()
+        .collect();
+    if shared.len() < 2 {
+        return false;
     }
-    reordered
+    let keep = |ids: &[String]| -> Vec<String> {
+        ids.iter()
+            .filter(|id| shared.contains(id))
+            .cloned()
+            .collect()
+    };
+    keep(&first) != keep(&other)
 }
 
 #[cfg(test)]

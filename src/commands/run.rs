@@ -3,6 +3,7 @@
 
 use std::process::ExitCode;
 
+use super::capture::Capture;
 use super::{append_history, load_history, load_quarantine, Outcome, SoothError};
 use crate::report::{Analyses, JunitSummary};
 use crate::reported::{ReportError, ReportSource};
@@ -22,13 +23,17 @@ fn infer_preset(args: &mut cli::RunArgs) {
     if args.preset.is_some() || args.junit.is_some() {
         return;
     }
-    if let Some((preset, words)) = preset::infer(&args.command) {
-        report::note(&format!(
-            "using `--preset {}`, inferred from `{words}`",
-            preset.name()
-        ));
-        args.preset = Some(preset);
-    }
+    args.preset = inferred_preset(&args.command);
+}
+
+/// The preset `command` names by itself, said out loud when there is one.
+pub(super) fn inferred_preset(command: &[String]) -> Option<cli::Preset> {
+    let (preset, words) = preset::infer(command)?;
+    report::note(&format!(
+        "using `--preset {}`, inferred from `{words}`",
+        preset.name()
+    ));
+    Some(preset)
 }
 
 /// The closing line of a run that had no report to read: what it could not
@@ -196,12 +201,12 @@ fn stopped_short(stop: report::Interrupted, finished_runs: usize) -> SoothError 
 
 /// What every run of one invocation shares: the command as it is spawned,
 /// where its report comes from, and what the gate handed it.
-struct Session<'a> {
-    spawn: &'a preset::Spawn,
-    report_source: Option<&'a ReportSource>,
-    plan: Option<&'a preset::Plan>,
-    gated_files: usize,
-    interrupt: &'a interrupt::Interrupt,
+pub(super) struct Session<'a> {
+    pub spawn: &'a preset::Spawn,
+    pub report_source: Option<&'a ReportSource>,
+    pub plan: Option<&'a preset::Plan>,
+    pub gated_files: usize,
+    pub interrupt: &'a interrupt::Interrupt,
 }
 
 /// What the runs loop came back with: the runs that finished, and whether
@@ -218,114 +223,6 @@ struct Executed {
 /// you had run them yourself.
 fn quiet_repeats(args: &cli::RunArgs) -> bool {
     args.runs > 1 && !args.show_output
-}
-
-/// The output of quiet runs, kept off the screen: every run writes to one
-/// file in a private directory, and the first failing run's is set aside.
-/// Dropping it removes the directory, on every way out of the runs loop.
-struct Capture {
-    dir: std::path::PathBuf,
-    /// The first run that failed, whether or not its output could be kept.
-    first_failure: Option<usize>,
-    kept: bool,
-}
-
-impl Capture {
-    fn start() -> std::io::Result<Self> {
-        Ok(Self {
-            dir: preset::private_dir()?,
-            first_failure: None,
-            kept: false,
-        })
-    }
-
-    fn current_path(&self) -> std::path::PathBuf {
-        self.dir.join("run.log")
-    }
-
-    fn kept_path(&self) -> std::path::PathBuf {
-        self.dir.join("first-failure.log")
-    }
-
-    /// An empty file for the run about to start.
-    fn open(&self) -> std::io::Result<std::fs::File> {
-        std::fs::File::create(self.current_path())
-    }
-
-    /// What the run that just ended wrote.
-    fn current(&self) -> Vec<u8> {
-        std::fs::read(self.current_path()).unwrap_or_default()
-    }
-
-    /// Run `number` failed: set its output aside if it is the first.
-    fn note_failure(&mut self, number: usize) {
-        if self.first_failure.is_none() {
-            self.first_failure = Some(number);
-            self.kept = std::fs::rename(self.current_path(), self.kept_path()).is_ok();
-        }
-    }
-
-    /// Show the first failing run's output, if one failed and it was kept.
-    fn replay_first_failure(&self, total: usize, to_stderr: bool, style: report::Style) {
-        let Some(number) = self.first_failure.filter(|_| self.kept) else {
-            return;
-        };
-        let replay = report::Replay {
-            number,
-            total,
-            why: "the first that failed",
-            output: &std::fs::read(self.kept_path()).unwrap_or_default(),
-        };
-        report::print_replay(&replay, to_stderr, style);
-    }
-
-    /// Show the output of run `number`, the one sooth stops at: it is what
-    /// the error that follows points to. An earlier failure goes first.
-    fn replay_before_stopping(
-        &self,
-        (number, total): (usize, usize),
-        to_stderr: bool,
-        style: report::Style,
-    ) {
-        self.replay_first_failure(total, to_stderr, style);
-        let replay = report::Replay {
-            number,
-            total,
-            why: "where sooth stopped",
-            output: &self.current(),
-        };
-        report::print_replay(&replay, to_stderr, style);
-    }
-
-    /// Show what run `number` had written when it was cut short. For a run
-    /// that hung, this is the only trace of where: the run itself gets no
-    /// line and no place in the report.
-    fn replay_cut_short(
-        &self,
-        (number, total): (usize, usize),
-        to_stderr: bool,
-        style: report::Style,
-    ) {
-        let output = self.current();
-        if output.is_empty() {
-            return;
-        }
-        let replay = report::Replay {
-            number,
-            total,
-            why: "the one that was cut short",
-            output: &output,
-        };
-        report::print_replay(&replay, to_stderr, style);
-    }
-}
-
-impl Drop for Capture {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_file(self.current_path());
-        let _ = std::fs::remove_file(self.kept_path());
-        let _ = std::fs::remove_dir(&self.dir);
-    }
 }
 
 /// Run the command `--runs` times and load each run's report.
@@ -355,6 +252,8 @@ fn execute_runs(
     let json_owns_stdout = matches!(args.json, Some(None));
     let mut outcomes = Vec::with_capacity(total);
     let mut reports: Vec<junit::JunitReport> = Vec::with_capacity(total);
+    // A run by the name its own line gives it.
+    let named = |number: usize| format!("run {number}/{total}");
     let mut stopped = false;
     let mut cut_short = None;
     for number in 1..=total {
@@ -384,7 +283,7 @@ fn execute_runs(
             Err(message) => {
                 // An earlier run's failure is not lost with this one.
                 if let Some(capture) = &capture {
-                    capture.replay_first_failure(total, json_owns_stdout, style);
+                    capture.replay_first_failure(json_owns_stdout, style);
                 }
                 return Err(SoothError::new(message));
             }
@@ -396,7 +295,7 @@ fn execute_runs(
             Some(Err(error)) => {
                 if let Some(capture) = &capture {
                     report::print_run(number, total, outcome, style);
-                    capture.replay_before_stopping((number, total), json_owns_stdout, style);
+                    capture.replay_before_stopping(&named(number), json_owns_stdout, style);
                 }
                 return Err(SoothError {
                     lines: unusable_report(session, &error, (&outcomes, args.runs)),
@@ -407,7 +306,7 @@ fn execute_runs(
         let failed = run_failed(outcome, reports.get(number - 1));
         if let Some(capture) = capture.as_mut() {
             if failed {
-                capture.note_failure(number);
+                capture.note_failure(&named(number));
             }
             if !json_owns_stdout {
                 report::print_run(number, total, outcome, style);
@@ -415,9 +314,9 @@ fn execute_runs(
         }
     }
     if let Some(capture) = &capture {
-        capture.replay_first_failure(total, json_owns_stdout, style);
+        capture.replay_first_failure(json_owns_stdout, style);
         if let Some(number) = cut_short {
-            capture.replay_cut_short((number, total), json_owns_stdout, style);
+            capture.replay_cut_short(&named(number), json_owns_stdout, style);
         }
     }
     Ok(Executed {
@@ -561,7 +460,7 @@ fn empty_gate(args: &cli::RunArgs, selection: &gate::Selection) -> Result<(), So
 }
 
 /// Write the JSON document to `path`; a failure is sooth's own (exit 2).
-fn write_json_file(path: &std::path::Path, json: String) -> Result<(), SoothError> {
+pub(super) fn write_json_file(path: &std::path::Path, json: String) -> Result<(), SoothError> {
     std::fs::write(path, json + "\n").map_err(|err| {
         SoothError::new(format!(
             "failed to write JSON report `{}`: {err}",
@@ -665,8 +564,8 @@ fn verify_failures(
 /// What the passive layer produced for this run: the classification, plus
 /// what stood behind it — how many observations from *earlier* runs, and how
 /// many of those could never be evidence.
-struct HistoryPass {
-    analysis: analyzers::history::Analysis,
+pub(super) struct HistoryPass {
+    pub analysis: analyzers::history::Analysis,
     /// What the history held before this invocation added to it.
     prior: analyzers::history::PriorEvidence,
 }
@@ -694,7 +593,7 @@ fn identity_before_run(
 /// Record this invocation's runs into the local history and classify the
 /// accumulated observations. Every failure degrades to a stderr warning:
 /// the passive layer must never change the run's outcome.
-fn record_history(
+pub(super) fn record_history(
     identity: Option<history::CodeIdentity>,
     reports: &[junit::JunitReport],
 ) -> Option<HistoryPass> {
@@ -887,7 +786,10 @@ fn suite_failed(outcomes: &[runner::RunOutcome], reports: &[junit::JunitReport])
 
 /// Whether one run failed, by the same two signals as [`suite_failed`]: the
 /// runner's exit, or failures in the report that run left.
-fn run_failed(outcome: &runner::RunOutcome, report: Option<&junit::JunitReport>) -> bool {
+pub(super) fn run_failed(
+    outcome: &runner::RunOutcome,
+    report: Option<&junit::JunitReport>,
+) -> bool {
     !outcome.success || report.is_some_and(junit::JunitReport::has_failures)
 }
 
@@ -904,7 +806,7 @@ fn failed_runs(outcomes: &[runner::RunOutcome], reports: &[junit::JunitReport]) 
 /// The lines that say why a run's report cannot be used, in the command's
 /// own terms: the reason, what a gate of several files should check first,
 /// and how the run itself ended.
-fn unusable_report(
+pub(super) fn unusable_report(
     session: &Session<'_>,
     error: &ReportError,
     (outcomes, requested_runs): (&[runner::RunOutcome], u32),
