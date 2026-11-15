@@ -852,6 +852,18 @@ pub struct Analyses<'a> {
     pub gate: Option<&'a gate::Selection>,
 }
 
+impl<'a> Analyses<'a> {
+    /// The passes a failure is explained from — the same three, handed to
+    /// the explainer under the same names, so a pass is wired once.
+    pub fn passes(&self) -> explain::Passes<'a> {
+        explain::Passes {
+            flaky: self.flaky,
+            verify: self.verify,
+            history: self.history,
+        }
+    }
+}
+
 /// Hand-rolled JSON: the run outcomes plus the junit summary, versioned via
 /// `schema_version`. Revisited when this story landed and deliberately kept
 /// hand-rolled: the shape is still small and fixed, so `serde_json` is still

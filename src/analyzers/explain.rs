@@ -162,7 +162,7 @@ pub fn explain(
 /// The passes whose findings are folded into the per-test lines.
 #[derive(Default, Clone, Copy)]
 pub struct Passes<'a> {
-    pub active: Option<&'a FlakyAnalysis>,
+    pub flaky: Option<&'a FlakyAnalysis>,
     pub verify: Option<&'a verify::Verdict>,
     pub history: Option<&'a HistoryAnalysis>,
 }
@@ -170,7 +170,7 @@ pub struct Passes<'a> {
 /// What this invocation saw about one id. The active pass and verification
 /// cannot both have run, so the first match is the only match.
 fn observed_for(id: &str, passes: &Passes<'_>) -> Option<Observed> {
-    if let Some(active) = passes.active {
+    if let Some(active) = passes.flaky {
         if let Some(test) = active.flaky.iter().find(|test| test.id == id) {
             return Some(Observed::Flaky {
                 failed_runs: test.failed,
@@ -366,7 +366,7 @@ mod tests {
         };
         let history = history();
         let passes = super::Passes {
-            active: Some(&active),
+            flaky: Some(&active),
             history: Some(&history),
             ..super::Passes::default()
         };
