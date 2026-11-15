@@ -174,6 +174,16 @@ pub fn interrupted_line(
 
 /// The closing line of a run.
 pub fn print_verdict(ended: &RunReport<'_>, style: Style) {
+    // The verdict below is the suite's own and may read PASSED under a
+    // pardon; next to an exit of 2 that needs saying where the verdict is.
+    if ended.analyses.interrupted == Some(Interrupted::Verification) {
+        println!(
+            "{}",
+            style.yellow(
+                "note: interrupted before the failures were verified — they stay unverified"
+            )
+        );
+    }
     println!("{}", verdict(ended, style));
 }
 
@@ -185,8 +195,8 @@ fn verdict(ended: &RunReport<'_>, style: Style) -> String {
     } = *ended;
     // Cut short, the runs carry no verdict — pardoned or not. A suite that
     // ran to its end has one, verified or not.
-    if let Some(Interrupted::Runs { requested, failed }) = analyses.interrupted {
-        return interrupted_line(outcomes, requested, failed, style);
+    if let Some(Interrupted::Runs { requested }) = analyses.interrupted {
+        return interrupted_line(outcomes, requested, ended.failed_runs, style);
     }
     match analyses.pardoned {
         Some(pardoned) => {
@@ -198,33 +208,29 @@ fn verdict(ended: &RunReport<'_>, style: Style) -> String {
                 .count();
             pardoned_verdict(outcomes, pardoned.len(), not_flakes, style)
         }
-        None => verdict_line(
-            outcomes,
-            ended.summary,
-            ended.report_failures,
-            ended.failed,
-            style,
-        ),
+        None => verdict_line(ended, style),
     }
 }
 
 /// The closing verdict line: sooth's suite-level judgement at a glance.
-pub fn verdict_line(
-    outcomes: &[RunOutcome],
-    summary: Option<&JunitSummary>,
-    report_failures: usize,
-    suite_failed: bool,
-    style: Style,
-) -> String {
+fn verdict_line(ended: &RunReport<'_>, style: Style) -> String {
+    let RunReport {
+        outcomes,
+        summary,
+        report_failures,
+        failed_runs,
+        ..
+    } = *ended;
     let total: Duration = outcomes.iter().map(|outcome| outcome.duration).sum();
     let runs = outcomes.len();
-    if suite_failed {
-        let failed_runs = outcomes.iter().filter(|outcome| !outcome.success).count();
-        let detail = if failed_runs > 0 {
+    if ended.failed {
+        // A run that exited 0 over a red report failed like any other: the
+        // count is the one the lines above were made with.
+        let detail = if outcomes.iter().any(|outcome| !outcome.success) {
             format!("{failed_runs} of {runs} runs failed")
         } else {
-            // The runner claimed success but a report disagrees; the
-            // stderr note carries the full story.
+            // Every run claimed success and a report disagrees; the stderr
+            // note carries the full story.
             format!(
                 "the report shows {}",
                 count(report_failures, "failing test")
@@ -535,7 +541,7 @@ fn familiarity_phrase(
     consulted: bool,
     style: Style,
 ) -> Option<String> {
-    if !consulted && explanation.verdict == explain::Verdict::Unknown && !explanation.quarantined {
+    if !consulted && explanation.category() == explain::Category::New {
         return None;
     }
     Some(known_phrase(explanation, style))
@@ -588,11 +594,14 @@ fn known_phrase(explanation: &explain::Explanation, style: Style) -> String {
             "never seen passing (failed all {failed_runs} observed runs, first on {}){listed}",
             short_commit(first_commit)
         )),
-        explain::Verdict::Unknown if explanation.quarantined => style.yellow(&format!(
-            "quarantined (listed in {})",
-            crate::quarantine::FILE_NAME
-        )),
-        explain::Verdict::Unknown => style.bold_red("new (nothing in history)"),
+        // Which of the two an unknown failure is, is the category's rule.
+        explain::Verdict::Unknown => match explanation.category() {
+            explain::Category::Quarantined => style.yellow(&format!(
+                "quarantined (listed in {})",
+                crate::quarantine::FILE_NAME
+            )),
+            _ => style.bold_red("new (nothing in history)"),
+        },
     }
 }
 
@@ -850,11 +859,38 @@ mod tests {
         assert_eq!(super::short_commit("ééééééééé"), "ééééééé");
     }
 
+    /// The verdict line of runs that ended as given: `failed` of them
+    /// failed, and the worst report showed `report_failures` failing tests.
+    fn verdict_of(
+        outcomes: &[crate::runner::RunOutcome],
+        summary: Option<&JunitSummary>,
+        (failed, report_failures): (usize, usize),
+    ) -> String {
+        let ended = crate::report::RunReport {
+            outcomes,
+            summary,
+            analyses: &crate::report::Analyses::default(),
+            report_failures,
+            failed_runs: failed,
+            failed: failed > 0,
+        };
+        verdict_line(&ended, plain())
+    }
+
     #[test]
     fn the_verdict_names_failed_runs() {
-        let line = verdict_line(&[outcome(true), outcome(false)], None, 0, true, plain());
+        let line = verdict_of(&[outcome(true), outcome(false)], None, (1, 0));
         assert!(line.contains("FAILED"));
         assert!(line.contains("1 of 2 runs failed"));
+    }
+
+    #[test]
+    fn the_verdict_counts_a_run_that_is_red_by_its_report_alone() {
+        // Three runs, one of them failing by its exit and one by its
+        // report only: two failed, and the line must not say one.
+        let runs = [outcome(true), outcome(false), outcome(true)];
+        let line = verdict_of(&runs, None, (2, 1));
+        assert!(line.contains("2 of 3 runs failed"), "got: {line}");
     }
 
     #[test]
@@ -863,7 +899,7 @@ mod tests {
             test_cases: vec![test_case("bad", TestStatus::Failed, 0.1)],
         };
         let summary = JunitSummary::from_report(&report, 0);
-        let line = verdict_line(&[outcome(true)], Some(&summary), 1, true, plain());
+        let line = verdict_of(&[outcome(true)], Some(&summary), (1, 1));
         assert!(line.contains("FAILED"));
         assert!(line.contains("the report shows 1 failing test"));
         assert!(!line.contains("1 failing tests"));
@@ -875,20 +911,14 @@ mod tests {
             test_cases: vec![test_case("ok", TestStatus::Passed, 0.1)],
         };
         let summary = JunitSummary::from_report(&report, 0);
-        let line = verdict_line(&[outcome(true)], Some(&summary), 0, false, plain());
+        let line = verdict_of(&[outcome(true)], Some(&summary), (0, 0));
         assert!(line.contains("PASSED"));
         assert!(line.contains("1 of 1 runs, 1 test ("));
     }
 
     #[test]
     fn a_zero_test_pass_says_it_proved_nothing() {
-        let line = verdict_line(
-            &[outcome(true)],
-            Some(&JunitSummary::empty()),
-            0,
-            false,
-            plain(),
-        );
+        let line = verdict_of(&[outcome(true)], Some(&JunitSummary::empty()), (0, 0));
         assert!(line.contains("✓ PASSED"), "the exit contract holds: {line}");
         assert!(
             line.contains("0 tests, so this run proved nothing"),

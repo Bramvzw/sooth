@@ -1255,6 +1255,11 @@ fn asked_to_stop_before_verifying_sooth_starts_no_re_run_and_exits_two() {
         stderr.contains("interrupted before the failures were verified"),
         "got: {stderr:?}"
     );
+    // And the report says so itself, for a reader of stdout alone.
+    assert!(
+        stdout.contains("note: interrupted before the failures were verified"),
+        "got: {stdout:?}"
+    );
 }
 
 #[test]
@@ -1287,6 +1292,70 @@ fn a_verification_cut_short_exits_two_with_the_suites_own_report() {
     assert!(
         waited < std::time::Duration::from_millis(1500),
         "the re-run died of the same Ctrl-C: {waited:?}"
+    );
+}
+
+#[test]
+fn a_pardon_under_a_cut_short_verification_does_not_stand_alone_on_stdout() {
+    let cwd = Scratch::new("interrupt-verify-pardon");
+    // The suite's one failure is on the list, so the run is pardoned; the
+    // first re-run hangs.
+    write_executable(
+        &cwd,
+        "pytest",
+        &format!(
+            "{FAKE_PYTEST}echo $$ > \"pid-$n\"\n[ $n -lt 2 ] || exec sleep 30\n\
+             printf '%s' '{ONE_FAILING_TEST}' > \"$report\"\nexit 1\n"
+        ),
+    );
+    std::fs::write(cwd.join(".sooth-quarantine"), "c::t\n").expect("write quarantine");
+    let child = sooth_in_its_own_group(&cwd, &["--verify", "--fail-on-flaky", "--", "./pytest"]);
+    wait_for(&cwd.join("pid-2"));
+    send_signal("-INT", &format!("-{}", child.id()));
+    let output = child.wait_with_output().expect("sooth should exit");
+    let stdout = String::from_utf8(output.stdout).expect("stdout should be UTF-8");
+
+    assert_eq!(output.status.code(), Some(2), "got: {stdout:?}");
+    assert!(stdout.contains("PASSED"), "got: {stdout:?}");
+    // Exit 2 beside a bare PASSED would be a riddle in a log of stdout.
+    let note = stdout
+        .find("note: interrupted before the failures were verified")
+        .expect("the report says the verification was cut short");
+    assert!(
+        note < stdout.find("result:").expect("a verdict"),
+        "the verdict stays the last line: {stdout:?}"
+    );
+}
+
+#[test]
+fn the_verdict_counts_a_run_that_only_its_report_calls_red() {
+    let cwd = Scratch::new("verdict-red-by-report");
+    // Run 1 exits 0 over a failing report, run 2 fails outright, run 3 is
+    // green: two runs failed, whatever the first one's exit code says.
+    write_executable(
+        &cwd,
+        "pytest",
+        &format!(
+            "{FAKE_PYTEST}case $n in\n\
+             1) printf '%s' '{ONE_FAILING_TEST}' > \"$report\"; exit 0 ;;\n\
+             2) printf '%s' '{ONE_FAILING_TEST}' > \"$report\"; exit 1 ;;\n\
+             *) printf '%s' '<testsuite><testcase classname=\"c\" name=\"t\"/></testsuite>' > \"$report\"; exit 0 ;;\n\
+             esac\n"
+        ),
+    );
+    let output = sooth_in_its_own_group(&cwd, &["--runs", "3", "--", "./pytest"])
+        .wait_with_output()
+        .expect("sooth should exit");
+    let stdout = String::from_utf8(output.stdout).expect("stdout should be UTF-8");
+
+    assert_eq!(output.status.code(), Some(1), "got: {stdout:?}");
+    assert!(
+        stdout.contains("c::t — flaky (2 of 3 runs now)"),
+        "got: {stdout:?}"
+    );
+    assert!(
+        stdout.contains("result: ✗ FAILED — 2 of 3 runs failed"),
+        "the verdict agrees with the line above it: {stdout:?}"
     );
 }
 
@@ -3565,6 +3634,34 @@ fn a_green_log_records_nothing_and_a_foreign_log_is_refused() {
     assert!(
         !cwd_bad.join(".sooth/history.jsonl").exists(),
         "a refused log still wrote history"
+    );
+
+    // An import is all or nothing, and so is what it says: a green log
+    // that is followed by a refused one was not imported either.
+    let (cwd_both, mut command) = sooth_in("log-green-then-foreign");
+    std::fs::write(
+        cwd_both.join("green.log"),
+        "....\nOK (4 tests, 8 assertions)\n",
+    )
+    .expect("write");
+    std::fs::write(cwd_both.join("pytest.log"), "collected 3 items\n3 passed\n").expect("write");
+    let output = command
+        .args([
+            "import",
+            "--log",
+            "phpunit",
+            "--env",
+            "ci",
+            "green.log",
+            "pytest.log",
+        ])
+        .output()
+        .expect("sooth should run");
+    let stdout = String::from_utf8(output.stdout).expect("stdout should be UTF-8");
+    assert_eq!(output.status.code(), Some(2));
+    assert_eq!(
+        stdout, "",
+        "nothing is said of an import that did not happen"
     );
 }
 

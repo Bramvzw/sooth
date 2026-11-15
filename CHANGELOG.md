@@ -23,7 +23,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   of a verdict, and exits 2. Before, an interrupted `--runs 20` lost
   everything. Under quiet repeats what the cut-short run had written is
   shown: for a run that hung, it is the only trace of where. A `--verify`
-  that is cut short exits 2 as well, with the suite's own report. Under
+  that is cut short exits 2 as well, with the suite's own report and a
+  note that its failures are unverified. Under
   `--json` the document carries
   `"interrupted":{"during":"runs","finished_runs":5,"requested_runs":20}`
   (an addition).
@@ -41,6 +42,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The closing line counts a run as failed when its report shows a
+  failure, whatever the runner exited with. Three runs of which one exited
+  1 and one exited 0 over a red report read `1 of 3 runs failed`, under a
+  line that said the test failed in two; it now reads `2 of 3 runs failed`.
+- `sooth import` no longer says that a green log had nothing to record
+  when the import then fails on a later file: an import that did not
+  happen says nothing.
 - `import --replace` no longer overwrites what another sooth wrote to the
   history while it ran. It fails and says so, where those observations
   used to be lost. The rewritten history also keeps the permissions it had.

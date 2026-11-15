@@ -1784,11 +1784,17 @@ What happens on a first SIGINT or SIGTERM:
   land between two runs, and then no sixth run was ever under way. A run
   counts as failed here by the rule the suite's verdict uses — its exit or
   its report — so a run that exited 0 over a red report is not called
-  passed. The finished runs are recorded in the history like any others.
+  passed. The verdict line of a suite that ran to its end counts the same
+  way; it used to count exits only, and said `1 of 3 runs failed` under a
+  report that showed the test failing in two (found in review). The
+  finished runs are recorded in the history like any others.
 - **A verification that was cut short keeps the suite's verdict.** With
   `--verify` the one run had finished, so `result: ✗ FAILED` is true and
-  stays; what is missing is the re-runs, and the closing line on stderr
-  says the failures are unverified.
+  stays; what is missing is the re-runs. A note above the verdict says the
+  failures are unverified, and so does the closing line on stderr. The
+  note is on stdout because the verdict can read `✓ PASSED` — every
+  failure was on the quarantine list — and a log of stdout alone would
+  show that beside an exit of 2.
 - **The exit is 2**, for cut-short runs and for a cut-short verification.
   Not 0 and not 1: sooth did not do what it was asked. A fourth code (the
   shell's 130) would have widened a contract whose point is that it has
@@ -1940,6 +1946,9 @@ new" was re-derived from the flag. It is now `Explanation::category()`,
 which the counts and the document's `verdict` both ask. The names the JSON
 gives the categories stay in `json.rs`: they are the document's
 vocabulary, not the analyzer's.
+
+The printed report asks it as well, where it tells a quarantined failure
+from a new one.
 
 The JSON stays hand-rolled and its bytes are unchanged; the tests that pin
 them moved with the functions they test. Checked the same way as the

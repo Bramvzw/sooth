@@ -218,6 +218,9 @@ pub struct RunReport<'a> {
     pub analyses: &'a Analyses<'a>,
     /// The worst run's count of failing tests, over every run's report.
     pub report_failures: usize,
+    /// How many of the runs failed: by their exit or by their report, the
+    /// rule the suite's verdict rests on.
+    pub failed_runs: usize,
     /// Whether the suite failed, a pardon taken into account.
     pub failed: bool,
 }
@@ -276,9 +279,9 @@ pub struct Analyses<'a> {
 /// was doing then.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Interrupted {
-    /// Making the runs: `requested` were asked for and fewer finished, of
-    /// which `failed` failed. The report covers the ones that finished.
-    Runs { requested: usize, failed: usize },
+    /// Making the runs: `requested` were asked for and fewer finished. The
+    /// report covers the ones that finished.
+    Runs { requested: usize },
     /// Re-running the failures (`--verify`), after every run had finished:
     /// the report is the suite's own, its failures unverified.
     Verification,
