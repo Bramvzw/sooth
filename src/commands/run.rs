@@ -86,9 +86,8 @@ fn run_as_asked(args: &cli::RunArgs) -> Outcome {
         reports,
         stopped,
     } = execute_runs(args, &session, style)?;
-    let mut interrupted = stopped.then(|| report::Interrupted::Runs {
+    let mut interrupted = stopped.then_some(report::Interrupted::Runs {
         requested: args.runs as usize,
-        failed: failed_runs(&outcomes, &reports),
     });
     if stopped && outcomes.is_empty() {
         return Err(nothing_finished(args.runs));
@@ -150,6 +149,7 @@ fn run_as_asked(args: &cli::RunArgs) -> Outcome {
         summary: junit_summary.as_ref(),
         analyses: &analyses,
         report_failures,
+        failed_runs: failed_runs(&outcomes, &reports),
         failed,
     };
     emit_output(args, &ended, style)?;

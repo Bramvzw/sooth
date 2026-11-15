@@ -34,13 +34,7 @@ fn file_outcomes(
 ) -> Result<FileYield, SoothError> {
     match log {
         Some(cli::LogFormat::Phpunit) => match phpunit_log::parse_str(content) {
-            Ok(parsed) if parsed.failures.is_empty() => {
-                report::print_imported(&ImportedFile {
-                    path,
-                    fate: ImportFate::NothingToRecord,
-                });
-                Ok(None)
-            }
+            Ok(parsed) if parsed.failures.is_empty() => Ok(None),
             // A console log names its failures and no durations.
             Ok(parsed) => Ok(Some((
                 parsed
@@ -162,6 +156,11 @@ fn read_imports<'args>(
         }
         let parsed = file_outcomes(&content, args.log, path)?;
         let Some((outcomes, content_stamp)) = parsed else {
+            // Said with the rest, once the import as a whole went through.
+            files.push(ImportedFile {
+                path,
+                fate: ImportFate::NothingToRecord,
+            });
             continue;
         };
         let at_epoch_secs = content_stamp
@@ -335,6 +334,20 @@ mod tests {
         assert_eq!(
             fates(&replace, &known),
             (1, vec![recorded(true), ImportFate::SameContent])
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_green_log_is_a_file_with_nothing_to_record_said_with_the_rest() {
+        let dir = scratch(
+            "green-log",
+            &[("green.log", "....\nOK (4 tests, 8 assertions)\n")],
+        );
+        let args = import_args(&dir, &["--log", "phpunit"], &["green.log"]);
+        assert_eq!(
+            fates(&args, &BTreeSet::new()),
+            (0, vec![ImportFate::NothingToRecord])
         );
         let _ = std::fs::remove_dir_all(dir);
     }

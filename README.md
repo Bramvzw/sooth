@@ -79,7 +79,12 @@ made every run (your CI can tell a red suite from a broken invocation).
 Stopping sooth is safe. On a Ctrl-C, or a `SIGTERM` from CI or a timeout
 wrapper, it reports the runs that had finished, stops the test command if
 that is still running, removes its temp files and exits 2. A second Ctrl-C
-ends it on the spot.
+ends it on the spot. Two limits: sooth stops the command it started, not
+what that command started in turn — a Ctrl-C at a terminal reaches those
+too, a lone `SIGTERM` does not — and a signal that arrives when the last
+run is over changes nothing: the report follows and the exit is the suite's.
+The one exception is `--verify` with failures still to re-run: that
+verification is then cut short, and the exit is 2.
 
 ## Run history
 

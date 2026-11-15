@@ -361,11 +361,11 @@ mod tests {
             )
         };
         assert!(!json_for(None).contains("interrupted"));
-        assert!(json_for(Some(Interrupted::Runs {
-            requested: 4,
-            failed: 1
-        }))
-        .ends_with(r#","interrupted":{"during":"runs","finished_runs":1,"requested_runs":4}}"#));
+        assert!(
+            json_for(Some(Interrupted::Runs { requested: 4 })).ends_with(
+                r#","interrupted":{"during":"runs","finished_runs":1,"requested_runs":4}}"#
+            )
+        );
         // The runs were all made; it is the re-runs that were not.
         assert!(json_for(Some(Interrupted::Verification)).ends_with(
             r#","interrupted":{"during":"verification","finished_runs":1,"requested_runs":1}}"#
