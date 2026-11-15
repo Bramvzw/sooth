@@ -12,9 +12,9 @@ mod json;
 pub use human::{
     print_empty_gate, print_empty_history, print_explanation, print_gate, print_history,
     print_history_beyond_one_load, print_history_gap, print_history_size, print_imported,
-    print_nothing_stands_out, print_nothing_to_explain, print_order, print_order_run,
-    print_pardon_gap, print_pruned, print_replay, print_run, print_runs, print_summary,
-    print_verdict,
+    print_nothing_stands_out, print_nothing_to_explain, print_order, print_order_alone,
+    print_order_run, print_pardon_gap, print_pruned, print_replay, print_run, print_runs,
+    print_summary, print_verdict,
 };
 pub use json::{explanation_json, order_json, to_json};
 
@@ -240,6 +240,9 @@ pub struct OrderReport<'a> {
     pub replay: &'a str,
     /// What the runner's shuffle does not reach, when that is worth a line.
     pub scope: Option<&'a str>,
+    /// How many of the order-dependent tests were not run alone, because
+    /// there were more of them than sooth runs one by one.
+    pub not_run_alone: usize,
 }
 
 /// One run of an order pass.

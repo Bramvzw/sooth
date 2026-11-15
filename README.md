@@ -284,10 +284,13 @@ your order: runner exit=0 (12.31s)
 shuffled, seed 48213: runner exit=1 (12.90s)
 shuffled again, seed 48213: runner exit=1 (12.74s)
 your order again: runner exit=0 (12.28s)
+alone: 2 tests, twice each
 tests: 412 tests compared in both orders
 2 tests depend on the order
   ✗ Tests.Unit.PartnerTest::sends a message — passed in your order, failed shuffled, twice each
-  ✗ Tests.Unit.CartTest::totals add up — passed in your order, failed shuffled, twice each
+      alone it fails the same way: it needs something a test before it leaves behind
+  ✗ Tests.Unit.MailTest::delivers real mail — passed in your order, failed shuffled, twice each
+      alone it passes: something a test before it leaves behind breaks it
 replay this order: sooth order --seed 48213 -- php artisan test
 result: ✗ ORDER-DEPENDENT — 2 of 412 tests (50.23s total)
 ```
@@ -300,12 +303,21 @@ other thing twice in the shuffled one. A difference that does not hold is
 listed as exactly that, and a test the history already proved flaky is never
 called order-dependent.
 
+Each test it finds then runs by itself, twice, because that is what decides
+the fix. A test that fails alone the way it failed in the suite **needs
+something a test before it leaves behind**: give it a setup of its own. A
+test that passes alone is **broken by something a test before it leaves
+behind**: the fix is in the test that leaks, and this one is only where it
+shows. Which test that is, sooth does not say; finding it takes a search
+through the orders that no runner-agnostic tool can do honestly.
+
 - **The seed is the finding.** Every pass prints it, and `--seed N` runs that
   order again: on your machine, a colleague's, or in CI.
 - **It is a sample, not a proof.** Two orders that agree say nothing about a
-  third; another seed is another sample. And four runs cannot tell a test
-  that fails half the time from one that depends on the order, which is
-  what replaying the seed is for.
+  third; another seed is another sample. And a handful of runs cannot tell
+  a test that fails half the time from one that depends on the order with
+  certainty: a test that does not do the same thing alone twice is taken
+  back out, and replaying the seed is the last word.
 - **Exit codes as everywhere.** A test that fails in another order fails a
   run, so the pass exits 1; 0 when both orders are green; 2 when the pass
   could not be made.

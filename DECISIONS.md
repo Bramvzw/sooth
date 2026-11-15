@@ -2002,8 +2002,8 @@ flip, 1.6% at 10%, 0.02% at 1%. So the report says what was seen — "twice
 each" — the README says it is a sample, and three things stand between a
 flake and the label: the second runs, the history (a test it already proved
 flaky is never called order-dependent, however its runs went), and the
-seed, which lets anyone run the order a third time. The isolation check
-(#111) is the next one.
+seed, which lets anyone run the order a third time. The runs alone, below,
+are the fourth.
 
 **Two runs when the orders agree, four when they do not.** The second runs
 are made only when a test differed, so a suite without order-dependence
@@ -2018,3 +2018,49 @@ one commit there, which is the history's definition of a flake.
 "at least one run failed" is exit 1 already. 0 when both orders are green.
 2 when the pass could not be made, an interruption included: it compares
 whole runs, and half a run compares to nothing.
+
+## Alone, a test says which way its dependency runs
+
+A shuffle shows that a test depends on the order. It does not say which
+way, and that decides the fix (#111, found by hand while dogfooding on a
+production suite: fifteen tests that needed a `Partner` record some later
+test created). So every test the order pass finds runs by itself, twice:
+
+| In the suite | Alone | Meaning | Fix |
+|---|---|---|---|
+| failed in one order | fails the same way | it needs something a test before it leaves behind | a setup of its own |
+| failed in one order | passes | something a test before it leaves behind breaks it | in the test that leaks |
+
+- **Only what the pass found.** Isolating a whole suite boots the
+  application once per test. The set a shuffle flagged is small, and at
+  most twenty of them are run alone: a suite where everything depends on
+  one bootstrap test would otherwise be started hundreds of times. The
+  rest keep their place in the report without a direction, and a note
+  says so.
+- **Twice, like `--verify`**, and for the same reason: once cannot tell a
+  result that holds from one that happened.
+- **A test that passes alone once and fails alone once is taken back out.**
+  Nothing ran before it either time and its result changed anyway, so no
+  order explains it, whatever its four runs in the suite looked like. This
+  is the cheapest check against the coin-flip test of the section above:
+  two more runs of one test, where the suite runs cost two more runs of
+  everything. For a test that fails half the time it halves what is left
+  of the 12.5%. Measured on the Laravel sandbox, which has such a test: 60
+  passes under a seed that exposes no dependency called it order-dependent
+  twice, and a difference that did not hold 26 times.
+- **The kind of failure counts, not just pass or fail** (#103). A test
+  that errors with a `TypeError` in the suite and fails an assertion alone
+  did not reproduce its failure; a misconfigured selection that trips the
+  bootstrap would otherwise count as confirmation. That reads "alone it
+  fails in another way than in the suite" and gives no direction. One
+  reproduction in the two runs is a reproduction, as for `--verify`.
+- **It reuses the selection of `--verify`**, and so inherits its reach and
+  its limits: a name the runner cannot be pointed at leaves the question
+  open, and a selection by name can match a second test of that name.
+- **A run alone that says nothing leaves the test where it was**:
+  order-dependent, without a direction. So does an interruption, which
+  still exits 2 after the report: the four runs were made, and what they
+  found is not thrown away for the part that was not.
+- **Not which test is responsible.** The direction is a fact about one
+  test. The predecessor that leaks, or the one that sets up, takes a
+  search through orders — `ROADMAP.md` keeps that out.

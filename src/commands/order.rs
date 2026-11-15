@@ -17,7 +17,12 @@ use super::run::{
 use super::{Outcome, SoothError};
 use crate::preset::Plan;
 use crate::reported::{ReportSource, Run};
-use crate::{analyzers, cli, history, interrupt, junit, report, reported, runner};
+use crate::{analyzers, cli, history, interrupt, junit, report, reported, runner, verify};
+
+/// How many order-dependent tests are run alone at most. Each one costs the
+/// runner's start-up twice, and a suite where everything depends on one
+/// bootstrap test would otherwise be started hundreds of times.
+const ALONE_AT_MOST: usize = 20;
 
 /// How many seeds are tried before giving up on a shuffle that leaves the
 /// tests in the order they already ran in. A suite of three tests keeps
@@ -163,6 +168,33 @@ impl Pass<'_> {
     }
 }
 
+impl Pass<'_> {
+    /// Run the one test the runner selects by `name`, with nothing before
+    /// it. `Ok(None)` when the run has nothing to say — the runner could
+    /// not be pointed at the name, did not start, or left no report: the
+    /// question stays open, as it does for `--verify`. Its output is not
+    /// shown, and how it ended is not the pass's exit.
+    fn alone(&mut self, name: &str) -> Result<Option<junit::JunitReport>, Stopped> {
+        if self.interrupt.requested() {
+            return Err(Stopped);
+        }
+        let Ok(source) = ReportSource::temp() else {
+            return Ok(None);
+        };
+        let Some(spawn) = self.plan.rerun(source.path(), &[name.to_owned()]) else {
+            return Ok(None);
+        };
+        let Ok(hidden) = self.capture.open() else {
+            return Ok(None);
+        };
+        match reported::run(&spawn, Some(&source), Some(hidden), self.interrupt) {
+            Ok(Run::Finished(ran)) => Ok(ran.report.and_then(Result::ok)),
+            Ok(Run::CutShort) => Err(Stopped),
+            Err(_) => Ok(None),
+        }
+    }
+}
+
 /// Handle `sooth order`. Exit 0 when every run passed, 1 when one failed —
 /// a test that fails in another order fails a run — and 2 when the pass
 /// could not be made: a runner sooth cannot shuffle, a run cut short, or a
@@ -209,7 +241,7 @@ pub fn run(args: &cli::OrderArgs) -> Outcome {
     // one. The shuffled runs are not: a test that fails only in another
     // order would read as a flake to the history.
     let history = record_history(identity, std::slice::from_ref(&given));
-    let (seed, comparison) = shuffle(&mut pass, &given, args.seed)?;
+    let (seed, shuffled, comparison) = shuffle(&mut pass, &given, args.seed)?;
     // A difference between two runs is what a flaky test produces too. An
     // order can be run again and a coincidence cannot, so both are: the
     // shuffled one under its seed, and the suite's own.
@@ -220,21 +252,24 @@ pub fn run(args: &cli::OrderArgs) -> Outcome {
         let given = pass.make(Order::GivenAgain)?;
         Some((given, shuffled))
     };
-    pass.capture
-        .replay_first_failure(pass.json_owns_stdout, style);
 
     let proven_flaky: BTreeSet<String> = history
         .iter()
         .flat_map(|history| &history.analysis.flaky)
         .map(|flake| flake.outcomes.id.clone())
         .collect();
-    let analysis = analyzers::order::analyze(
+    let mut analysis = analyzers::order::analyze(
         comparison,
         again
             .as_ref()
             .map(|(given, shuffled)| analyzers::order::Again { given, shuffled }),
         &proven_flaky,
     );
+    // Which way each dependency runs: the tests it found, one by one.
+    let not_run_alone = analysis.order_dependent.len().saturating_sub(ALONE_AT_MOST);
+    let stopped = isolate(&mut pass, &mut analysis, (&given, &shuffled));
+    pass.capture
+        .replay_first_failure(pass.json_owns_stdout, style);
     let runs: Vec<report::OrderRun> = pass
         .orders
         .iter()
@@ -251,6 +286,7 @@ pub fn run(args: &cli::OrderArgs) -> Outcome {
         failed: pass.failed,
         replay: &replay_command(args, seed),
         scope: plan.shuffle_scope(),
+        not_run_alone,
     };
     match &args.json {
         None => report::print_order(&ended, style),
@@ -260,12 +296,99 @@ pub fn run(args: &cli::OrderArgs) -> Outcome {
             write_json_file(path, report::order_json(&ended))?;
         }
     }
+    // The pass was made and reported; what was cut short is the last part
+    // of what was asked, so the exit is 2 all the same.
+    if stopped {
+        return Err(SoothError::new(
+            "interrupted while the tests were run alone — the report says which way a \
+             dependency runs only for the tests that were",
+        ));
+    }
     Ok(if pass.failed {
         ExitCode::FAILURE
     } else {
         ExitCode::SUCCESS
     })
 }
+
+/// Run each order-dependent test by itself and let the analysis hear it:
+/// that says which way its dependency runs, and takes a test back out that
+/// does not behave the same alone twice. Returns whether sooth was asked to
+/// stop before all of them had run.
+///
+/// The failure a test showed in the suite is taken from the run it failed
+/// in — the shuffled one when it passed in the given order, else the given
+/// one — together with the name the runner selects it by.
+fn isolate(
+    pass: &mut Pass<'_>,
+    analysis: &mut analyzers::order::Analysis,
+    (given, shuffled): (&junit::JunitReport, &junit::JunitReport),
+) -> bool {
+    use analyzers::order::PassedIn;
+    let failed_in = |passed_in| match passed_in {
+        PassedIn::Given => verify::failed_tests(shuffled),
+        PassedIn::Shuffled => verify::failed_tests(given),
+    };
+    let failed_in_shuffled = failed_in(PassedIn::Given);
+    let failed_in_given = failed_in(PassedIn::Shuffled);
+    let candidates: Vec<&verify::FailedTest> = analysis
+        .order_dependent
+        .iter()
+        .take(ALONE_AT_MOST)
+        .filter_map(|difference| {
+            let failed = match difference.passed_in {
+                PassedIn::Given => &failed_in_shuffled,
+                PassedIn::Shuffled => &failed_in_given,
+            };
+            failed.iter().find(|test| test.id == difference.id)
+        })
+        .collect();
+    if candidates.is_empty() {
+        return false;
+    }
+    if !pass.json_owns_stdout {
+        report::print_order_alone(candidates.len(), verify::VERIFY_RUNS as usize);
+    }
+    let mut stopped = false;
+    let mut heard: Vec<Vec<junit::JunitReport>> = Vec::with_capacity(candidates.len());
+    for test in &candidates {
+        let mut runs = Vec::new();
+        for _ in 0..verify::VERIFY_RUNS {
+            match pass.alone(&test.name) {
+                Ok(Some(report)) => runs.push(report),
+                // A run that says nothing leaves the question open, and
+                // one more would not close it.
+                Ok(None) => {
+                    runs.clear();
+                    break;
+                }
+                Err(Stopped) => {
+                    stopped = true;
+                    runs.clear();
+                    break;
+                }
+            }
+        }
+        heard.push(runs);
+        if stopped {
+            break;
+        }
+    }
+    let lone: Vec<analyzers::order::Lone<'_>> = candidates
+        .iter()
+        .zip(&heard)
+        .map(|(test, runs)| analyzers::order::Lone {
+            id: &test.id,
+            suite_failure: &test.signature,
+            runs,
+        })
+        .collect();
+    analyzers::order::direct(analysis, &lone);
+    stopped
+}
+
+/// Sooth was asked to stop while a test ran alone.
+struct Stopped;
 
 /// Run the suite shuffled and lay it beside the run in its own order. A
 /// seed that leaves the tests in the order they already ran in compared
@@ -274,13 +397,13 @@ fn shuffle(
     pass: &mut Pass<'_>,
     given: &junit::JunitReport,
     asked: Option<u32>,
-) -> Result<(u32, analyzers::order::Comparison), SoothError> {
+) -> Result<(u32, junit::JunitReport, analyzers::order::Comparison), SoothError> {
     let mut seed = asked.unwrap_or_else(fresh_seed);
     for attempt in 1..=SEEDS_TRIED {
         let shuffled = pass.make(Order::Shuffled(seed))?;
         let comparison = analyzers::order::compare(given, &shuffled);
         if comparison.reordered {
-            return Ok((seed, comparison));
+            return Ok((seed, shuffled, comparison));
         }
         if comparison.compared < 2 {
             return Err(SoothError::new(format!(

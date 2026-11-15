@@ -1486,13 +1486,18 @@ fn pruning_the_history_changes_its_size_and_not_what_it_says() {
 }
 
 /// A fake `phpunit` whose tests depend on the order they run in. `needs`
-/// passes only behind `setup`; `victim` fails behind `leak`. Asked for a
+/// (and `needs1`, `needs2`, …) passes only behind `setup`; `victim` fails
+/// behind `leak`. Asked for a
 /// random order (`--random-order-seed=N`) it runs them back to front, the
-/// same way for every seed. Knobs, through the environment: `TESTS` (the
-/// tests in their own order), `WOB_FAILS_IN` (the invocations in which the
-/// test `wob` fails), `HANG_IN` (the invocation in which the test `hangs`
-/// never comes back), `KEEP_ORDER` (ignore the shuffle). It writes down the
-/// seed of every invocation in `seeds`, an empty line for none.
+/// same way for every seed; asked for one test (`--filter`) it runs that
+/// test alone. `odd` errors with a `TypeError` in the shuffled order and
+/// fails plainly alone. Knobs, through the environment: `TESTS` (the tests
+/// in their own order), `WOB_FAILS_IN` (the invocations in which the test
+/// `wob` fails), `HANG_IN` (the invocation in which the test `hangs` never
+/// comes back), `HANG_ALONE` (a test run alone never comes back),
+/// `KEEP_ORDER` (ignore the shuffle). It writes down the seed of every
+/// suite run in `seeds`, an empty line for none, and the test of every run
+/// alone in `alone`.
 fn write_order_runner(dir: &Path) {
     write_executable(
         dir,
@@ -1500,28 +1505,36 @@ fn write_order_runner(dir: &Path) {
         concat!(
             "#!/bin/sh\n",
             "n=$(( $(cat invocations 2>/dev/null || echo 0) + 1 )); echo $n > invocations\n",
-            "seed=''; report=''; prev=''\n",
+            "seed=''; report=''; filter=''; prev=''\n",
             "for a in \"$@\"; do\n",
             "  case \"$a\" in --random-order-seed=*) seed=\"${a#--random-order-seed=}\" ;; esac\n",
             "  [ \"$prev\" = '--log-junit' ] && report=\"$a\"\n",
+            "  [ \"$prev\" = '--filter' ] && filter=\"$a\"\n",
             "  prev=\"$a\"\n",
             "done\n",
-            "echo \"$seed\" >> seeds\n",
             "order=${TESTS:-setup needs victim leak steady}\n",
+            "if [ -n \"$filter\" ]; then\n",
+            "  order=$(printf '%s' \"$filter\" | sed -E 's/.*\\(([^()]*)\\)\\/i$/\\1/')\n",
+            "  echo \"$order\" >> alone\n",
+            "  [ -z \"${HANG_ALONE:-}\" ] || { echo $$ > hanging; exec sleep 30; }\n",
+            "else\n",
+            "  echo \"$seed\" >> seeds\n",
+            "fi\n",
             "if [ -n \"$seed\" ] && [ -z \"${KEEP_ORDER:-}\" ]; then\n",
             "  back=''; for t in $order; do back=\"$t $back\"; done; order=$back\n",
             "fi\n",
             "cases=''; ran=' '; failed=''\n",
             "for t in $order; do\n",
-            "  fail=''\n",
+            "  fail=''; how='<failure/>'\n",
             "  case \"$t\" in\n",
-            "    needs) case \"$ran\" in *' setup '*) ;; *) fail=1 ;; esac ;;\n",
+            "    odd) if [ -n \"$filter\" ]; then fail=1; elif [ -n \"$seed\" ]; then fail=1; how='<error type=\\\"TypeError\\\"/>'; fi ;;\n",
+            "    needs*) case \"$ran\" in *' setup '*) ;; *) fail=1 ;; esac ;;\n",
             "    victim) case \"$ran\" in *' leak '*) fail=1 ;; esac ;;\n",
             "    wob) case \" ${WOB_FAILS_IN:-} \" in *\" $n \"*) fail=1 ;; esac ;;\n",
             "    hangs) [ \"${HANG_IN:-}\" != \"$n\" ] || { echo $$ > hanging; exec sleep 30; } ;;\n",
             "  esac\n",
             "  if [ -n \"$fail\" ]; then\n",
-            "    cases=\"$cases<testcase classname=\\\"c\\\" name=\\\"$t\\\"><failure/></testcase>\"; failed=1\n",
+            "    cases=\"$cases<testcase classname=\\\"c\\\" name=\\\"$t\\\">$how</testcase>\"; failed=1\n",
             "  else\n",
             "    cases=\"$cases<testcase classname=\\\"c\\\" name=\\\"$t\\\"/>\"\n",
             "  fi\n",
@@ -1579,15 +1592,30 @@ fn the_order_pass_finds_the_tests_whose_result_follows_the_order() {
         format!("shuffled, seed {seed}: runner exit=1"),
         format!("shuffled again, seed {seed}: runner exit=1"),
         "your order again: runner exit=0".to_owned(),
+        "alone: 2 tests, twice each".to_owned(),
         "tests: 5 tests compared in both orders".to_owned(),
         "2 tests depend on the order".to_owned(),
-        "  ✗ c::needs — passed in your order, failed shuffled, twice each".to_owned(),
-        "  ✗ c::victim — passed in your order, failed shuffled, twice each".to_owned(),
+        // Which way each dependency runs is what the test says alone.
+        concat!(
+            "  ✗ c::needs — passed in your order, failed shuffled, twice each\n",
+            "      alone it fails the same way: it needs something a test before it leaves behind\n",
+        )
+        .to_owned(),
+        concat!(
+            "  ✗ c::victim — passed in your order, failed shuffled, twice each\n",
+            "      alone it passes: something a test before it leaves behind breaks it\n",
+        )
+        .to_owned(),
         format!("replay this order: sooth order --seed {seed} -- ./phpunit"),
         "result: ✗ ORDER-DEPENDENT — 2 of 5 tests".to_owned(),
     ] {
         assert!(stdout.contains(&line), "missing {line:?} in {stdout:?}");
     }
+    // Each of the two, by itself, twice — and nothing else.
+    assert_eq!(
+        lines_of(&cwd, "alone"),
+        ["needs", "needs", "victim", "victim"]
+    );
     // Quiet runs: the runner speaks once, for the first run that failed.
     assert!(
         stdout.contains(
@@ -1663,8 +1691,8 @@ fn a_difference_that_does_not_hold_is_not_called_an_order_dependency() {
     assert_eq!(lines_of(&cwd, "seeds").len(), 4);
     assert!(
         stdout.contains(
-            "1 test differed between the orders once, and not when both ran again — that \
-             is not an order's doing"
+            "1 test differed between the orders and did not hold when run again — that is \
+             not an order's doing"
         ),
         "got: {stdout:?}"
     );
@@ -1821,6 +1849,130 @@ fn a_test_the_history_proved_flaky_is_not_called_order_dependent() {
 }
 
 #[test]
+fn a_suite_where_everything_depends_on_one_test_is_not_started_a_hundred_times() {
+    let cwd = Scratch::new("order-alone-cap");
+    write_order_runner(&cwd);
+    // Twenty-two tests that all need `setup` before them.
+    let needy: Vec<String> = (1..=22).map(|n| format!("needs{n}")).collect();
+    let tests = format!("setup {}", needy.join(" "));
+    let output = order_pass(&cwd, &["--no-history"], &[("TESTS", &tests)]);
+    let stdout = String::from_utf8(output.stdout).expect("stdout should be UTF-8");
+
+    assert_eq!(output.status.code(), Some(1), "got: {stdout:?}");
+    assert!(
+        stdout.contains("22 tests depend on the order"),
+        "got: {stdout:?}"
+    );
+    assert!(
+        stdout.contains("alone: 20 tests, twice each"),
+        "got: {stdout:?}"
+    );
+    assert_eq!(lines_of(&cwd, "alone").len(), 40);
+    assert_eq!(
+        stdout.matches("alone it fails the same way").count(),
+        20,
+        "got: {stdout:?}"
+    );
+    assert!(
+        stdout.contains("note: 2 of these tests were not run alone — sooth stops at 20 of them"),
+        "got: {stdout:?}"
+    );
+}
+
+#[test]
+fn a_test_that_does_not_hold_alone_is_taken_back_out() {
+    let cwd = Scratch::new("order-mixed-alone");
+    write_order_runner(&cwd);
+    // Four suite runs that look like a dependency — green in your order
+    // (1, 4), red shuffled (2, 3) — and then, alone, a failure (5) and a
+    // pass (6). Nothing ran before it either time.
+    let output = order_pass(
+        &cwd,
+        &["--no-history"],
+        &[("TESTS", "a wob b"), ("WOB_FAILS_IN", "2 3 5")],
+    );
+    let stdout = String::from_utf8(output.stdout).expect("stdout should be UTF-8");
+
+    assert_eq!(output.status.code(), Some(1), "got: {stdout:?}");
+    assert_eq!(lines_of(&cwd, "alone"), ["wob", "wob"]);
+    assert!(
+        stdout.contains(
+            "  ~ c::wob — passed in your order, failed shuffled, twice each — and alone it \
+             passed once and failed once"
+        ),
+        "got: {stdout:?}"
+    );
+    assert!(!stdout.contains("ORDER-DEPENDENT"), "got: {stdout:?}");
+    assert!(!stdout.contains("depends on the order"), "got: {stdout:?}");
+}
+
+#[test]
+fn a_failure_alone_that_is_another_failure_gives_no_direction() {
+    let cwd = Scratch::new("order-failed-differently");
+    write_order_runner(&cwd);
+    // `odd` errors with a TypeError when shuffled; alone it fails an
+    // assertion. That is not the suite's failure reproduced.
+    let output = order_pass(&cwd, &["--no-history"], &[("TESTS", "a odd b")]);
+    let stdout = String::from_utf8(output.stdout).expect("stdout should be UTF-8");
+
+    assert_eq!(output.status.code(), Some(1), "got: {stdout:?}");
+    assert!(
+        stdout.contains(concat!(
+            "  ✗ c::odd — passed in your order, failed shuffled, twice each\n",
+            "      alone it fails in another way than in the suite, which says nothing about \
+             this failure\n",
+        )),
+        "got: {stdout:?}"
+    );
+    assert!(!stdout.contains("it needs something"), "got: {stdout:?}");
+}
+
+#[test]
+fn asked_to_stop_while_the_tests_run_alone_the_pass_is_still_reported() {
+    use std::os::unix::process::CommandExt;
+    use std::process::Stdio;
+    let cwd = Scratch::new("order-interrupted-alone");
+    write_order_runner(&cwd);
+    let child = Command::new(env!("CARGO_BIN_EXE_sooth"))
+        .current_dir(&cwd)
+        .env("HANG_ALONE", "1")
+        .args([
+            "order",
+            "--no-history",
+            "--color",
+            "never",
+            "--",
+            "./phpunit",
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .process_group(0)
+        .spawn()
+        .expect("sooth should start");
+    wait_for(&cwd.join("hanging"));
+    send_signal("-INT", &format!("-{}", child.id()));
+    let output = child.wait_with_output().expect("sooth should exit");
+    let stdout = String::from_utf8(output.stdout).expect("stdout should be UTF-8");
+    let stderr = String::from_utf8(output.stderr).expect("stderr should be UTF-8");
+
+    // The four runs were made: what they found is said, without a direction.
+    assert_eq!(output.status.code(), Some(2), "got: {stdout:?} {stderr:?}");
+    assert!(
+        stdout.contains("2 tests depend on the order"),
+        "got: {stdout:?}"
+    );
+    assert!(
+        stdout.contains("result: ✗ ORDER-DEPENDENT — 2 of 5 tests"),
+        "got: {stdout:?}"
+    );
+    assert!(!stdout.contains("alone it"), "got: {stdout:?}");
+    assert!(
+        stderr.contains("interrupted while the tests were run alone"),
+        "got: {stderr:?}"
+    );
+}
+
+#[test]
 fn an_order_pass_that_is_cut_short_reports_nothing_and_exits_two() {
     use std::os::unix::process::CommandExt;
     use std::process::Stdio;
@@ -1888,7 +2040,7 @@ fn the_order_pass_under_bare_json_prints_the_document_and_nothing_else() {
     for part in [
         r#""order":{"seed":7,"compared":5,"runs":[{"order":"given","exit_code":0,"success":true,"#,
         r#"{"order":"shuffled","seed":7,"exit_code":1,"success":false,"#,
-        r#""order_dependent":[{"name":"c::needs","passed_in":"given"},{"name":"c::victim","passed_in":"given"}],"unstable":[],"known_flakes":[]}}"#,
+        r#""order_dependent":[{"name":"c::needs","passed_in":"given","alone":"needs_predecessor"},{"name":"c::victim","passed_in":"given","alone":"broken_by_predecessor"}],"unstable":[],"known_flakes":[]}}"#,
     ] {
         assert!(stdout.contains(part), "missing {part} in {stdout:?}");
     }

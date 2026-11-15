@@ -62,11 +62,20 @@ pub fn print_order(ended: &OrderReport<'_>, style: Style) {
     };
     let lines = |differences: &[order::Difference], mark: &str, tail: &str| {
         for difference in differences {
+            // What held in the suite and then did not hold alone is said
+            // as that; everything else in its list shares one tail.
+            let tail = match difference.alone {
+                order::Alone::Mixed => ", twice each — and alone it passed once and failed once",
+                _ => tail,
+            };
             println!(
                 "  {mark} {} — {}{tail}",
                 identity(&difference.id, style),
                 both_times(difference)
             );
+            if let Some(direction) = direction(difference.alone) {
+                println!("      {}", style.dim(direction));
+            }
         }
     };
     if !analysis.order_dependent.is_empty() {
@@ -84,7 +93,7 @@ pub fn print_order(ended: &OrderReport<'_>, style: Style) {
     }
     if !analysis.unstable.is_empty() {
         println!(
-            "{} differed between the orders once, and not when both ran again — that is \
+            "{} differed between the orders and did not hold when run again — that is \
              not an order's doing",
             count(analysis.unstable.len(), "test")
         );
@@ -115,6 +124,19 @@ pub fn print_order(ended: &OrderReport<'_>, style: Style) {
              not a proof, and another seed is another sample"
         );
     }
+    if ended.not_run_alone > 0 {
+        println!(
+            "{}",
+            style.dim(&format!(
+                "note: {} not run alone — sooth stops at {} of them",
+                match ended.not_run_alone {
+                    1 => "1 of these tests was".to_owned(),
+                    many => format!("{many} of these tests were"),
+                },
+                analysis.order_dependent.len() - ended.not_run_alone
+            ))
+        );
+    }
     if let Some(scope) = ended.scope {
         println!("{}", style.dim(&format!("note: {scope}")));
     }
@@ -123,6 +145,37 @@ pub fn print_order(ended: &OrderReport<'_>, style: Style) {
         style.dim(&format!("replay this order: {}", ended.replay))
     );
     println!("{}", order_verdict(ended, style));
+}
+
+/// Which way a dependency runs, as the line under its test says it. `None`
+/// when the test's runs alone settled nothing — and for a test that was
+/// never run alone.
+fn direction(alone: order::Alone) -> Option<&'static str> {
+    match alone {
+        order::Alone::NeedsPredecessor => {
+            Some("alone it fails the same way: it needs something a test before it leaves behind")
+        }
+        order::Alone::BrokenByPredecessor => {
+            Some("alone it passes: something a test before it leaves behind breaks it")
+        }
+        order::Alone::FailedDifferently => Some(
+            "alone it fails in another way than in the suite, which says nothing about \
+             this failure",
+        ),
+        order::Alone::Mixed | order::Alone::Unknown => None,
+    }
+}
+
+/// The line that says the tests the pass found are now run by themselves.
+pub fn print_order_alone(tests: usize, times: usize) {
+    println!(
+        "alone: {}, {} each",
+        count(tests, "test"),
+        match times {
+            2 => "twice".to_owned(),
+            other => format!("{other} times"),
+        }
+    );
 }
 
 /// The closing line of an order pass. Three things it can say: a test

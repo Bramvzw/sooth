@@ -202,6 +202,10 @@ else
   expect "your order again: "
   expect_on_line "$queued" "twice each"
   expect_on_line "$wobbly" "the first time only"
+  # Alone, a test that is not the first of the four fails as it did when
+  # the shuffle put it elsewhere: it says which way the dependency runs.
+  expect "alone: "
+  expect "a test before it leaves behind"
   expect "replay this order: sooth order --seed $found"
   expect "result: ✗ ORDER-DEPENDENT — "
 fi
