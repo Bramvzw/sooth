@@ -189,7 +189,7 @@ impl Plan {
         }
         let arguments = self.runner_arguments();
         let parallel = if self.preset == Preset::Phpunit {
-            if self.shape == Shape::Runner && is_named(&self.command, 0, &["paratest"]) {
+            if self.shape == Shape::Runner && self.is_paratest() {
                 Some("paratest")
             } else {
                 arguments
@@ -222,16 +222,27 @@ impl Plan {
         ))
     }
 
-    /// What the shuffle of this runner does not reach, when that is worth
-    /// knowing before reading "no difference".
-    pub fn shuffle_scope(&self) -> Option<&'static str> {
+    /// How far this runner's shuffle reaches. Jest shuffles the tests
+    /// inside each file and runs the files apart from each other, in
+    /// whatever order they finish; the others shuffle the suite.
+    pub fn shuffles(&self) -> Shuffles {
         match self.preset {
-            Preset::Jest => Some(
-                "jest shuffles the tests inside each file; the files themselves run \
-                 apart from each other",
-            ),
-            Preset::Phpunit | Preset::Pytest | Preset::Go => None,
+            Preset::Jest => Shuffles::EachFile,
+            Preset::Phpunit | Preset::Pytest | Preset::Go => Shuffles::TheSuite,
         }
+    }
+
+    /// The command that runs one test and nothing else: the test named
+    /// `name` in the class or file `classname`, as the report gave them.
+    /// Narrower than [`Plan::rerun`], whose selection by name also reaches
+    /// every test that shares the name or starts with it — harmless for a
+    /// re-run, and the opposite of alone. `None` when sooth cannot select
+    /// for this preset.
+    pub fn alone(&self, report: &Path, classname: Option<&str>, name: &str) -> Option<Spawn> {
+        let selection = alone_args(self.preset, classname, name)?;
+        let Injection { mut args, envs } = injection(self.preset, report);
+        args.extend(selection);
+        Some((self.with(args), envs))
     }
 
     /// The preset this command runs under.
@@ -252,6 +263,16 @@ impl Plan {
                 .map_or(self.command.len(), |separator| separator + 1),
         };
         &self.command[from..]
+    }
+
+    /// Whether the command is paratest itself: as the program, or as the
+    /// script a PHP binary runs behind its own options (`php -d
+    /// memory_limit=1G vendor/bin/paratest`). Not as an argument further
+    /// on: `php vendor/bin/phpunit tests/paratest` names a directory.
+    fn is_paratest(&self) -> bool {
+        is_named(&self.command, 0, &["paratest"])
+            || php_script(&self.command)
+                .is_some_and(|script| is_named(&self.command, script, &["paratest"]))
     }
 
     /// The command with `extra` at the injection point.
@@ -301,7 +322,7 @@ impl Plan {
         if self.preset != Preset::Phpunit {
             return None;
         }
-        if self.shape == Shape::Runner && is_named(&self.command, 0, &["paratest"]) {
+        if self.shape == Shape::Runner && self.is_paratest() {
             return Some(format!(
                 "{WHY}. Gate with the runner it drives (`vendor/bin/phpunit`) instead: a \
                  handful of files gains nothing from running in parallel"
@@ -430,6 +451,28 @@ fn script_position(command: &[String], names: &[&str]) -> Option<usize> {
     } else {
         None
     }
+}
+
+/// Where the script stands that a PHP binary runs: the first word behind
+/// PHP's own options, of which `-d`, `-c` and `-z` and their long forms
+/// take the next word as their value. `None` when the program is not PHP
+/// or no script follows.
+fn php_script(command: &[String]) -> Option<usize> {
+    if !command.first().is_some_and(|program| is_php(program)) {
+        return None;
+    }
+    let mut at = 1;
+    while let Some(word) = command.get(at) {
+        if !word.starts_with('-') {
+            return Some(at);
+        }
+        let takes_a_value = matches!(
+            word.as_str(),
+            "-d" | "--define" | "-c" | "--php-ini" | "-z" | "--zend-extension"
+        );
+        at += if takes_a_value { 2 } else { 1 };
+    }
+    None
 }
 
 /// Whether `program` is a PHP binary: `php`, `php8.4`, `/usr/bin/php`.
@@ -589,6 +632,45 @@ fn selection_args(preset: Preset, names: &[String]) -> Option<Vec<String>> {
             Some(vec!["-t".to_owned(), format!("({pattern})")])
         }
         Preset::Go => None,
+    }
+}
+
+/// How far a runner's shuffle reaches.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Shuffles {
+    /// Every test of the suite can end up before or after any other.
+    TheSuite,
+    /// The tests inside one file are shuffled; the files run apart.
+    EachFile,
+}
+
+/// The selection that restricts `preset` to the one test `name` of
+/// `classname`. For `PHPUnit` the pattern names the class — the report's
+/// dotted classname, with either separator, since the filter sees
+/// backslashes; starting where the string starts, behind nothing or behind
+/// the `P\` Pest puts in front, so `Tests\UserTest` matches neither
+/// `Tests\AdminUserTest` nor `App\Tests\UserTest` — and ends where the name
+/// ends, so `user` does not also select `user_is_created`, nor data set
+/// `#1` the sets `#10` to `#19`. Jest's `-t` sees no file, only the describes and the title: it is
+/// anchored at the end and may still reach the same title elsewhere, which
+/// the caller has to notice.
+fn alone_args(preset: Preset, classname: Option<&str>, name: &str) -> Option<Vec<String>> {
+    if !selectable(preset, name) {
+        return None;
+    }
+    match preset {
+        Preset::Phpunit => {
+            let class = classname.map_or_else(String::new, |classname| {
+                let parts: Vec<String> = classname.split('.').map(regex_escape).collect();
+                format!(r"^(?:P\\)?{}", parts.join(r"[\\.]"))
+            });
+            Some(vec![
+                "--filter".to_owned(),
+                format!("/{class}::(?:test_?)?({})$/i", any_spelling(name)),
+            ])
+        }
+        Preset::Jest => Some(vec!["-t".to_owned(), format!("({})$", regex_escape(name))]),
+        Preset::Pytest | Preset::Go => None,
     }
 }
 
@@ -780,6 +862,12 @@ fn injection(preset: Preset, report: &Path) -> Injection {
                     "{filepath} {classname}".to_owned(),
                 ),
                 ("JEST_JUNIT_TITLE".to_owned(), "{title}".to_owned()),
+                // The file of every test, beside its identity: the order
+                // pass asks whether a shuffle changed the order inside one.
+                (
+                    "JEST_JUNIT_ADD_FILE_ATTRIBUTE".to_owned(),
+                    "true".to_owned(),
+                ),
             ],
         },
         Preset::Go => Injection {
@@ -851,6 +939,58 @@ mod tests {
     }
 
     #[test]
+    fn a_test_alone_is_asked_for_by_its_class_and_its_whole_name() {
+        let report = Path::new("/tmp/r.xml");
+        let alone = |command: &[&str], preset, classname, name: &str| {
+            Plan::resolve(&words(command), preset)
+                .alone(report, classname, name)
+                .map(|(command, _)| command)
+        };
+        // The whole class, with either separator and Pest's `P\` in front
+        // or nothing, and the name anchored at its end: `user` is not
+        // `user_is_created`, and `Tests\Unit\UserTest` is neither
+        // `AdminUserTest` nor `App\Tests\Unit\UserTest`. Checked against
+        // real PHPUnit and Pest.
+        let phpunit = alone(
+            &["vendor/bin/pest"],
+            Preset::Phpunit,
+            Some("Tests.Unit.UserTest"),
+            "user is created",
+        )
+        .expect("phpunit selects");
+        assert_eq!(
+            phpunit.last().map(String::as_str),
+            Some(r"/^(?:P\\)?Tests[\\.]Unit[\\.]UserTest::(?:test_?)?(user[_ ]?is[_ ]?created)$/i")
+        );
+        assert_eq!(phpunit[phpunit.len() - 2], "--filter");
+        // A report without classnames still gets the anchor.
+        let bare = alone(&["vendor/bin/phpunit"], Preset::Phpunit, None, "test_x#1")
+            .expect("phpunit selects");
+        assert_eq!(
+            bare.last().map(String::as_str),
+            Some("/::(?:test_?)?(test_x#1)$/i")
+        );
+        // Jest's `-t` sees the describes and the title, never the file.
+        let jest =
+            alone(&["jest"], Preset::Jest, Some("a.test.js "), "adds (1+1)").expect("jest selects");
+        assert_eq!(jest.last().map(String::as_str), Some(r"(adds \(1\+1\))$"));
+        // A name the runner cannot be pointed at, a runner sooth cannot.
+        assert_eq!(alone(&["jest"], Preset::Jest, None, ""), None);
+        assert_eq!(alone(&["pytest"], Preset::Pytest, None, "test_x"), None);
+    }
+
+    #[test]
+    fn jest_shuffles_inside_each_file_and_the_others_the_suite() {
+        use super::Shuffles;
+        let shuffles = |command: &[&str], preset| Plan::resolve(&words(command), preset).shuffles();
+        assert_eq!(shuffles(&["jest"], Preset::Jest), Shuffles::EachFile);
+        assert_eq!(
+            shuffles(&["php", "artisan", "test"], Preset::Phpunit),
+            Shuffles::TheSuite
+        );
+    }
+
+    #[test]
     fn the_order_pass_refuses_what_it_cannot_shuffle_and_says_why() {
         let refusal = |command: &[&str], preset| {
             Plan::resolve(&words(command), preset)
@@ -868,11 +1008,29 @@ mod tests {
             &["php", "artisan", "test", "--parallel"][..],
             &["vendor/bin/pest", "-p"],
             &["vendor/bin/paratest"],
+            &["php", "vendor/bin/paratest"],
+            &["php", "-d", "memory_limit=1G", "vendor/bin/paratest"],
+            &["php", "--define", "memory_limit=1G", "vendor/bin/paratest"],
         ] {
             assert!(
                 refusal(parallel, Preset::Phpunit).contains("spreads the tests over workers"),
                 "{parallel:?}"
             );
+        }
+        // Only what PHP runs is the runner: a path or a group called
+        // paratest is an argument.
+        for argument in [
+            &["php", "vendor/bin/phpunit", "tests/paratest"][..],
+            &[
+                "php",
+                "-d",
+                "memory_limit=1G",
+                "vendor/bin/phpunit",
+                "--group",
+                "paratest",
+            ],
+        ] {
+            assert_eq!(refusal(argument, Preset::Phpunit), "", "{argument:?}");
         }
         // An order the command already sets.
         assert!(refusal(
@@ -1519,6 +1677,10 @@ mod tests {
                     "{filepath} {classname}".to_owned(),
                 ),
                 ("JEST_JUNIT_TITLE".to_owned(), "{title}".to_owned()),
+                (
+                    "JEST_JUNIT_ADD_FILE_ATTRIBUTE".to_owned(),
+                    "true".to_owned()
+                ),
             ]
         );
     }

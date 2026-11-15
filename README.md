@@ -303,13 +303,22 @@ other thing twice in the shuffled one. A difference that does not hold is
 listed as exactly that, and a test the history already proved flaky is never
 called order-dependent.
 
-Each test it finds then runs by itself, twice, because that is what decides
-the fix. A test that fails alone the way it failed in the suite **needs
-something a test before it leaves behind**: give it a setup of its own. A
-test that passes alone is **broken by something a test before it leaves
-behind**: the fix is in the test that leaks, and this one is only where it
-shows. Which test that is, sooth does not say; finding it takes a search
-through the orders that no runner-agnostic tool can do honestly.
+Each test it finds — the first twenty, when there are more — is then run by
+itself, twice, because that is what decides the fix. A test that fails alone
+the way it failed in the suite **needs something a test before it leaves
+behind**: give it a setup of its own. A test that passes alone is **broken
+by something a test before it leaves behind**: the fix is in the test that
+leaks, and this one is only where it shows. Which test that is, sooth does
+not say; finding it takes a search through the orders that no
+runner-agnostic tool can do honestly.
+
+"By itself" is checked, not assumed. PHPUnit and Pest are asked for a test
+by its class and whole name; Jest by its whole title, which is all `-t` can
+say. When the runner ran anything else along with it — another test, or a
+second case under the same name, like the rows of a `test.each` that share
+one title — the line says `not seen alone` and gives no direction: a test
+that passes in the company of the very test it depends on would point the
+wrong way.
 
 - **The seed is the finding.** Every pass prints it, and `--seed N` runs that
   order again: on your machine, a colleague's, or in CI.

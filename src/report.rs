@@ -238,11 +238,23 @@ pub struct OrderReport<'a> {
     pub failed: bool,
     /// The command line that makes this pass again under the same seed.
     pub replay: &'a str,
-    /// What the runner's shuffle does not reach, when that is worth a line.
-    pub scope: Option<&'a str>,
-    /// How many of the order-dependent tests were not run alone, because
-    /// there were more of them than sooth runs one by one.
-    pub not_run_alone: usize,
+    /// How far the runner's shuffle reached.
+    pub shuffles: crate::preset::Shuffles,
+    /// The runs of the order-dependent tests by themselves.
+    pub alone: AloneRuns,
+}
+
+/// How the runs alone went, as numbers: what stands behind the directions
+/// the report gives, and behind the ones it does not.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AloneRuns {
+    /// How many tests the runner was asked to run alone.
+    pub tests: usize,
+    /// How many order-dependent tests it was not asked for: more were
+    /// found than sooth runs one by one.
+    pub not_run: usize,
+    /// Whether sooth was asked to stop before all of them had run.
+    pub interrupted: bool,
 }
 
 /// One run of an order pass.
@@ -356,6 +368,7 @@ mod fixtures {
             duration: Some(Duration::from_secs_f64(duration_seconds)),
             status,
             failure_type: None,
+            file: None,
         }
     }
 }

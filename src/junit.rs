@@ -52,6 +52,9 @@ pub struct TestCase {
     /// The `type` attribute of the `<failure>`/`<error>` child that set the
     /// status — the exception class, when the runner writes one.
     pub failure_type: Option<String>,
+    /// The `file` attribute, as the runner wrote it, when it writes one.
+    /// Not part of the identity: runners disagree on what goes in it.
+    pub file: Option<String>,
 }
 
 impl TestCase {
@@ -276,6 +279,7 @@ struct OpenTestCase {
     duration: Option<Duration>,
     status: TestStatus,
     failure_type: Option<String>,
+    file: Option<String>,
     /// The `depth` value the matching `Event::End` brings the reader back to.
     close_depth: i64,
 }
@@ -285,6 +289,7 @@ impl OpenTestCase {
         let mut name = String::new();
         let mut classname = None;
         let mut duration = None;
+        let mut file = None;
 
         for attribute in tag.attributes() {
             let attribute = attribute.map_err(|err| JunitError::Xml(err.to_string()))?;
@@ -301,6 +306,7 @@ impl OpenTestCase {
                     classname = Some(value.trim().to_owned());
                 }
                 b"time" => duration = parse_seconds(&value),
+                b"file" if !value.trim().is_empty() => file = Some(value.trim().to_owned()),
                 _ => {}
             }
         }
@@ -311,6 +317,7 @@ impl OpenTestCase {
             duration,
             status: TestStatus::Passed,
             failure_type: None,
+            file,
             close_depth,
         })
     }
@@ -322,6 +329,7 @@ impl OpenTestCase {
             duration: self.duration,
             status: self.status,
             failure_type: self.failure_type,
+            file: self.file,
         }
     }
 }
@@ -596,6 +604,20 @@ mod tests {
         )
         .unwrap();
         assert_eq!(report.test_cases[0].status, TestStatus::Error);
+    }
+
+    #[test]
+    fn the_file_a_runner_names_for_a_test_is_kept_beside_its_identity() {
+        let report = parse_str(concat!(
+            r#"<testsuite><testcase classname="a.test.js top" name="t" file="a.test.js"/>"#,
+            r#"<testcase classname="c" name="u" file="  "/><testcase name="v"/></testsuite>"#,
+        ))
+        .unwrap();
+        assert_eq!(report.test_cases[0].file.as_deref(), Some("a.test.js"));
+        // The identity does not change with it.
+        assert_eq!(report.test_cases[0].qualified_name(), "a.test.js top::t");
+        assert_eq!(report.test_cases[1].file, None);
+        assert_eq!(report.test_cases[2].file, None);
     }
 
     #[test]

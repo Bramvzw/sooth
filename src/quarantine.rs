@@ -131,6 +131,7 @@ mod tests {
                 duration: Some(Duration::from_millis(100)),
                 status,
                 failure_type: None,
+                file: None,
             }],
         }
     }

@@ -2009,6 +2009,54 @@ are the fourth.
 are made only when a test differed, so a suite without order-dependence
 pays for two runs.
 
+**Every heading says what was seen.** A review of the first version found
+the report claiming more than its runs: a red pass without a dependency
+ended "a run was red, and not because of the order", and every difference
+that was not confirmed stood under "that is not an order's doing". Neither
+was witnessed — two orders are a sample, and a test can be flaky and
+order-dependent at once. The verdict now reads "no test followed the order
+in these runs", and the differences are filed by what happened to them:
+did the same thing twice in each order (order-dependent); did something
+else the second time (differed, and not the same way again); had no result
+in a second run (unconfirmed, neither proven nor refuted); held in the
+suite and not alone; proved flaky by the history before. One second run
+that did something else than its order's first is enough for "not the same
+way again", also when the other second run had no result for the test: the
+missing run could only have confirmed half of a pattern the first one
+already broke.
+
+**What counts as shuffled.** The pass checks that its shuffle changed the
+order, over the tests it compared and nothing else: a skipped test that
+moved is no change. For Jest, which shuffles inside each file and runs the
+files apart in whatever order they finish, only a change inside a file
+counts; files swapping places is not an order any test was put in. Fewer
+than two compared tests have no order at all, whatever the reports list.
+
+"Inside a file" is read from the report's `file` attribute, which sooth
+asks jest-junit for (`JEST_JUNIT_ADD_FILE_ATTRIBUTE=true`). The first
+version grouped by classname, and Jest's classname is the describe block:
+a file of `describe`s with one test each had no group of two, so a shuffle
+that did reorder it was refused as one that changed nothing (exit 2). A
+second review found that on a real Jest project. A report without the
+attribute falls back to the classname.
+
+A shuffle needs two tests a report tells apart within its reach: the
+suite, or for Jest one file. Where no file has them — every file holds one
+test, or nothing but the rows of a `test.each` under one title, which read
+the same however they were shuffled — no seed can show a change. That is
+refused at once, without trying other seeds, and for what it is: "no order
+to compare", with the advice to give such rows names of their own. It used
+to be told as an order that had stayed, with a pointer to the runner's
+configuration. Sooth does not take a difference between the runs as proof
+that the rows moved: a flaky row makes one too.
+
+Where a file does have two such tests and they stayed in place, the order
+was most likely pinned, and the refusal asks about the configuration or a
+script. It says what the report lists, not what ran — rows under one name
+may still have moved unseen beside them — and for Jest it says so about the
+inside of each file: files that finish in another order put every test
+somewhere else in the report.
+
 **The history gets the first run and no other.** The run in the suite's
 own order is an ordinary run and is recorded as one. A shuffled run is not:
 a test that fails only in another order would be a pass and a failure on
@@ -2054,9 +2102,33 @@ test created). So every test the order pass finds runs by itself, twice:
   bootstrap would otherwise count as confirmation. That reads "alone it
   fails in another way than in the suite" and gives no direction. One
   reproduction in the two runs is a reproduction, as for `--verify`.
-- **It reuses the selection of `--verify`**, and so inherits its reach and
-  its limits: a name the runner cannot be pointed at leaves the question
-  open, and a selection by name can match a second test of that name.
+- **Alone is checked, not assumed.** The first version reused the
+  selection of `--verify`, a pattern on the test's name with no class and
+  no end: asked for `user`, PHPUnit also ran `user_is_created`. That is
+  harmless for a re-run and the opposite of alone. An independent review
+  built the case where it matters — `user` needs `user_is_created` before
+  it, both are selected, `user` passes in that company — and sooth said
+  "alone it passes: something before it breaks it". The direction was
+  reversed, and the advice with it. Two things changed. The selection is
+  now the class and the whole name (`/Tests[\\.]Unit[\\.]UserTest::…(user)$/i`;
+  checked on real PHPUnit and Pest: one test, data-set rows and prettified
+  names included). And whatever the runner did with it, a report in which
+  any other test ran is not a run alone: the line says "not seen alone"
+  and gives no direction, and a flip there is not held against the test.
+  Jest's `-t` sees no file, so the same title in another file still comes
+  along; the check is what keeps that honest.
+
+  The check counts cases, not names. Its first form asked whether another
+  *id* had run, and a second review found what that misses: the rows of a
+  Jest `test.each` with a fixed title are several cases under one id, each
+  the other's predecessor, and they passed for a test alone. Every case
+  that ran counts now, so two under one name are company. The class in the
+  PHPUnit pattern also starts where the string starts, behind nothing or
+  behind the `P\` Pest puts in front (`^(?:P\\)?Tests[\\.]Unit[\\.]UserTest::…`),
+  so `UserTest` selects neither `AdminUserTest` nor a class of that name in
+  a longer namespace. Tried on real PHPUnit and Pest against every test of
+  two projects built to break it (39 and 29 shapes of class and name): one
+  test each time.
 - **A run alone that says nothing leaves the test where it was**:
   order-dependent, without a direction. So does an interruption, which
   still exits 2 after the report: the four runs were made, and what they

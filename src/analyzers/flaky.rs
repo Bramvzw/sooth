@@ -230,9 +230,8 @@ fn reordered_runs(reports: &[JunitReport]) -> Vec<usize> {
 }
 
 /// Whether the tests two runs share ran in a different relative order in
-/// `other` than in `first`. The order pass asks this of the run it had
-/// shuffled: a shuffle that changed nothing compared an order with itself.
-pub(crate) fn reordered(first: &JunitReport, other: &JunitReport) -> bool {
+/// `other` than in `first`.
+fn reordered(first: &JunitReport, other: &JunitReport) -> bool {
     let first = execution_order(first);
     let other = execution_order(other);
     let shared: BTreeSet<&String> = first

@@ -169,6 +169,7 @@ pub fn order_json(ended: &OrderReport<'_>) -> String {
                         order::Alone::BrokenByPredecessor => r#""broken_by_predecessor""#,
                         order::Alone::FailedDifferently => r#""failed_differently""#,
                         order::Alone::Mixed => r#""mixed""#,
+                        order::Alone::InCompany => r#""not_alone""#,
                         order::Alone::Unknown => "null",
                     }
                 )
@@ -177,15 +178,25 @@ pub fn order_json(ended: &OrderReport<'_>) -> String {
             .join(",")
     };
     let analysis = ended.analysis;
+    // Why an `alone` may be null: the test was not asked for (`not_run`),
+    // or sooth was stopped before its turn.
+    let interrupted = if ended.alone.interrupted {
+        r#","interrupted":{"during":"alone"}"#
+    } else {
+        ""
+    };
     format!(
-        r#"{{"schema_version":{JSON_SCHEMA_VERSION},"sooth_version":"{}","order":{{"seed":{},"compared":{},"runs":[{}],"order_dependent":[{}],"unstable":[{}],"known_flakes":[{}]}}}}"#,
+        r#"{{"schema_version":{JSON_SCHEMA_VERSION},"sooth_version":"{}","order":{{"seed":{},"compared":{},"runs":[{}],"order_dependent":[{}],"unstable":[{}],"unconfirmed":[{}],"known_flakes":[{}],"alone":{{"tests":{},"not_run":{}}}{interrupted}}}}}"#,
         env!("CARGO_PKG_VERSION"),
         ended.seed,
         analysis.compared,
         runs.join(","),
         differences(&analysis.order_dependent),
         differences(&analysis.unstable),
+        differences(&analysis.unconfirmed),
         differences(&analysis.known_flakes),
+        ended.alone.tests,
+        ended.alone.not_run,
     )
 }
 
@@ -424,7 +435,8 @@ mod tests {
                 difference("c::odd", PassedIn::Given, Alone::FailedDifferently),
             ],
             unstable: vec![difference("c::\"wob\"", PassedIn::Shuffled, Alone::Mixed)],
-            known_flakes: vec![difference("c::old", PassedIn::Given, Alone::Unknown)],
+            unconfirmed: vec![difference("c::gone", PassedIn::Given, Alone::Unknown)],
+            known_flakes: vec![difference("c::old", PassedIn::Given, Alone::InCompany)],
         };
         let runs = [
             OrderRun {
@@ -442,8 +454,12 @@ mod tests {
             runs: &runs,
             failed: true,
             replay: "sooth order --seed 42 -- phpunit",
-            scope: None,
-            not_run_alone: 0,
+            shuffles: crate::preset::Shuffles::TheSuite,
+            alone: crate::report::AloneRuns {
+                tests: 3,
+                not_run: 2,
+                interrupted: true,
+            },
         });
         assert_eq!(
             json,
@@ -456,7 +472,9 @@ mod tests {
                     r#"{{"name":"c::victim","passed_in":"shuffled","alone":"broken_by_predecessor"}},"#,
                     r#"{{"name":"c::odd","passed_in":"given","alone":"failed_differently"}}],"#,
                     r#""unstable":[{{"name":"c::\"wob\"","passed_in":"shuffled","alone":"mixed"}}],"#,
-                    r#""known_flakes":[{{"name":"c::old","passed_in":"given","alone":null}}]}}}}"#
+                    r#""unconfirmed":[{{"name":"c::gone","passed_in":"given","alone":null}}],"#,
+                    r#""known_flakes":[{{"name":"c::old","passed_in":"given","alone":"not_alone"}}],"#,
+                    r#""alone":{{"tests":3,"not_run":2}},"interrupted":{{"during":"alone"}}}}}}"#
                 ),
                 env!("CARGO_PKG_VERSION")
             )

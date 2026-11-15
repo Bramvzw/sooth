@@ -904,6 +904,7 @@ mod tests {
             duration: Some(Duration::from_secs_f64(duration_seconds)),
             status,
             failure_type: None,
+            file: None,
         }
     }
 
