@@ -25,6 +25,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the slow-test pass of v0.4 needs to say "slower since `<commit>`". Lines
   written by earlier versions stay valid; a line grows by about 3%.
 
+### Changed
+
+- The release binary is about a third smaller (1.7 MB → 1.2 MB on macOS
+  arm64): link-time optimisation and stripped symbols. Nothing else
+  changes; `cargo install sooth` takes a few seconds longer to build.
+
 ### Fixed
 
 - A signal that reached only sooth (`kill`, a CI cancel, a timeout wrapper)

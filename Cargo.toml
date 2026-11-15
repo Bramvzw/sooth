@@ -23,6 +23,15 @@ signal-hook = { version = "0.4", default-features = false }
 name = "sooth"
 path = "src/main.rs"
 
+# A third smaller for the same runtime, at a build that takes twice as long
+# and happens once per release. `panic` stays at unwind on purpose: the
+# guards that remove sooth's temp files run while a panic unwinds, and
+# `abort` would save another 150 kB by bringing that leak back.
+[profile.release]
+strip = true
+lto = "fat"
+codegen-units = 1
+
 [lints.rust]
 # forbid, not deny: cannot be overridden with an #[allow] anywhere,
 # so "this binary contains no unsafe" is a guarantee, not a default.
