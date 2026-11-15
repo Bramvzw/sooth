@@ -145,23 +145,21 @@ fn run(args: &cli::RunArgs) -> ExitCode {
     } else {
         std::collections::BTreeSet::new()
     };
-    let passes = analyzers::explain::Passes {
-        active: flaky_analysis.as_ref(),
-        verify: verify_verdict.as_ref(),
-        history: history_analysis,
-    };
-    let explanation = explain_failures(suite_red, &reports, passes, &quarantine);
-    let pardoned = pardoned_failures(args, suite_red, &quarantine, &outcomes, &reports);
-    let failed = suite_red && pardoned.is_none();
-    let analyses = Analyses {
+    // Built once: the passes that explain a failure are the ones the report
+    // prints, and the explanation is added to them when it exists.
+    let mut analyses = Analyses {
         flaky: flaky_analysis.as_ref(),
         history: history_analysis,
         history_observations: history_pass.as_ref().map(|pass| pass.prior),
         verify: verify_verdict.as_ref(),
-        pardoned: pardoned.as_deref(),
-        explanation: explanation.as_deref(),
         gate: selection.as_ref(),
+        ..Analyses::default()
     };
+    let explanation = explain_failures(suite_red, &reports, analyses.passes(), &quarantine);
+    let pardoned = pardoned_failures(args, suite_red, &quarantine, &outcomes, &reports);
+    let failed = suite_red && pardoned.is_none();
+    analyses.explanation = explanation.as_deref();
+    analyses.pardoned = pardoned.as_deref();
     // The worst run's count, over all reports: the mismatch note and the
     // verdict must not claim "0 failing" because the *last* run was green.
     let report_failures = reports
