@@ -329,6 +329,105 @@ fn first_command_the_gate_and_json_work_on_an_inferred_preset() {
     assert!(stdout.contains("\"gate\""), "got: {stdout:?}");
 }
 
+/// `sooth run --color never --junit report.xml <args> -- cp src.xml
+/// report.xml` in a scratch dir, with `xml` as the report: its stdout.
+fn stdout_for_report(tag: &str, xml: &str, args: &[&str]) -> String {
+    let (cwd, mut command) = sooth_in(tag);
+    std::fs::write(cwd.join("src.xml"), xml).expect("write");
+    let output = command
+        .args(["run", "--color", "never", "--junit", "report.xml"])
+        .args(args)
+        .args(["--", "cp", "src.xml", "report.xml"])
+        .output()
+        .expect("sooth should run");
+    String::from_utf8(output.stdout).expect("stdout should be UTF-8")
+}
+
+#[test]
+fn an_unread_history_is_not_quoted() {
+    // `--no-history` reads no history: "new (nothing in history)" would be
+    // a claim about a file nobody opened.
+    let stdout = stdout_for_report(
+        "unread-history",
+        r#"<testsuite><testcase classname="c" name="wob"><failure/></testcase></testsuite>"#,
+        &["--no-history"],
+    );
+    assert!(
+        stdout.contains("\n1 failure\n  ✗ c::wob\nnote: the run history was not consulted"),
+        "got: {stdout:?}"
+    );
+    assert!(!stdout.contains("in history)"), "got: {stdout:?}");
+    assert!(!stdout.contains("new"), "got: {stdout:?}");
+}
+
+#[test]
+fn totals_of_several_runs_say_which_run_they_count() {
+    let report = r#"<testsuite><testcase classname="c" name="ok"/></testsuite>"#;
+    let repeated = stdout_for_report("totals-final", report, &["--no-history", "--runs", "2"]);
+    assert!(
+        repeated.contains("tests (final run): 1 total"),
+        "got: {repeated:?}"
+    );
+    let single = stdout_for_report("totals-single", report, &["--no-history"]);
+    assert!(single.contains("\ntests: 1 total"), "got: {single:?}");
+}
+
+#[test]
+fn the_slowest_ranking_lists_measurements_and_only_when_it_ranks() {
+    let cases = |timed: usize, untimed: usize| {
+        let timed = (0..timed).map(|index| {
+            format!(
+                r#"<testcase classname="c" name="timed{index}" time="0.{:03}"/>"#,
+                index + 1
+            )
+        });
+        let untimed = (0..untimed)
+            .map(|index| format!(r#"<testcase classname="c" name="untimed{index}" time="0"/>"#));
+        let body: Vec<String> = timed.chain(untimed).collect();
+        format!("<testsuite>{}</testsuite>", body.concat())
+    };
+
+    // Three tests have no "slowest ten".
+    let small = stdout_for_report("slowest-small", &cases(3, 0), &["--no-history"]);
+    assert!(!small.contains("slowest tests:"), "got: {small:?}");
+    // Asked for, the ranking is given.
+    let asked = stdout_for_report(
+        "slowest-asked",
+        &cases(3, 0),
+        &["--no-history", "--slowest", "2"],
+    );
+    assert!(
+        asked.contains("slowest tests:\n  1. c::timed2 (3.00ms)\n  2. c::timed1 (2.00ms)\n"),
+        "got: {asked:?}"
+    );
+    // A suite larger than the cut-off gets it unasked.
+    let large = stdout_for_report("slowest-large", &cases(12, 0), &["--no-history"]);
+    assert!(
+        large.contains("slowest tests:\n  1. c::timed11 (12.00ms)"),
+        "got: {large:?}"
+    );
+    // `time="0"` is not a measurement: it is never ranked, and a suite with
+    // nothing measured has no ranking at all.
+    let mixed = stdout_for_report(
+        "slowest-mixed",
+        &cases(1, 3),
+        &["--no-history", "--slowest", "3"],
+    );
+    assert!(
+        mixed.contains("slowest tests:\n  1. c::timed0 (1.00ms)\n") && !mixed.contains("0.00ns"),
+        "got: {mixed:?}"
+    );
+    let unmeasured = stdout_for_report(
+        "slowest-unmeasured",
+        &cases(0, 12),
+        &["--no-history", "--slowest", "3"],
+    );
+    assert!(
+        !unmeasured.contains("slowest tests:"),
+        "got: {unmeasured:?}"
+    );
+}
+
 #[test]
 fn json_to_a_file_keeps_the_human_report_on_stdout() {
     let (cwd, mut command) = sooth_in("json-file");

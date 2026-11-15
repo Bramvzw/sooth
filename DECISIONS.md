@@ -1416,3 +1416,30 @@ Choices:
 - **No Laravel application.** `artisan test` would need a full skeleton per
   run; its forwarding is covered by the Composer fixture (the same
   "arguments after the wrapper" shape) and by hand before a release.
+
+## The report says only what was read and what was measured
+
+Three lines on the screen claimed more than sooth knew (#243, #193):
+
+- **`new (nothing in history)` under `--no-history`.** The history was not
+  read, so "nothing in history" described a file nobody opened, and the
+  headline's `1 new` counted a verdict nobody reached. When the history was
+  not consulted, a failure with no other label gets none: the line ends at
+  the test's name, or at what this invocation itself saw (`flaky (1 of 2
+  runs now)`). The note under the list already said the history was not
+  consulted; now nothing above it contradicts that. `--json` keeps its
+  `unknown` verdict, which never claimed more.
+- **`tests: 22 total — 12 passed, 9 failed` above `11 failures`.** With
+  `--runs N` the totals are the final run's and the failure list covers all
+  runs. Both are right, and together they read as a miscount, so the totals
+  line says which run it counts: `tests (final run): …`.
+- **`slowest tests: 1. … (0.00ns)`.** pytest writes `time="0.000"` for a
+  sub-millisecond test and jest-junit `time="0"`; a missing attribute parses
+  as zero too. That is "not measured", and a ranking of unmeasured tests is
+  a list in file order under a heading that says otherwise. Zero durations
+  are left out, and a ranking is printed only when it ranks — when the
+  suite has more tests than the cut-off, or `--slowest` asked for it. Three
+  tests have no "slowest ten"; a two-file gate no longer ends in one.
+
+The JSON document is untouched by all three: it carries the numbers, and
+these were statements about them.
