@@ -130,7 +130,8 @@ The history only grows: a 5,000-test suite adds about a megabyte per run.
 Every analysis looks at each test's last 50 invocations in which it ran, so
 what is older is dead weight. `sooth history --prune` rewrites the file down
 to that window — a 270 MB history of that suite comes back as 54 MB in four
-seconds, and says the same things.
+seconds. It removes only what no analysis reads, and it steps back when
+another sooth is writing to the history at that moment: run it again.
 
 ## Bring your CI evidence home
 

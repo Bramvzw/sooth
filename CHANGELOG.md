@@ -13,8 +13,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   test's last 50 invocations in which it ran, the window every analysis
   reads. The file only grew before (about 1.2 MB per run of a 5,000-test
   suite), and past 64 MiB the oldest observations were out of sooth's
-  reach with no tool to do anything about it. Pruning changes the file's
-  size, not its findings.
+  reach with no tool to do anything about it. A prune removes only what no
+  analysis reads. It refuses to overwrite a history that another sooth
+  wrote to in the meantime, and stopped halfway it leaves the history as
+  it was.
 - **Stopping sooth is safe.** On a Ctrl-C, or a `SIGTERM` from CI or a
   timeout wrapper, sooth reports the runs that had finished, with
   `result: interrupted after 5 of 20 runs — none of them failed` in place
@@ -39,6 +41,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `import --replace` no longer overwrites what another sooth wrote to the
+  history while it ran. It fails and says so, where those observations
+  used to be lost. The rewritten history also keeps the permissions it had.
 - A signal that reached only sooth (`kill`, a CI cancel, a timeout wrapper)
   left the test command running as an orphan and sooth's temp directories
   behind. Sooth now gives the command two seconds to end by itself, then
