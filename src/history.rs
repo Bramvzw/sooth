@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use crate::interrupt::Interrupt;
 use crate::json;
 use crate::junit::TestStatus;
 
@@ -105,17 +106,21 @@ pub fn current_environment() -> String {
 ///
 /// # Errors
 ///
-/// Returns the I/O error when the history cannot be read or rewritten.
+/// Returns the I/O error when the history cannot be read or rewritten,
+/// and an error when the history changed while it was read or sooth was
+/// asked to stop: the history is then as it was.
 pub fn replace_invocations(
     path: &Path,
     invocations: &[String],
     replacement: &[Observation],
+    interrupt: &Interrupt,
 ) -> std::io::Result<Option<usize>> {
-    let bytes = match fs::read(path) {
-        Ok(bytes) => bytes,
+    let original = match Original::at(path) {
+        Ok(original) => original,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(err) => return Err(err),
     };
+    let bytes = fs::read(path)?;
     let named = |record: &str| {
         parse_line(record)
             .and_then(|observation| observation.invocation)
@@ -124,7 +129,9 @@ pub fn replace_invocations(
     let mut rewritten: Vec<u8> = Vec::with_capacity(bytes.len());
     let mut removed = 0;
     for line in bytes.split_inclusive(|byte| *byte == b'\n') {
-        let records = std::str::from_utf8(line).map(records).unwrap_or_default();
+        // Read the way a load reads it: what is not text is decoded as
+        // best it can be, and a record on such a line is a record.
+        let records = records(&String::from_utf8_lossy(line));
         if !records.iter().any(|record| named(record)) {
             rewritten.extend_from_slice(line);
             continue;
@@ -145,12 +152,15 @@ pub fn replace_invocations(
         rewritten.extend_from_slice(to_line(observation).as_bytes());
         rewritten.push(b'\n');
     }
-    let beside = rewrite_path(path);
-    let renamed = fs::write(&beside, rewritten).and_then(|()| fs::rename(&beside, path));
-    if renamed.is_err() {
-        let _ = fs::remove_file(&beside);
+    let rewrite = Beside::of(path);
+    fs::write(&rewrite.0, rewritten)?;
+    // Asked to stop while that was written: the rename is the one step
+    // that cannot be taken back, so this is the place to step back.
+    if interrupt.requested() {
+        return Err(stopped());
     }
-    renamed.map(|()| Some(removed))
+    original.give_way_to(&rewrite, path)?;
+    Ok(Some(removed))
 }
 
 /// What [`prune`] did to the history file.
@@ -162,13 +172,79 @@ pub struct Pruned {
     pub bytes_after: u64,
 }
 
-/// Where a rewrite of the history at `path` is written before it is renamed
-/// over it: beside the history, under a name of this process's own. Two
-/// rewrites at once — a prune and an `import --replace` — then each write
-/// their own file, where one shared name had them truncate each other's
-/// and rename a mix of both over the history.
-fn rewrite_path(path: &Path) -> PathBuf {
-    path.with_extension(format!("jsonl.rewrite-{}", std::process::id()))
+/// The file a rewrite is written to before it takes the history's place:
+/// beside it, under a name of this process's own. Two rewrites at once — a
+/// prune and an `import --replace` — then each write their own file, where
+/// one shared name had them truncate each other's and rename a mix of both
+/// over the history. Removed when dropped, so nothing is left behind
+/// however the rewrite ends; once renamed there is nothing left to remove.
+struct Beside(PathBuf);
+
+impl Beside {
+    fn of(path: &Path) -> Self {
+        Self(path.with_extension(format!("jsonl.rewrite-{}", std::process::id())))
+    }
+}
+
+impl Drop for Beside {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.0);
+    }
+}
+
+/// The history as a rewrite found it. A rewrite reads the file, writes its
+/// result beside it and renames that over it — and whatever another sooth
+/// wrote to the history in between would be gone, for good when it was an
+/// import: its ledger says the file is in. So a rewrite takes the history's
+/// place only while the file is still the one that was read, and fails
+/// otherwise. There is no lock (see `DECISIONS.md`); this narrows the
+/// window from the seconds a rewrite takes to the instant between the
+/// check and the rename, and to an append that had opened the file before
+/// that instant and writes after it.
+struct Original(fs::Metadata);
+
+impl Original {
+    fn at(path: &Path) -> std::io::Result<Self> {
+        fs::metadata(path).map(Self)
+    }
+
+    fn len(&self) -> u64 {
+        self.0.len()
+    }
+
+    /// Whether the file at `path` is the one this was, not written since.
+    fn is_still(&self, path: &Path) -> bool {
+        fs::metadata(path).is_ok_and(|now| {
+            now.len() == self.0.len()
+                && now.modified().ok() == self.0.modified().ok()
+                && same_file(&now, &self.0)
+        })
+    }
+
+    /// Put the rewrite in the history's place, with the permissions the
+    /// history had.
+    fn give_way_to(&self, rewrite: &Beside, path: &Path) -> std::io::Result<()> {
+        fs::set_permissions(&rewrite.0, self.0.permissions())?;
+        if !self.is_still(path) {
+            return Err(std::io::Error::other(
+                "the history changed while it was being rewritten — nothing was written; \
+                 run the command again",
+            ));
+        }
+        fs::rename(&rewrite.0, path)
+    }
+}
+
+/// Whether two looks at a path saw the same file, where that can be told.
+#[cfg(unix)]
+fn same_file(one: &fs::Metadata, other: &fs::Metadata) -> bool {
+    use std::os::unix::fs::MetadataExt as _;
+    one.ino() == other.ino() && one.dev() == other.dev()
+}
+
+#[cfg(not(unix))]
+fn same_file(_: &fs::Metadata, _: &fs::Metadata) -> bool {
+    true
 }
 
 /// A record's place in time: its `at`, then its position in the file. The
@@ -244,24 +320,62 @@ impl Windows<Option<Moment>> {
 ///
 /// Read as a stream, twice, so a history of gigabytes is pruned in the
 /// memory of a few dozen invocations per test: first to find where each
-/// test's windows begin, then to copy what lies inside them. A line that
-/// is not an observation (a fragment, bytes that are no text) is kept: it
-/// is not this command's to judge. The result is written beside the
-/// history and renamed over it, so a crash leaves one or the other.
+/// test's windows begin, then to copy what lies inside them. A line
+/// without an observation on it (a fragment, bytes that are no text) is
+/// kept byte for byte: it is not this command's to judge. A line that is
+/// not text and does hold one is read the way a load reads it, and comes
+/// back as it was read. The result is written beside the history and
+/// renamed over it, so a crash leaves one or the other.
 ///
 /// # Errors
 ///
-/// Returns the I/O error when the history cannot be read or rewritten.
-pub fn prune(path: &Path) -> std::io::Result<Option<Pruned>> {
-    use std::io::BufWriter;
-
-    let Ok(metadata) = fs::metadata(path) else {
+/// Returns the I/O error when the history cannot be read or rewritten,
+/// and an error when the history changed while it was read or sooth was
+/// asked to stop: the history is then as it was.
+pub fn prune(path: &Path, interrupt: &Interrupt) -> std::io::Result<Option<Pruned>> {
+    let Ok(original) = Original::at(path) else {
         return Ok(None);
     };
-    // First pass: where each test's windows begin.
+    let windows = windows(path, interrupt)?;
+    if windows.is_empty() {
+        return Ok(Some(Pruned {
+            kept: count_observations(path)?,
+            removed: 0,
+            bytes_before: original.len(),
+            bytes_after: original.len(),
+        }));
+    }
+    let rewrite = Beside::of(path);
+    let (kept, removed) = copy_inside(path, &windows, &rewrite, interrupt)?;
+    // Nothing older than a window after all: the history stays as it is.
+    if removed > 0 {
+        original.give_way_to(&rewrite, path)?;
+    }
+    Ok(Some(Pruned {
+        kept,
+        removed,
+        bytes_before: original.len(),
+        bytes_after: fs::metadata(path)?.len(),
+    }))
+}
+
+/// What a rewrite that was asked to stop comes back with.
+fn stopped() -> std::io::Error {
+    std::io::Error::other("interrupted — the history is as it was")
+}
+
+/// The first pass of a prune: where the windows begin of every test that
+/// has more than a window's worth.
+fn windows(
+    path: &Path,
+    interrupt: &Interrupt,
+) -> std::io::Result<std::collections::BTreeMap<String, Windows<Option<Moment>>>> {
     let mut recent: std::collections::BTreeMap<String, Windows<Recent>> =
         std::collections::BTreeMap::new();
     for_each_record(path, |position, record| {
+        if interrupt.requested() {
+            return Err(stopped());
+        }
         let Some(observation) = record.observation() else {
             return Ok(());
         };
@@ -278,7 +392,7 @@ pub fn prune(path: &Path) -> std::io::Result<Option<Pruned>> {
     })?;
     // A test with a signal window that overflowed has an overflowed plain
     // one too: the invocations that said something are among all of them.
-    let windows: std::collections::BTreeMap<String, Windows<Option<Moment>>> = recent
+    Ok(recent
         .into_iter()
         .map(|(id, recent)| {
             let begin = Windows {
@@ -288,51 +402,44 @@ pub fn prune(path: &Path) -> std::io::Result<Option<Pruned>> {
             (id, begin)
         })
         .filter(|(_, begin)| begin.any.is_some())
-        .collect();
+        .collect())
+}
 
-    // Second pass: copy what lies inside each test's windows.
-    let beside = rewrite_path(path);
+/// The second pass of a prune: write what lies inside each test's windows
+/// to `rewrite`, and say how many observations were kept and removed.
+fn copy_inside(
+    path: &Path,
+    windows: &std::collections::BTreeMap<String, Windows<Option<Moment>>>,
+    rewrite: &Beside,
+    interrupt: &Interrupt,
+) -> std::io::Result<(usize, usize)> {
+    let file = fs::File::create(&rewrite.0).map_err(|err| {
+        std::io::Error::new(err.kind(), format!("{}: {err}", rewrite.0.display()))
+    })?;
+    let mut out = std::io::BufWriter::new(file);
     let (mut kept, mut removed) = (0, 0);
-    let copied = if windows.is_empty() {
-        count_observations(path).map(|observations| kept = observations)
-    } else {
-        let mut out = BufWriter::new(fs::File::create(&beside)?);
-        for_each_record(path, |position, record| {
-            let observation = record.observation();
-            let outside = observation.as_ref().is_some_and(|observation| {
-                windows.get(&observation.id).is_some_and(|windows| {
-                    windows.leave_out(observation.status, (observation.at_epoch_secs, position))
-                })
-            });
-            if outside {
-                removed += 1;
-                return Ok(());
-            }
-            kept += usize::from(observation.is_some());
-            out.write_all(record.bytes())?;
-            out.write_all(b"\n")
-        })
-        .and_then(|()| {
-            out.into_inner()
-                .map_err(std::io::IntoInnerError::into_error)
-        })
-        .and_then(|file| file.sync_all())
-        // Nothing older than a window after all: the history stays as it is.
-        .and_then(|()| match removed {
-            0 => fs::remove_file(&beside),
-            _ => fs::rename(&beside, path),
-        })
-    };
-    if let Err(err) = copied {
-        let _ = fs::remove_file(&beside);
-        return Err(err);
-    }
-    Ok(Some(Pruned {
-        kept,
-        removed,
-        bytes_before: metadata.len(),
-        bytes_after: fs::metadata(path)?.len(),
-    }))
+    for_each_record(path, |position, record| {
+        if interrupt.requested() {
+            return Err(stopped());
+        }
+        let observation = record.observation();
+        let outside = observation.as_ref().is_some_and(|observation| {
+            windows.get(&observation.id).is_some_and(|windows| {
+                windows.leave_out(observation.status, (observation.at_epoch_secs, position))
+            })
+        });
+        if outside {
+            removed += 1;
+            return Ok(());
+        }
+        kept += usize::from(observation.is_some());
+        out.write_all(record.bytes())?;
+        out.write_all(b"\n")
+    })?;
+    out.into_inner()
+        .map_err(std::io::IntoInnerError::into_error)?
+        .sync_all()?;
+    Ok((kept, removed))
 }
 
 /// One record of the history file as [`for_each_record`] hands it out: the
@@ -380,15 +487,24 @@ fn for_each_record(
         {
             line.pop();
         }
-        let Ok(text) = std::str::from_utf8(&line) else {
+        // A load decodes what is not text as best it can and reads the
+        // records it finds; so does this. A line without one is handed out
+        // as it is, byte for byte.
+        let text = String::from_utf8_lossy(&line);
+        let no_record = || {
+            !records(&text)
+                .iter()
+                .any(|record| parse_line(record).is_some())
+        };
+        if matches!(text, std::borrow::Cow::Owned(_)) && no_record() {
             each(position, Record::NotText(&line))?;
             position += 1;
             continue;
-        };
+        }
         if text.trim().is_empty() {
             continue;
         }
-        for record in records(text) {
+        for record in records(&text) {
             each(position, Record::Text(&record))?;
             position += 1;
         }
@@ -1286,15 +1402,172 @@ mod tests {
             .collect()
     }
 
+    /// A prune that nobody asks to stop.
+    fn prune(path: &std::path::Path) -> std::io::Result<Option<super::Pruned>> {
+        super::prune(path, &crate::interrupt::Interrupt::never())
+    }
+
+    /// A replace that nobody asks to stop.
+    fn replace_invocations(
+        path: &std::path::Path,
+        invocations: &[String],
+        replacement: &[Observation],
+    ) -> std::io::Result<Option<usize>> {
+        let never = crate::interrupt::Interrupt::never();
+        super::replace_invocations(path, invocations, replacement, &never)
+    }
+
+    #[test]
+    fn a_replace_that_is_asked_to_stop_leaves_the_history_as_it_was() {
+        let path = temp_path("replace-stopped");
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+        super::append(&path, &[seen("c::t", 1, "import-a")]).expect("append");
+        let before = std::fs::read(&path).unwrap();
+
+        let stopped = super::replace_invocations(
+            &path,
+            &["import-a".to_owned()],
+            &[seen("c::t", 2, "import-a")],
+            &crate::interrupt::Interrupt::already(),
+        )
+        .expect_err("asked to stop");
+        assert!(
+            stopped.to_string().contains("interrupted"),
+            "got: {stopped}"
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+        assert!(
+            !super::Beside::of(&path).0.exists(),
+            "nothing left beside it"
+        );
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn a_rewrite_gives_way_to_a_history_that_changed_while_it_was_read() {
+        let path = temp_path("rewrite-changed");
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+        super::append(&path, &[seen("c::t", 1, "run-1-1")]).expect("append");
+
+        // This sooth reads the history and writes its rewrite beside it;
+        // meanwhile another one appends a run.
+        let original = super::Original::at(&path).expect("a history");
+        let beside = super::Beside::of(&path);
+        std::fs::write(&beside.0, "the rewrite\n").unwrap();
+        super::append(&path, &[seen("c::t", 2, "run-2-1")]).expect("append");
+
+        let refused = original
+            .give_way_to(&beside, &path)
+            .expect_err("the history is no longer the one that was read");
+        assert!(
+            refused.to_string().contains("changed while"),
+            "got: {refused}"
+        );
+        assert_eq!(
+            ids_and_times(&path).len(),
+            2,
+            "the other sooth's run is not lost"
+        );
+        drop(beside);
+        assert!(
+            !super::Beside::of(&path).0.exists(),
+            "nothing left beside it"
+        );
+
+        // Read and not touched since: the rewrite takes its place.
+        let original = super::Original::at(&path).expect("a history");
+        let beside = super::Beside::of(&path);
+        std::fs::write(&beside.0, "the rewrite\n").unwrap();
+        original.give_way_to(&beside, &path).expect("unchanged");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "the rewrite\n");
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn a_prune_that_is_asked_to_stop_leaves_the_history_as_it_was() {
+        let path = temp_path("prune-stopped");
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+        let written: Vec<Observation> = (1..=60)
+            .map(|at| seen("c::t", at, &format!("run-{at}-1")))
+            .collect();
+        super::append(&path, &written).expect("append");
+        let before = std::fs::read(&path).unwrap();
+
+        let stopped = super::prune(&path, &crate::interrupt::Interrupt::already())
+            .expect_err("asked to stop");
+        assert!(
+            stopped.to_string().contains("interrupted"),
+            "got: {stopped}"
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+        let beside_it: Vec<_> = std::fs::read_dir(path.parent().unwrap())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        assert_eq!(beside_it, ["history.jsonl"], "no rewrite left behind");
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn a_record_on_a_line_that_is_not_text_is_read_by_a_prune_as_by_a_load() {
+        // A load decodes such a line as best it can and finds the record on
+        // it. A prune that kept the line and did not count the record would
+        // cut a window the analysis does not have.
+        let path = temp_path("prune-not-text");
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let mut bytes = b"\xff".to_vec();
+        let failed = Observation {
+            status: TestStatus::Failed,
+            ..seen("c::t", 1, "import-a")
+        };
+        bytes.extend_from_slice(super::to_line(&failed).as_bytes());
+        bytes.push(b'\n');
+        std::fs::write(&path, bytes).unwrap();
+        let mut later: Vec<Observation> = (2..=52)
+            .map(|at| seen("c::t", at, &format!("run-{at}-1")))
+            .collect();
+        // The invocation of the first line again, now the newest of all.
+        later.push(seen("c::t", 100, "import-a"));
+        super::append(&path, &later).expect("append");
+
+        let found = || crate::analyzers::history::analyze(&super::load(&path).observations);
+        let before = found();
+        let pruned = prune(&path).expect("prune").expect("a history");
+        assert_eq!(found(), before, "{pruned:?}");
+        assert_eq!(pruned.kept, super::load(&path).observations.len());
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_rewrite_keeps_the_permissions_the_history_had() {
+        use std::os::unix::fs::PermissionsExt;
+        let path = temp_path("rewrite-permissions");
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+        let written: Vec<Observation> = (1..=60)
+            .map(|at| seen("c::t", at, &format!("run-{at}-1")))
+            .collect();
+        super::append(&path, &written).expect("append");
+        let private = std::fs::Permissions::from_mode(0o600);
+        std::fs::set_permissions(&path, private).unwrap();
+        let mode = || std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+
+        let pruned = prune(&path).expect("prune").expect("a history");
+        assert_eq!(pruned.removed, 10);
+        assert_eq!(mode(), 0o600, "after a prune");
+        replace_invocations(&path, &["run-60-1".to_owned()], &[])
+            .expect("replace")
+            .expect("a history");
+        assert_eq!(mode(), 0o600, "after a replace");
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
     #[test]
     fn pruning_keeps_each_tests_last_fifty_invocations_and_nothing_older() {
         let path = temp_path("prune");
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
-        assert_eq!(
-            super::prune(&path).unwrap(),
-            None,
-            "no history, nothing to do"
-        );
+        assert_eq!(prune(&path).unwrap(), None, "no history, nothing to do");
 
         let mut written = Vec::new();
         // `c::busy`: 60 invocations, the 30th one a `--runs 3`.
@@ -1317,7 +1590,7 @@ mod tests {
         bytes.extend_from_slice(b"not text \xff\n");
         std::fs::write(&path, &bytes).unwrap();
 
-        let pruned = super::prune(&path).expect("prune").expect("a history");
+        let pruned = prune(&path).expect("prune").expect("a history");
         // 60 invocations at 1..=60: the window is 11..=60, which holds the
         // 30th's three runs. Before it: ten runs and the old import.
         assert_eq!(pruned.removed, 11);
@@ -1346,10 +1619,10 @@ mod tests {
                 "{kept:?}"
             );
         }
-        assert!(!super::rewrite_path(&path).exists());
+        assert!(!super::Beside::of(&path).0.exists());
 
         // A second prune finds nothing and leaves the file alone.
-        let again = super::prune(&path).expect("prune").expect("a history");
+        let again = prune(&path).expect("prune").expect("a history");
         assert_eq!((again.removed, again.kept), (0, 55));
         assert_eq!(std::fs::read(&path).unwrap(), after);
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
@@ -1385,14 +1658,14 @@ mod tests {
 
         // The analysis counts its fifty invocations past the skips, so the
         // ten are inside its window however many skips came after them.
-        let pruned = super::prune(&path).expect("prune").expect("a history");
+        let pruned = prune(&path).expect("prune").expect("a history");
         assert_eq!((pruned.removed, pruned.kept), (0, 60));
         assert_eq!(found(), before);
 
         // Skips are bounded too: the test's last fifty invocations of any
         // kind. Ten more push the ten oldest skips out, and nothing else.
         super::append(&path, &(61..=70).map(skipped).collect::<Vec<_>>()).expect("append");
-        let pruned = super::prune(&path).expect("prune").expect("a history");
+        let pruned = prune(&path).expect("prune").expect("a history");
         assert_eq!((pruned.removed, pruned.kept), (10, 60));
         assert_eq!(found(), before);
         let left = ids_and_times(&path);
@@ -1445,9 +1718,9 @@ mod tests {
             super::append(&path, &written).expect("append");
             let found = || crate::analyzers::history::analyze(&super::load(&path).observations);
             let before = found();
-            let pruned = super::prune(&path).expect("prune").expect("a history");
+            let pruned = prune(&path).expect("prune").expect("a history");
             assert_eq!(found(), before, "history {history}: {pruned:?}");
-            let again = super::prune(&path).expect("prune").expect("a history");
+            let again = prune(&path).expect("prune").expect("a history");
             assert_eq!(again.removed, 0, "history {history}: a prune is final");
         }
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
@@ -1467,7 +1740,7 @@ mod tests {
             })
             .collect();
         super::append(&path, &old).expect("append");
-        let pruned = super::prune(&path).expect("prune").expect("a history");
+        let pruned = prune(&path).expect("prune").expect("a history");
         assert_eq!((pruned.removed, pruned.kept), (3, 50));
         assert_eq!(ids_and_times(&path).first().map(|(_, at)| *at), Some(4));
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
@@ -1498,7 +1771,7 @@ mod tests {
         };
         // No history: nothing to replace, and nothing is created.
         assert_eq!(
-            super::replace_invocations(&path, &[String::new()], &[]).unwrap(),
+            replace_invocations(&path, &[String::new()], &[]).unwrap(),
             None
         );
         assert!(!path.exists());
@@ -1523,7 +1796,7 @@ mod tests {
         bytes.extend_from_slice(b"\r\n");
         std::fs::write(&path, &bytes).unwrap();
 
-        let removed = super::replace_invocations(
+        let removed = replace_invocations(
             &path,
             &["import-0000000000000001".to_owned()],
             &[imported("a::one", "import-0000000000000001")],
@@ -1543,11 +1816,10 @@ mod tests {
                 "kept byte for byte: {kept:?}"
             );
         }
-        assert!(!super::rewrite_path(&path).exists());
+        assert!(!super::Beside::of(&path).0.exists());
         // An id nobody recorded removes nothing; the replacement still lands.
         assert_eq!(
-            super::replace_invocations(&path, &["import-ffffffffffffffff".to_owned()], &[])
-                .unwrap(),
+            replace_invocations(&path, &["import-ffffffffffffffff".to_owned()], &[]).unwrap(),
             Some(0)
         );
         let _ = std::fs::remove_dir_all(path.parent().unwrap());

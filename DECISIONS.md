@@ -1609,15 +1609,31 @@ plain import. With a history that holds no observation under the file's id
 carried no id — nothing is removed, the file's observations are added, and
 sooth says exactly that rather than guessing which lines were the file's.
 
-Not covered: another sooth appending to the history while this rewrite runs
-can lose its lines. The history has no lock; appends are single writes and
-have not needed one, and a lock for the one rewriting command is not worth
-its failure modes yet. The same holds for the second rewriting command,
-`history --prune` (#246). What two rewrites at once can no longer do is
-damage the file: each writes its temp file under its own process id, where
-one shared name had them truncate each other's and rename a mix of both
-over the history. The later rename still wins, and the earlier rewrite's
-change is lost.
+Another sooth writing to the history while a rewrite runs: the history has
+no lock. Appends are single writes and have not needed one, and a lock
+file has failure modes of its own (a stale one after a kill; the standard
+library's file locks need a newer Rust than the MSRV). The two rewriting
+commands, `import --replace` and `history --prune` (#246), read the file,
+write their result beside it and rename that over it — so what another
+sooth wrote in between was gone. For an import that loss was permanent:
+its ledger says the file is in, and a second import answers "already
+imported" (found in review, reproduced with a prune of 300 MB).
+
+A rewrite now takes the history's place only when the file is still the
+one it read: the same file, the same length, the same modification time.
+Otherwise it fails with "the history changed while it was being
+rewritten", writes nothing, and the answer is to run it again. What is
+left of the window is the instant between that check and the rename, and
+an append that had opened the file before that instant and writes after.
+
+Each rewrite writes its temp file under its own process id, where one
+shared name had two rewrites truncate each other's file and rename a mix
+of both over the history. The temp file is removed when the rewrite
+fails, when sooth panics, and when it is stopped: both rewriting commands
+listen for SIGINT and SIGTERM as a run does, and stopped they leave the
+history as it was. A signal after the rename has nothing left to stop.
+Only a kill that cannot be caught leaves the temp file behind. The
+rewritten file keeps the permissions the history had.
 
 ## Evidence has one definition
 
@@ -1845,7 +1861,20 @@ the 64 MiB tail — a test that runs rarely — is back in reach. A larger
 suite's does not: fifty invocations of ten thousand tests are about 120
 MB, and a load still reads the newest 64 MiB of that. The note that says
 the history was read only in part names the command, and promises no more
-than that it drops what no analysis reads.
+than that it drops what no analysis reads; right after a prune it does
+not name the command again.
+
+So "a prune changes no finding" is the claim, and it holds for what one
+load reads. Two things a prune can change in what sooth says. Evidence
+that comes back in reach is found again. And the note about how much the
+history is worth counts every observation in the file, not the window:
+ten clean runs followed by fifty on a dirty tree say nothing before a
+prune and "all 50 earlier observations were made on a dirty tree" after
+it. The second is the true one.
+
+The bound is per test id, not per suite. A test that was renamed or
+deleted keeps its last fifty invocations under the old id for good, and
+ids that carry data (a parametrised test named after its input) add up.
 
 ## The commands live in `src/commands/`, and only `report.rs` prints
 

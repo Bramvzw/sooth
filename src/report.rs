@@ -11,9 +11,9 @@ mod json;
 
 pub use human::{
     print_empty_gate, print_empty_history, print_explanation, print_gate, print_history,
-    print_history_gap, print_history_size, print_imported, print_nothing_stands_out,
-    print_nothing_to_explain, print_pardon_gap, print_pruned, print_replay, print_run, print_runs,
-    print_summary, print_verdict,
+    print_history_beyond_one_load, print_history_gap, print_history_size, print_imported,
+    print_nothing_stands_out, print_nothing_to_explain, print_pardon_gap, print_pruned,
+    print_replay, print_run, print_runs, print_summary, print_verdict,
 };
 pub use json::{explanation_json, to_json};
 

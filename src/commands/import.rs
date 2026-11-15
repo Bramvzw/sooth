@@ -6,7 +6,7 @@ use std::process::ExitCode;
 use super::{append_history, load_history, Outcome, SoothError};
 use crate::report::{Analyses, ImportFate, ImportedFile};
 use crate::reported::file_state;
-use crate::{analyzers, cli, history, junit, phpunit_log, report};
+use crate::{analyzers, cli, history, interrupt, junit, phpunit_log, report};
 
 /// One report file accepted for import, waiting for the all-or-nothing write.
 struct Incoming {
@@ -218,7 +218,10 @@ fn write_imports(history_path: &std::path::Path, incoming: &[Incoming]) -> Resul
         SoothError::new(format!("could not write {}: {err}", history_path.display()))
     };
     if !replaced.is_empty() {
-        match history::replace_invocations(history_path, &replaced, &observations) {
+        // A rewrite of a large history takes a moment: asked to stop, it
+        // leaves the history as it was and nothing beside it.
+        let interrupt = interrupt::Interrupt::listen();
+        match history::replace_invocations(history_path, &replaced, &observations, &interrupt) {
             Ok(Some(0)) => {
                 report::warn(&format!(
                     "found no observations of the earlier import in {} — nothing \

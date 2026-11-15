@@ -699,6 +699,18 @@ pub fn print_history_size(observations: usize, truncated: bool) {
     }
 }
 
+/// The size line right after a prune of a history that is still larger
+/// than one load: the advice to prune would send its reader in a circle.
+pub fn print_history_beyond_one_load(observations: usize) {
+    println!(
+        "history: the newest {} were read. The file is pruned and still holds more than \
+         sooth loads at once: for a suite this size, fewer than each test's last {} \
+         invocations are read",
+        count(observations, "observation"),
+        crate::history::WINDOW_PER_TEST
+    );
+}
+
 /// What `sooth history --prune` did, in one line.
 pub fn print_pruned(pruned: crate::history::Pruned) {
     if pruned.removed == 0 {
