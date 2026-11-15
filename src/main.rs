@@ -9,6 +9,7 @@ mod analyzers;
 mod cli;
 mod gate;
 mod history;
+mod interrupt;
 mod json;
 mod junit;
 mod phpunit_log;
@@ -157,18 +158,41 @@ fn run(args: &cli::RunArgs) -> Outcome {
 
     let identity = identity_before_run(args, report_source.as_ref());
 
+    // From here a Ctrl-C or a SIGTERM is a request, not the end: the runs
+    // that finished are still reported, and nothing is left behind.
+    let interrupt = interrupt::Interrupt::listen();
     let session = Session {
         spawn: &(command, envs),
         report_source: report_source.as_ref(),
         plan: plan.as_ref(),
         gated_files: files.len(),
+        interrupt: &interrupt,
     };
-    let (outcomes, reports) = execute_runs(args, &session, style)?;
+    let Executed {
+        outcomes,
+        reports,
+        stopped,
+    } = execute_runs(args, &session, style)?;
+    let mut interrupted = stopped.then(|| report::Interrupted::Runs {
+        requested: args.runs as usize,
+        failed: failed_runs(&outcomes, &reports),
+    });
+    if stopped && outcomes.is_empty() {
+        return Err(nothing_finished(args.runs));
+    }
 
     let (junit_summary, flaky_analysis) = summarize_reports(args, &reports);
     let history_pass = record_history(identity, &reports);
     let history_analysis = history_pass.as_ref().map(|pass| &pass.analysis);
-    let verify_verdict = verify_failures(args, plan.as_ref(), reports.last());
+    // Asked to stop: no further runs are started, verification included.
+    let verify_verdict = if interrupted.is_some() {
+        None
+    } else {
+        verify_failures(args, plan.as_ref(), reports.last(), &interrupt).unwrap_or_else(|stop| {
+            interrupted = Some(stop);
+            None
+        })
+    };
 
     let suite_red = suite_failed(&outcomes, &reports);
     // The list labels known flakes on any red run; only --fail-on-flaky
@@ -186,6 +210,7 @@ fn run(args: &cli::RunArgs) -> Outcome {
         history_observations: history_pass.as_ref().map(|pass| pass.prior),
         verify: verify_verdict.as_ref(),
         gate: selection.as_ref(),
+        interrupted,
         ..Analyses::default()
     };
     let explanation = explain_failures(suite_red, &reports, analyses.passes(), &quarantine);
@@ -201,8 +226,9 @@ fn run(args: &cli::RunArgs) -> Outcome {
         .max()
         .unwrap_or(0);
     let runs_failed = outcomes.iter().any(|outcome| !outcome.success);
-    // A pardoned run exits 0; the note's "exiting 1" would then be a lie.
-    if failed {
+    // A pardoned run exits 0 and an interrupted one 2; the note's "exiting
+    // 1" would then be a lie.
+    if failed && interrupted.is_none() {
         print_disagreement(runs_failed, report_failures, !reports.is_empty());
     }
 
@@ -216,10 +242,43 @@ fn run(args: &cli::RunArgs) -> Outcome {
         style,
     )?;
 
+    // Not 0 and not 1: sooth did not do what it was asked. The report above
+    // is what it has.
+    if let Some(stop) = interrupted {
+        return Err(stopped_short(stop, outcomes.len()));
+    }
     Ok(if failed {
         ExitCode::FAILURE
     } else {
         ExitCode::SUCCESS
+    })
+}
+
+/// Asked to stop before a single run had finished: there is no report, so
+/// this line is all sooth says.
+fn nothing_finished(requested_runs: u32) -> SoothError {
+    SoothError::new(if requested_runs == 1 {
+        "interrupted before the run finished — there is nothing to report".to_owned()
+    } else {
+        format!(
+            "interrupted before the first of {requested_runs} runs finished — there is \
+             nothing to report"
+        )
+    })
+}
+
+/// Asked to stop with a report to show for it: what that report covers.
+fn stopped_short(stop: report::Interrupted, finished_runs: usize) -> SoothError {
+    SoothError::new(match stop {
+        report::Interrupted::Runs { requested, .. } => format!(
+            "interrupted after {finished_runs} of {} — the report covers the runs that finished",
+            report::count(requested, "run")
+        ),
+        report::Interrupted::Verification => {
+            "interrupted before the failures were verified — the report covers the run, \
+             and its failures stay unverified"
+                .to_owned()
+        }
     })
 }
 
@@ -230,6 +289,15 @@ struct Session<'a> {
     report_source: Option<&'a ReportSource>,
     plan: Option<&'a preset::Plan>,
     gated_files: usize,
+    interrupt: &'a interrupt::Interrupt,
+}
+
+/// What the runs loop came back with: the runs that finished, and whether
+/// sooth was asked to stop before every run had been made.
+struct Executed {
+    outcomes: Vec<runner::RunOutcome>,
+    reports: Vec<junit::JunitReport>,
+    stopped: bool,
 }
 
 /// Whether the runner is kept quiet: N copies of the same output bury the
@@ -316,6 +384,28 @@ impl Capture {
         };
         report::print_replay(&replay, to_stderr, style);
     }
+
+    /// Show what run `number` had written when it was cut short. For a run
+    /// that hung, this is the only trace of where: the run itself gets no
+    /// line and no place in the report.
+    fn replay_cut_short(
+        &self,
+        (number, total): (usize, usize),
+        to_stderr: bool,
+        style: report::Style,
+    ) {
+        let output = self.current();
+        if output.is_empty() {
+            return;
+        }
+        let replay = report::Replay {
+            number,
+            total,
+            why: "the one that was cut short",
+            output: &output,
+        };
+        report::print_replay(&replay, to_stderr, style);
+    }
 }
 
 impl Drop for Capture {
@@ -335,7 +425,7 @@ fn execute_runs(
     args: &cli::RunArgs,
     session: &Session<'_>,
     style: report::Style,
-) -> Result<(Vec<runner::RunOutcome>, Vec<junit::JunitReport>), SoothError> {
+) -> Result<Executed, SoothError> {
     let total = args.runs as usize;
     let (command, _) = session.spawn;
     let report_source = session.report_source;
@@ -353,18 +443,32 @@ fn execute_runs(
     let json_owns_stdout = matches!(args.json, Some(None));
     let mut outcomes = Vec::with_capacity(total);
     let mut reports: Vec<junit::JunitReport> = Vec::with_capacity(total);
+    let mut stopped = false;
+    let mut cut_short = None;
     for number in 1..=total {
+        // Asked to stop between two runs: the next one is not started.
+        if session.interrupt.requested() {
+            stopped = true;
+            break;
+        }
         let ran = capture
             .as_ref()
             .map(Capture::open)
             .transpose()
             .map_err(|err| format!("failed to create a file for the run's output: {err}"))
             .and_then(|hidden| {
-                reported::run(session.spawn, report_source, hidden)
+                reported::run(session.spawn, report_source, hidden, session.interrupt)
                     .map_err(|err| format!("failed to run `{}`: {err}", command[0]))
             });
         let ran = match ran {
-            Ok(ran) => ran,
+            Ok(reported::Run::Finished(ran)) => ran,
+            // A run that was cut short is not a run that failed: whatever
+            // it exited with and wrote, it does not count.
+            Ok(reported::Run::CutShort) => {
+                stopped = true;
+                cut_short = Some(number);
+                break;
+            }
             Err(message) => {
                 // An earlier run's failure is not lost with this one.
                 if let Some(capture) = &capture {
@@ -388,11 +492,7 @@ fn execute_runs(
             }
             None => {}
         }
-        let failed = !outcome.success
-            || (report_source.is_some()
-                && reports
-                    .last()
-                    .is_some_and(|report| report.failing_count() > 0));
+        let failed = run_failed(outcome, reports.get(number - 1));
         if let Some(capture) = capture.as_mut() {
             if failed {
                 capture.note_failure(number);
@@ -404,8 +504,15 @@ fn execute_runs(
     }
     if let Some(capture) = &capture {
         capture.replay_first_failure(total, json_owns_stdout, style);
+        if let Some(number) = cut_short {
+            capture.replay_cut_short((number, total), json_owns_stdout, style);
+        }
     }
-    Ok((outcomes, reports))
+    Ok(Executed {
+        outcomes,
+        reports,
+        stopped,
+    })
 }
 
 /// The command to spawn, its environment, and where its report comes from:
@@ -647,22 +754,25 @@ fn disagreement(runs_failed: bool, report_failures: usize, has_reports: bool) ->
 }
 
 /// Re-run only the failed tests and classify them, when `--verify` asked
-/// for it. Every failure mode degrades to a warning and `None`; the exit
-/// code is never changed.
+/// for it. A verification that cannot be made degrades to a warning and
+/// `None`, and the exit code is not changed. `Err` is the one exception:
+/// sooth was asked to stop before the re-runs were done.
 fn verify_failures(
     args: &cli::RunArgs,
     plan: Option<&preset::Plan>,
     final_report: Option<&junit::JunitReport>,
-) -> Option<verify::Verdict> {
-    if !args.verify {
-        return None;
-    }
-    match verify::run(plan?, final_report?) {
-        Ok(verdict) => verdict,
-        Err(why) => {
+    interrupt: &interrupt::Interrupt,
+) -> Result<Option<verify::Verdict>, report::Interrupted> {
+    let (true, Some(plan), Some(final_report)) = (args.verify, plan, final_report) else {
+        return Ok(None);
+    };
+    match verify::run(plan, final_report, interrupt) {
+        Ok(verdict) => Ok(verdict),
+        Err(verify::Unverified::Skipped(why)) => {
             report::warn(&why);
-            None
+            Ok(None)
         }
+        Err(verify::Unverified::Interrupted) => Err(report::Interrupted::Verification),
     }
 }
 
@@ -828,7 +938,7 @@ fn print_sections(
     style: report::Style,
 ) {
     if !quiet_repeats(args) {
-        report::print_runs(outcomes, style);
+        report::print_runs(outcomes, args.runs as usize, style);
     }
     report::print_summary(summary, outcomes.len(), args.slowest.is_some(), style);
     // One line per failing test, then what is known but did not fail: every
@@ -1199,11 +1309,11 @@ fn emit_output(
             // a weakened guard fails loudly instead of dropping output.
             debug_assert!(args.json.is_none());
             if !quiet_repeats(args) {
-                report::print_runs(outcomes, style);
+                report::print_runs(outcomes, args.runs as usize, style);
             }
             println!(
                 "{}",
-                report::verdict_line(outcomes, None, report_failures, failed, style)
+                verdict(analyses, outcomes, None, report_failures, failed, style)
             );
             print_report_advice(&args.command);
         }
@@ -1222,6 +1332,11 @@ fn verdict(
     failed: bool,
     style: report::Style,
 ) -> String {
+    // Cut short, the runs carry no verdict — pardoned or not. A suite that
+    // ran to its end has one, verified or not.
+    if let Some(report::Interrupted::Runs { requested, failed }) = analyses.interrupted {
+        return report::interrupted_line(outcomes, requested, failed, style);
+    }
     match analyses.pardoned {
         Some(pardoned) => {
             let not_flakes = analyses
@@ -1303,6 +1418,22 @@ fn rejected_flag(args: &cli::RunArgs) -> Option<&'static str> {
 fn suite_failed(outcomes: &[runner::RunOutcome], reports: &[junit::JunitReport]) -> bool {
     outcomes.iter().any(|outcome| !outcome.success)
         || reports.iter().any(junit::JunitReport::has_failures)
+}
+
+/// Whether one run failed, by the same two signals as [`suite_failed`]: the
+/// runner's exit, or failures in the report that run left.
+fn run_failed(outcome: &runner::RunOutcome, report: Option<&junit::JunitReport>) -> bool {
+    !outcome.success || report.is_some_and(junit::JunitReport::has_failures)
+}
+
+/// How many of the runs failed. With a report source every run that
+/// finished left a report, at the same index as its outcome.
+fn failed_runs(outcomes: &[runner::RunOutcome], reports: &[junit::JunitReport]) -> usize {
+    outcomes
+        .iter()
+        .enumerate()
+        .filter(|(index, outcome)| run_failed(outcome, reports.get(*index)))
+        .count()
 }
 
 /// The lines that say why a run's report cannot be used, in the command's
@@ -1467,6 +1598,20 @@ mod tests {
     }
 
     #[test]
+    fn a_run_is_counted_as_failed_by_its_exit_or_by_its_report() {
+        let outcomes = [outcome(true), outcome(true), outcome(false)];
+        let reports = [
+            report_of(TestStatus::Passed),
+            // Red by its report alone: the runner exited 0.
+            report_of(TestStatus::Failed),
+            report_of(TestStatus::Passed),
+        ];
+        assert_eq!(super::failed_runs(&outcomes, &reports), 2);
+        // Without a report source there is only the exit to go by.
+        assert_eq!(super::failed_runs(&outcomes, &[]), 1);
+    }
+
+    #[test]
     fn a_preset_run_that_writes_no_report_gets_an_actionable_error() {
         use crate::reported::{ReportError, ReportSource};
         let plan = crate::preset::Plan::resolve(&["pytest".to_owned()], crate::cli::Preset::Pytest);
@@ -1477,6 +1622,7 @@ mod tests {
             report_source: Some(&source),
             plan: Some(&plan),
             gated_files: 0,
+            interrupt: &crate::interrupt::Interrupt::never(),
         };
         let unwritten = ReportError::Unreadable(
             crate::junit::parse_file(source.path()).expect_err("nothing was written"),
@@ -1499,6 +1645,7 @@ mod tests {
             report_source: Some(&source),
             plan: None,
             gated_files: 0,
+            interrupt: &crate::interrupt::Interrupt::never(),
         };
         let lines =
             super::unusable_report(&session, &ReportError::Untouched, (&[outcome(false)], 1));

@@ -1707,3 +1707,80 @@ The format, and why:
 Nothing reads the durations yet, on purpose: the pass that does is v0.4's,
 and it gets to be designed against real, accumulated data instead of
 against a format invented the same week.
+
+## A signal is a request to stop, and sooth's third dependency
+
+Two things went wrong when sooth was signalled (#34, #140). Interrupting
+`--runs 20` at run 14 lost the thirteen runs that had finished: the default
+action ends the process on the spot. And a signal that reached only sooth —
+a CI cancel, a timeout wrapper, `kill` from another shell — left the test
+command running as an orphan and sooth's temp directories behind, because
+no destructor runs either.
+
+Both need sooth to take the signal itself, and that is the one thing here
+the standard library cannot do without `unsafe`, which the crate forbids.
+So sooth gets a third dependency. Bram agreed to it on 2026-11-15, and to
+which one: `signal-hook`, with its optional features off. It adds four
+crates to a tree of about twenty-five (`signal-hook`, its registry, `errno`,
+`libc`), where `ctrlc` would have brought Objective-C bindings on macOS. The
+only API used is the one that sets a flag.
+
+What happens on a first SIGINT or SIGTERM:
+
+- **Nothing new is started.** The run loop checks the flag before each run,
+  and `--verify` before each re-run.
+- **The run in progress does not count.** Whatever it exited with and
+  wrote, a run that was cut short is not a run that failed. It gets no line
+  and no place in the report or the history, and its report is not read.
+  Under quiet repeats what it had written is shown after all: for a run
+  that hung, that is the only trace of where.
+- **In progress means: the command had not been seen to end.** That is
+  asked at the moment the runner's exit is observed. A request that comes
+  later, while the run's report is being read, finds a run that finished,
+  and that run counts. Asking after the report was read threw away a
+  finished run whenever the signal landed during the parse, which for a
+  large report is not a short moment.
+- **The command gets two seconds, then is killed.** At a terminal the
+  Ctrl-C went to the whole foreground group, so the runner is already
+  winding down — PHPUnit prints what it has — and sooth is out in a
+  fraction of a second. When only sooth was signalled the runner knows
+  nothing; after the grace sooth kills it. Killing at once would cut the
+  first case's teardown short for no gain.
+- **The report covers what finished**, and its last line is not a verdict:
+  `result: interrupted after 5 of 20 runs — none of them failed`. The suite
+  was neither proven green nor seen through to red. The line counts runs
+  that finished and does not name the run it was "during": a request can
+  land between two runs, and then no sixth run was ever under way. A run
+  counts as failed here by the rule the suite's verdict uses — its exit or
+  its report — so a run that exited 0 over a red report is not called
+  passed. The finished runs are recorded in the history like any others.
+- **A verification that was cut short keeps the suite's verdict.** With
+  `--verify` the one run had finished, so `result: ✗ FAILED` is true and
+  stays; what is missing is the re-runs, and the closing line on stderr
+  says the failures are unverified.
+- **The exit is 2**, for cut-short runs and for a cut-short verification.
+  Not 0 and not 1: sooth did not do what it was asked. A fourth code (the
+  shell's 130) would have widened a contract whose point is that it has
+  three; a pre-push hook blocks on any of them. The note that explains an
+  exit of 1 (the runner and its report disagreeing) is not printed then.
+- **A signal after the last run and re-run changes nothing.** There is
+  nothing left to stop; the report is a moment away and the exit is the
+  suite's.
+- **A second signal ends sooth the old way.** Asking twice means now.
+
+The runner is now looked at every millisecond instead of waited for, which
+is what lets the flag be seen while a command runs; the measured wall time
+moves by less than that.
+
+The limit: only the command sooth started is killed. Reaching what that
+command started in turn (Composer's child, paratest's workers) takes a
+signal to a process group, and with the group moved out of the terminal's
+foreground a Ctrl-C would no longer reach the runner at all. At a terminal
+the whole group is signalled anyway; for a lone SIGTERM the direct child is
+what sooth can honestly promise.
+
+A second limit: a handler replaces a signal that sooth was started with
+ignored. A `sooth run … &` in a script without job control used to ignore
+a Ctrl-C at the terminal and pass that on to its runner; now both stop.
+Leaving an inherited ignore alone needs the old disposition, and asking for
+it is `unsafe`.

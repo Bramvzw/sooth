@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Stopping sooth is safe.** On a Ctrl-C, or a `SIGTERM` from CI or a
+  timeout wrapper, sooth reports the runs that had finished, with
+  `result: interrupted after 5 of 20 runs — none of them failed` in place
+  of a verdict, and exits 2. Before, an interrupted `--runs 20` lost
+  everything. Under quiet repeats what the cut-short run had written is
+  shown: for a run that hung, it is the only trace of where. A `--verify`
+  that is cut short exits 2 as well, with the suite's own report. Under
+  `--json` the document carries
+  `"interrupted":{"during":"runs","finished_runs":5,"requested_runs":20}`
+  (an addition).
 - The history records how long each test took: every observation in
   `.sooth/history.jsonl` carries `"ms"`, the test's duration in whole
   milliseconds, when the report has one. Nothing reads it yet — it is what
@@ -17,6 +27,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A signal that reached only sooth (`kill`, a CI cancel, a timeout wrapper)
+  left the test command running as an orphan and sooth's temp directories
+  behind. Sooth now gives the command two seconds to end by itself, then
+  stops it, and removes what it created.
 - A report with a `time` no duration can hold (`time="1e30"`) no longer
   crashes sooth with an internal error: the test reads as not timed.
 - A run that dies on a closed pipe (`sooth run … | head -1`) no longer

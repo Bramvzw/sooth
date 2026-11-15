@@ -6,9 +6,10 @@
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
+use crate::interrupt::Interrupt;
 use crate::junit::{self, JunitError, JunitReport};
 use crate::preset::{self, Spawn};
-use crate::runner::{self, RunOutcome};
+use crate::runner::{self, Execution, RunOutcome};
 
 /// Where the report comes from — the user's own file (`--junit`, freshness
 /// checked, never deleted) or a file sooth manages itself (fresh by
@@ -105,8 +106,21 @@ pub struct Ran {
     pub report: Option<Result<JunitReport, ReportError>>,
 }
 
+/// One run, or the fact that there was none to speak of.
+pub enum Run {
+    /// The command ran to its own end, and this is what it left.
+    Finished(Ran),
+    /// Sooth was asked to stop while the command ran. A run that was cut
+    /// short is not a run that failed: whatever it exited with and wrote
+    /// is not read, and it does not count.
+    CutShort,
+}
+
 /// Run `spawn` once and read the report it left in `source`. With `output`
 /// the command's stdout and stderr go to that file instead of the terminal.
+/// When `interrupt` fires while the command runs, the command is given a
+/// moment and then killed. A request that comes once the command has ended
+/// — while its report is read — changes nothing here: that run finished.
 ///
 /// # Errors
 ///
@@ -117,15 +131,19 @@ pub fn run(
     (command, envs): &Spawn,
     source: Option<&ReportSource>,
     output: Option<std::fs::File>,
-) -> std::io::Result<Ran> {
+    interrupt: &Interrupt,
+) -> std::io::Result<Run> {
     let before = source.and_then(ReportSource::before_run);
-    let outcome = match output {
-        Some(file) => runner::run_captured(command, envs, file)?,
-        None => runner::run_once(command, envs)?,
+    let execution = match output {
+        Some(file) => runner::run_captured(command, envs, file, interrupt)?,
+        None => runner::run_once(command, envs, interrupt)?,
     };
-    Ok(Ran {
-        outcome,
-        report: source.map(|source| source.after_run(before)),
+    Ok(match execution {
+        Execution::Finished(outcome) => Run::Finished(Ran {
+            outcome,
+            report: source.map(|source| source.after_run(before)),
+        }),
+        Execution::CutShort => Run::CutShort,
     })
 }
 
@@ -142,7 +160,20 @@ pub fn file_state(path: &Path) -> Option<(SystemTime, u64)> {
 
 #[cfg(test)]
 mod tests {
-    use super::{file_state, run, ReportError, ReportSource};
+    use super::{file_state, ReportError, ReportSource, Run};
+    use crate::interrupt::Interrupt;
+
+    /// A run nobody asked to stop: what it left.
+    fn run(
+        spawn: &crate::preset::Spawn,
+        source: Option<&ReportSource>,
+        output: Option<std::fs::File>,
+    ) -> std::io::Result<super::Ran> {
+        match super::run(spawn, source, output, &Interrupt::never())? {
+            Run::Finished(ran) => Ok(ran),
+            Run::CutShort => panic!("nobody asked this run to stop"),
+        }
+    }
 
     fn command(script: &str) -> (Vec<String>, Vec<(String, String)>) {
         (
@@ -253,5 +284,17 @@ mod tests {
     fn a_command_that_cannot_start_is_the_only_error() {
         let missing = (vec!["sooth-no-such-program".to_owned()], Vec::new());
         assert!(run(&missing, None, None).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_run_that_was_cut_short_is_no_run_and_its_report_is_not_read() {
+        let source = ReportSource::temp().expect("temp report");
+        let write = format!("printf '%s' '{GREEN}' > '{}'", source.path().display());
+        // Asked to stop before the command ended: it wrote a whole report,
+        // and that report still says nothing about the tests.
+        let cut = super::run(&command(&write), Some(&source), None, &Interrupt::already())
+            .expect("sh starts");
+        assert!(matches!(cut, Run::CutShort));
     }
 }
