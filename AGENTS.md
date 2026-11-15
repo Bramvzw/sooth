@@ -24,8 +24,8 @@ src/
 ├── gate.rs        # EXISTS — pre-push gate selection: which test files changed against a base (--changed)
 ├── history.rs     # EXISTS — local run history (.sooth/history.jsonl) + git code identity
 ├── json.rs        # EXISTS — JSON string escaping shared by the history file and the --json report
-├── verify.rs      # EXISTS — failure re-verification: classify failed tests after re-running only them
-├── quarantine.rs  # EXISTS — committed .sooth-quarantine list that --fail-on-flaky pardons
+├── verify.rs      # EXISTS — failure re-verification: re-run only the failed tests and classify them
+├── quarantine.rs  # EXISTS — committed .sooth-quarantine list, and the all-or-nothing pardon --fail-on-flaky grants from it
 ├── report.rs      # EXISTS — colored human report + versioned machine JSON
 └── analyzers/     # EXISTS — flaky.rs (mixed outcomes over runs), history.rs (classify the accumulated history), explain.rs (label a red run's failures against that evidence); slow.rs, order.rs to come (strictly separate passes)
 ```
@@ -63,8 +63,7 @@ an issue that removes it.
   (the analyzers read domain types; no domain module reads an analyzer), with `report.rs` reading
   both and read by `main` alone. *By review.*
 - **Commands orchestrate, modules decide.** A command wires modules together; a decision with
-  domain meaning lives in the module that owns the concept. *By review.* Exception: the pardon,
-  the verify loop and the prior-evidence arithmetic in `main.rs` (#189).
+  domain meaning lives in the module that owns the concept. *By review.*
 
 Split a file when it holds more than one of these layers, not at a line count.
 

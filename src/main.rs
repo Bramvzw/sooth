@@ -568,7 +568,7 @@ fn pardoned_failures(
     if !args.fail_on_flaky || !suite_red {
         return None;
     }
-    quarantine_pardon(quarantine, outcomes, reports)
+    quarantine::pardon(quarantine, outcomes, reports)
 }
 
 /// Label a failing run's failures with what sooth already knew about them.
@@ -610,36 +610,6 @@ fn load_quarantine() -> std::collections::BTreeSet<String> {
     })
 }
 
-/// The pardon decision itself: all-or-nothing over every run.
-fn quarantine_pardon(
-    quarantine: &std::collections::BTreeSet<String>,
-    outcomes: &[runner::RunOutcome],
-    reports: &[junit::JunitReport],
-) -> Option<Vec<String>> {
-    if reports.is_empty() || reports.len() != outcomes.len() {
-        return None;
-    }
-    let mut pardoned = std::collections::BTreeSet::new();
-    for (outcome, report) in outcomes.iter().zip(reports) {
-        // A signal-killed run is a crash, never a pardonable flake — even
-        // when the report was written before the kill.
-        if outcome.signal.is_some() {
-            return None;
-        }
-        let failing = verify::failed_ids(report);
-        if !outcome.success && failing.is_empty() {
-            return None;
-        }
-        for id in failing {
-            if !quarantine.contains(&id) {
-                return None;
-            }
-            pardoned.insert(id);
-        }
-    }
-    (!pardoned.is_empty()).then(|| pardoned.into_iter().collect())
-}
-
 /// The stderr note when the runner's exit and the report disagree, in
 /// either direction. The exit code is settled elsewhere; this explains it.
 #[expect(clippy::print_stderr)]
@@ -668,9 +638,9 @@ fn disagreement(runs_failed: bool, report_failures: usize, has_reports: bool) ->
     }
 }
 
-/// Re-run only the failed tests and classify them. Every failure mode
-/// degrades to a warning and `None`; the exit code is never changed.
-#[expect(clippy::print_stderr)]
+/// Re-run only the failed tests and classify them, when `--verify` asked
+/// for it. Every failure mode degrades to a warning and `None`; the exit
+/// code is never changed.
 fn verify_failures(
     args: &cli::RunArgs,
     plan: Option<&preset::Plan>,
@@ -679,61 +649,13 @@ fn verify_failures(
     if !args.verify {
         return None;
     }
-    let plan = plan?;
-    let preset = plan.preset();
-    let report = final_report?;
-    let failed = verify::failed_tests(report);
-    if failed.is_empty() {
-        return None;
-    }
-    // Selection gets the raw name half; the joined id is never re-split. A
-    // failure the runner cannot be pointed at stays out of the selection —
-    // it would widen it to the whole suite — and reads unverified.
-    let names: Vec<String> = failed
-        .iter()
-        .map(|test| test.name.clone())
-        .filter(|name| preset::selectable(preset, name))
-        .collect();
-    if names.is_empty() {
-        eprintln!("sooth: verification skipped — no failed test has a name the runner can select");
-        return None;
-    }
-    let mut verify_reports = Vec::with_capacity(verify::VERIFY_RUNS as usize);
-    for attempt in 1..=verify::VERIFY_RUNS {
-        // Dropped at the end of every attempt, however it ends.
-        let source = match ReportSource::temp() {
-            Ok(source) => source,
-            Err(err) => {
-                eprintln!("sooth: verification skipped — could not create a temp report: {err}");
-                return None;
-            }
-        };
-        let Some(spawn) = plan.rerun(source.path(), &names) else {
-            eprintln!(
-                "sooth: verification is not supported for this preset yet — \
-                 sooth cannot restrict its runner to a subset of tests"
-            );
-            return None;
-        };
-        let ran = match reported::run(&spawn, Some(&source), None) {
-            Ok(ran) => ran,
-            Err(err) => {
-                eprintln!("sooth: verification run {attempt} failed to start: {err}");
-                return None;
-            }
-        };
-        match ran.report {
-            Some(Ok(report)) => verify_reports.push(report),
-            Some(Err(ReportError::Unreadable(err))) => {
-                eprintln!("sooth: verification run {attempt} produced no usable report: {err}");
-                return None;
-            }
-            // A managed report is deleted before the run: it cannot be
-            // untouched, and a run with a source always has an answer.
-            Some(Err(ReportError::Untouched)) | None => return None,
+    match verify::run(plan?, final_report?) {
+        Ok(verdict) => verdict,
+        Err(why) => {
+            report::warn(&why);
+            None
         }
     }
-    Some(verify::classify(&failed, &verify_reports))
 }
 
 /// What the passive layer produced for this run: the classification, plus
@@ -1436,13 +1358,12 @@ fn crash_context(outcomes: &[runner::RunOutcome], requested_runs: u32) -> Option
 
 #[cfg(test)]
 mod tests {
-    use super::{pardon_gap, quarantine_pardon, rejected_flag, suite_failed};
+    use super::{pardon_gap, rejected_flag, suite_failed};
     use crate::analyzers::explain::{Explanation, Verdict};
     use crate::cli::{Cli, Command};
     use crate::junit::{JunitReport, TestCase, TestStatus};
     use crate::runner::RunOutcome;
     use clap::Parser;
-    use std::collections::BTreeSet;
     use std::time::Duration;
 
     fn outcome(success: bool) -> RunOutcome {
@@ -1674,54 +1595,6 @@ mod tests {
     }
 
     #[test]
-    fn quarantine_pardons_when_every_failure_is_listed() {
-        let quarantine = BTreeSet::from(["case".to_owned()]);
-        let pardoned = quarantine_pardon(
-            &quarantine,
-            &[outcome(false), outcome(true)],
-            &[report_of(TestStatus::Failed), report_of(TestStatus::Passed)],
-        );
-        assert_eq!(pardoned, Some(vec!["case".to_owned()]));
-    }
-
-    #[test]
-    fn an_unlisted_failure_blocks_the_whole_pardon() {
-        let pardoned = quarantine_pardon(
-            &BTreeSet::new(),
-            &[outcome(false)],
-            &[report_of(TestStatus::Failed)],
-        );
-        assert_eq!(pardoned, None);
-    }
-
-    #[test]
-    fn a_failed_run_with_a_green_report_is_never_pardoned() {
-        let quarantine = BTreeSet::from(["case".to_owned()]);
-        let pardoned = quarantine_pardon(
-            &quarantine,
-            &[outcome(false)],
-            &[report_of(TestStatus::Passed)],
-        );
-        assert_eq!(pardoned, None);
-    }
-
-    #[test]
-    fn a_pardon_needs_a_report_for_every_run() {
-        let quarantine = BTreeSet::from(["case".to_owned()]);
-        assert_eq!(quarantine_pardon(&quarantine, &[outcome(false)], &[]), None);
-        // Some reports are not all reports: the run without one may have
-        // failed on anything.
-        assert_eq!(
-            quarantine_pardon(
-                &quarantine,
-                &[outcome(false), outcome(false)],
-                &[report_of(TestStatus::Failed)]
-            ),
-            None
-        );
-    }
-
-    #[test]
     fn the_runner_and_its_report_disagreeing_is_said_in_both_directions() {
         use super::disagreement;
         // Exit 0 over a red report.
@@ -1810,20 +1683,5 @@ mod tests {
             ],
             &explanations
         ));
-    }
-
-    #[test]
-    fn a_signal_killed_run_is_never_pardoned() {
-        let quarantine = BTreeSet::from(["case".to_owned()]);
-        let killed = RunOutcome {
-            exit_code: None,
-            signal: Some(9),
-            success: false,
-            duration: Duration::from_millis(1),
-        };
-        assert_eq!(
-            quarantine_pardon(&quarantine, &[killed], &[report_of(TestStatus::Failed)]),
-            None
-        );
     }
 }

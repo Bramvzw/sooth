@@ -5,6 +5,8 @@ use std::collections::btree_map::Entry;
 use std::collections::BTreeMap;
 
 use crate::junit::{JunitReport, TestStatus};
+use crate::preset::{self, Plan};
+use crate::reported::{self, ReportError, ReportSource};
 
 /// How many times a failed test is re-run (why two: see `DECISIONS.md`).
 pub const VERIFY_RUNS: u32 = 2;
@@ -67,6 +69,64 @@ pub struct Verdict {
     pub failed_differently: Vec<DifferentFailure>,
     /// Failed the suite but never appeared in a verification report.
     pub unverified: Vec<String>,
+}
+
+/// Re-run only the tests that failed in `report` — [`VERIFY_RUNS`] times,
+/// each into a report of its own — and classify them. `Ok(None)` when
+/// nothing failed. `Err` is why the verification was skipped, in words: a
+/// skipped verification changes no exit code, so the caller only says it.
+///
+/// # Errors
+///
+/// When no failed test has a name the runner can be pointed at, the preset
+/// cannot select tests, a re-run does not start, or it leaves no report.
+pub fn run(plan: &Plan, report: &JunitReport) -> Result<Option<Verdict>, String> {
+    let failed = failed_tests(report);
+    if failed.is_empty() {
+        return Ok(None);
+    }
+    // Selection gets the raw name half; the joined id is never re-split. A
+    // failure the runner cannot be pointed at stays out of the selection —
+    // it would widen it to the whole suite — and reads unverified.
+    let names: Vec<String> = failed
+        .iter()
+        .map(|test| test.name.clone())
+        .filter(|name| preset::selectable(plan.preset(), name))
+        .collect();
+    if names.is_empty() {
+        return Err(
+            "verification skipped — no failed test has a name the runner can select".to_owned(),
+        );
+    }
+    let mut reports = Vec::with_capacity(VERIFY_RUNS as usize);
+    for attempt in 1..=VERIFY_RUNS {
+        // Dropped at the end of every attempt, however it ends.
+        let source = ReportSource::temp().map_err(|err| {
+            format!("verification skipped — could not create a temp report: {err}")
+        })?;
+        let spawn = plan.rerun(source.path(), &names).ok_or(
+            "verification is not supported for this preset yet — sooth cannot restrict \
+             its runner to a subset of tests",
+        )?;
+        let ran = reported::run(&spawn, Some(&source), None)
+            .map_err(|err| format!("verification run {attempt} failed to start: {err}"))?;
+        match ran.report {
+            Some(Ok(rerun)) => reports.push(rerun),
+            Some(Err(ReportError::Unreadable(err))) => {
+                return Err(format!(
+                    "verification run {attempt} produced no usable report: {err}"
+                ));
+            }
+            // A managed report is deleted before the run, so it cannot be
+            // untouched, and a run with a source always has an answer.
+            Some(Err(ReportError::Untouched)) | None => {
+                return Err(format!(
+                    "verification run {attempt} produced no usable report"
+                ));
+            }
+        }
+    }
+    Ok(Some(classify(&failed, &reports)))
 }
 
 /// Classify each originally-failed test against the verification reports;
