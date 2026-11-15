@@ -941,6 +941,15 @@ standing maintenance, and missed fixes, for users on a toolchain older than
 February 2025. A dependency update that raises the floor raises the MSRV in
 the same PR.
 
+The job that checks it runs `cargo check --all-targets --locked`: the
+committed lockfile, exactly, or a failure — never a fresh resolution of a
+dependency set nobody ships (#207). That the job can fail was checked once,
+in CI, by running the same command on Rust 1.84: it stopped on
+`clap_lex`'s `edition2024`, as it should. An earlier run had been green on a
+toolchain that could not build the lockfile locally; the likeliest reason is
+that the two were not building the same lockfile (the CI log showed cargo
+resolving), which is what `--locked` now turns into an error.
+
 ## One invocation is one piece of evidence
 
 The N runs of one `sooth run --runs N` were stored as N observations with
