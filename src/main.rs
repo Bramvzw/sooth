@@ -15,6 +15,7 @@ mod phpunit_log;
 mod preset;
 mod quarantine;
 mod report;
+mod reported;
 mod runner;
 mod verify;
 
@@ -24,6 +25,7 @@ use clap::Parser;
 
 use crate::cli::{Cli, Command};
 use crate::report::{Analyses, JunitSummary};
+use crate::reported::{file_state, ReportError, ReportSource};
 
 /// Exit code for "sooth itself failed", as opposed to "the tests failed" (1).
 const EXIT_SOOTH_ERROR: u8 = 2;
@@ -327,7 +329,7 @@ fn execute_runs(
     style: report::Style,
 ) -> Result<(Vec<runner::RunOutcome>, Vec<junit::JunitReport>), SoothError> {
     let total = args.runs as usize;
-    let (command, envs) = session.spawn;
+    let (command, _) = session.spawn;
     let report_source = session.report_source;
     let mut capture = if quiet_repeats(args) {
         Some(Capture::start().map_err(|err| {
@@ -344,28 +346,17 @@ fn execute_runs(
     let mut outcomes = Vec::with_capacity(total);
     let mut reports: Vec<junit::JunitReport> = Vec::with_capacity(total);
     for number in 1..=total {
-        let report_before = match report_source {
-            // Delete the preset's report before every run: a runner that
-            // stops writing must fail loudly instead of silently re-serving
-            // the previous run's truth.
-            Some(ReportSource::Preset(report)) => {
-                let _ = std::fs::remove_file(report.path());
-                None
-            }
-            // A user's file is never deleted; remember its state instead so
-            // "did this run touch it" is a fact, not a clock comparison.
-            Some(ReportSource::User(path)) => file_state(path),
-            None => None,
-        };
-        let ran = match &capture {
-            Some(capture) => capture
-                .open()
-                .map_err(|err| format!("failed to create a file for the run's output: {err}"))
-                .and_then(|file| started(runner::run_captured(command, envs, file), command)),
-            None => started(runner::run_once(command, envs), command),
-        };
-        let outcome = match ran {
-            Ok(outcome) => outcome,
+        let ran = capture
+            .as_ref()
+            .map(Capture::open)
+            .transpose()
+            .map_err(|err| format!("failed to create a file for the run's output: {err}"))
+            .and_then(|hidden| {
+                reported::run(session.spawn, report_source, hidden)
+                    .map_err(|err| format!("failed to run `{}`: {err}", command[0]))
+            });
+        let ran = match ran {
+            Ok(ran) => ran,
             Err(message) => {
                 // An earlier run's failure is not lost with this one.
                 if let Some(capture) = &capture {
@@ -374,19 +365,20 @@ fn execute_runs(
                 return Err(SoothError::new(message));
             }
         };
-        outcomes.push(outcome);
+        outcomes.push(ran.outcome);
         let outcome = &outcomes[number - 1];
-        if let Some(source) = report_source {
-            match load_run_report(source, session, report_before, (&outcomes, args.runs)) {
-                Ok(report) => reports.push(report),
-                Err(messages) => {
-                    if let Some(capture) = &capture {
-                        report::print_run(number, total, outcome, style);
-                        capture.replay_before_stopping((number, total), json_owns_stdout, style);
-                    }
-                    return Err(SoothError { lines: messages });
+        match ran.report {
+            Some(Ok(report)) => reports.push(report),
+            Some(Err(error)) => {
+                if let Some(capture) = &capture {
+                    report::print_run(number, total, outcome, style);
+                    capture.replay_before_stopping((number, total), json_owns_stdout, style);
                 }
+                return Err(SoothError {
+                    lines: unusable_report(session, &error, (&outcomes, args.runs)),
+                });
             }
+            None => {}
         }
         let failed = !outcome.success
             || (report_source.is_some()
@@ -408,14 +400,6 @@ fn execute_runs(
     Ok((outcomes, reports))
 }
 
-/// A run that started, or why it did not, in words.
-fn started(
-    ran: std::io::Result<runner::RunOutcome>,
-    command: &[String],
-) -> Result<runner::RunOutcome, String> {
-    ran.map_err(|err| format!("failed to run `{}`: {err}", command[0]))
-}
-
 /// The command to spawn, its environment, and where its report comes from:
 /// the preset injects flags and manages a temp report, `--junit` points at
 /// the user's own file. `files` is the gate's selection, empty without one.
@@ -426,13 +410,13 @@ fn prepared_command(
 ) -> Result<(preset::Spawn, Option<ReportSource>), SoothError> {
     match plan {
         Some(plan) => {
-            let report = TempReport::create().map_err(|err| {
+            let source = ReportSource::temp().map_err(|err| {
                 SoothError::new(format!(
                     "failed to create a temp directory for the report: {err}"
                 ))
             })?;
-            let spawn = plan.run(report.path(), files);
-            Ok((spawn, Some(ReportSource::Preset(report))))
+            let spawn = plan.run(source.path(), files);
+            Ok((spawn, Some(source)))
         }
         None => Ok((
             (args.command.clone(), Vec::new()),
@@ -717,33 +701,36 @@ fn verify_failures(
     let mut verify_reports = Vec::with_capacity(verify::VERIFY_RUNS as usize);
     for attempt in 1..=verify::VERIFY_RUNS {
         // Dropped at the end of every attempt, however it ends.
-        let report = match TempReport::create() {
-            Ok(report) => report,
+        let source = match ReportSource::temp() {
+            Ok(source) => source,
             Err(err) => {
                 eprintln!("sooth: verification skipped — could not create a temp report: {err}");
                 return None;
             }
         };
-        let Some((cmd, envs)) = plan.rerun(report.path(), &names) else {
+        let Some(spawn) = plan.rerun(source.path(), &names) else {
             eprintln!(
                 "sooth: verification is not supported for this preset yet — \
                  sooth cannot restrict its runner to a subset of tests"
             );
             return None;
         };
-        match runner::run_once(&cmd, &envs) {
-            Ok(_) => {}
+        let ran = match reported::run(&spawn, Some(&source), None) {
+            Ok(ran) => ran,
             Err(err) => {
                 eprintln!("sooth: verification run {attempt} failed to start: {err}");
                 return None;
             }
-        }
-        match junit::parse_file(report.path()) {
-            Ok(parsed) => verify_reports.push(parsed),
-            Err(err) => {
+        };
+        match ran.report {
+            Some(Ok(report)) => verify_reports.push(report),
+            Some(Err(ReportError::Unreadable(err))) => {
                 eprintln!("sooth: verification run {attempt} produced no usable report: {err}");
                 return None;
             }
+            // A managed report is deleted before the run: it cannot be
+            // untouched, and a run with a source always has an answer.
+            Some(Err(ReportError::Untouched)) | None => return None,
         }
     }
     Some(verify::classify(&failed, &verify_reports))
@@ -866,7 +853,7 @@ fn load_history(path: &std::path::Path) -> history::Loaded {
 #[expect(clippy::print_stdout)]
 fn explain(args: &cli::ExplainArgs) -> Outcome {
     let style = report::Style::resolved(args.color);
-    let report = load_report(&args.junit, None).map_err(SoothError::new)?;
+    let report = load_report(&args.junit).map_err(SoothError::new)?;
     let loaded = load_history(std::path::Path::new(history::HISTORY_PATH));
     let analysis = analyzers::history::analyze(&loaded.observations);
     let quarantine = load_quarantine();
@@ -1370,120 +1357,60 @@ fn suite_failed(outcomes: &[runner::RunOutcome], reports: &[junit::JunitReport])
         || reports.iter().any(junit::JunitReport::has_failures)
 }
 
-/// Where the report comes from — the user's own file (`--junit`, freshness
-/// checked, never deleted) or a preset-managed temp file (fresh by
-/// construction, cleaned up afterwards). One value carries what three
-/// separate `args.preset` checks used to coordinate.
-enum ReportSource {
-    User(std::path::PathBuf),
-    Preset(TempReport),
-}
-
-impl ReportSource {
-    fn path(&self) -> &std::path::Path {
-        match self {
-            Self::User(path) => path,
-            Self::Preset(report) => report.path(),
-        }
-    }
-}
-
-/// A report file sooth manages itself: in a fresh private directory (see
-/// `preset::report_path`), and gone again when this value is dropped —
-/// after a normal run, on an early return, and when a panic unwinds. The
-/// one owner of that cleanup; nothing else removes the directory.
-struct TempReport {
-    path: std::path::PathBuf,
-}
-
-impl TempReport {
-    fn create() -> std::io::Result<Self> {
-        preset::report_path().map(|path| Self { path })
-    }
-
-    fn path(&self) -> &std::path::Path {
-        &self.path
-    }
-}
-
-impl Drop for TempReport {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.path);
-        if let Some(dir) = self.path.parent() {
-            let _ = std::fs::remove_dir(dir);
-        }
-    }
-}
-
-/// One run's report: freshness-checked (user files only) and loaded. On
-/// failure, the lines that say why — the caller prints them, after whatever
-/// a quiet run had kept back.
-fn load_run_report(
-    source: &ReportSource,
+/// The lines that say why a run's report cannot be used, in the command's
+/// own terms: the reason, what a gate of several files should check first,
+/// and how the run itself ended.
+fn unusable_report(
     session: &Session<'_>,
-    report_before: Option<(std::time::SystemTime, u64)>,
+    error: &ReportError,
     (outcomes, requested_runs): (&[runner::RunOutcome], u32),
-) -> Result<junit::JunitReport, Vec<String>> {
-    let (plan, gated_files) = (session.plan, session.gated_files);
-    if let ReportSource::User(path) = source {
-        if report_before.is_some() && file_state(path) == report_before {
-            return Err(vec![format!(
-                "the JUnit-XML report at `{}` was not touched by this run — it \
-                 predates the test command. Is the runner writing its report to this path?",
-                path.display()
-            )]);
-        }
-    }
+) -> Vec<String> {
+    let Some(source) = session.report_source else {
+        return Vec::new();
+    };
+    let path = source.path();
     let preset_plan = match source {
-        ReportSource::Preset(_) => plan,
+        ReportSource::Preset(_) => session.plan,
         ReportSource::User(_) => None,
     };
-    load_report(source.path(), preset_plan).map_err(|message| {
-        let mut lines = vec![message];
-        let unwritten = !source.path().exists();
-        lines.extend(
-            preset_plan
-                .and_then(|plan| plan.single_path_note(gated_files))
-                .filter(|_| unwritten),
-        );
-        lines.extend(crash_context(outcomes, requested_runs));
-        lines
-    })
+    let unwritten = !path.exists();
+    let mut lines = vec![match (error, preset_plan) {
+        (ReportError::Untouched, _) => format!(
+            "the JUnit-XML report at `{}` was not touched by this run — it \
+             predates the test command. Is the runner writing its report to this path?",
+            path.display()
+        ),
+        // A temp path the user never chose is no use in a message: say what
+        // the command most likely ran into instead.
+        (ReportError::Unreadable(_), Some(plan)) if unwritten => format!(
+            "the test command wrote no JUnit-XML report — {}",
+            plan.no_report_hint()
+        ),
+        (ReportError::Unreadable(err), _) => format!(
+            "failed to parse JUnit-XML report `{}`: {err}",
+            path.display()
+        ),
+    }];
+    if matches!(error, ReportError::Untouched) {
+        return lines;
+    }
+    lines.extend(
+        preset_plan
+            .and_then(|plan| plan.single_path_note(session.gated_files))
+            .filter(|_| unwritten),
+    );
+    lines.extend(crash_context(outcomes, requested_runs));
+    lines
 }
 
-/// Load the JUnit-XML report at `path`. `preset_plan` is the wrapped
-/// command's plan when the report is preset-managed — used to turn "no
-/// report was written" into an actionable message instead of a parse error
-/// about a temp path the user never chose.
-fn load_report(
-    path: &std::path::Path,
-    preset_plan: Option<&preset::Plan>,
-) -> Result<junit::JunitReport, String> {
-    if let Some(plan) = preset_plan {
-        if !path.exists() {
-            return Err(format!(
-                "the test command wrote no JUnit-XML report — {}",
-                plan.no_report_hint()
-            ));
-        }
-    }
+/// Load the JUnit-XML report at `path`, or say why not.
+fn load_report(path: &std::path::Path) -> Result<junit::JunitReport, String> {
     junit::parse_file(path).map_err(|err| {
         format!(
             "failed to parse JUnit-XML report `{}`: {err}",
             path.display()
         )
     })
-}
-
-/// A file's identity-for-freshness: mtime plus size. Comparing states
-/// before and after a run answers "did this run touch the report" as an
-/// observed fact — no wall clock, no tolerance window, immune to clock skew
-/// between sooth and a network filesystem. `None` when the file is missing
-/// or the filesystem has no mtimes (the parse step owns the missing-file
-/// message).
-fn file_state(path: &std::path::Path) -> Option<(std::time::SystemTime, u64)> {
-    let metadata = std::fs::metadata(path).ok()?;
-    Some((metadata.modified().ok()?, metadata.len()))
 }
 
 /// When the report is unusable and the runner itself failed, keep the run
@@ -1594,19 +1521,49 @@ mod tests {
 
     #[test]
     fn a_preset_run_that_writes_no_report_gets_an_actionable_error() {
-        let missing = std::env::temp_dir().join("sooth-test-no-such-report.xml");
+        use crate::reported::{ReportError, ReportSource};
         let plan = crate::preset::Plan::resolve(&["pytest".to_owned()], crate::cli::Preset::Pytest);
-        let message = super::load_report(&missing, Some(&plan))
-            .expect_err("a missing preset report should error");
-        assert!(message.contains("wrote no JUnit-XML report"));
-        assert!(message.contains("pytest"));
+        let source = ReportSource::temp().expect("temp report");
+        let spawn = (vec!["pytest".to_owned()], Vec::new());
+        let session = super::Session {
+            spawn: &spawn,
+            report_source: Some(&source),
+            plan: Some(&plan),
+            gated_files: 0,
+        };
+        let unwritten = ReportError::Unreadable(
+            crate::junit::parse_file(source.path()).expect_err("nothing was written"),
+        );
+        let lines = super::unusable_report(&session, &unwritten, (&[outcome(false)], 1));
+        // Not a parse error about a temp path the user never chose.
+        assert!(lines[0].contains("wrote no JUnit-XML report"), "{lines:?}");
+        assert!(lines[0].contains("pytest"), "{lines:?}");
+        assert!(!lines[0].contains("failed to parse"), "{lines:?}");
+        assert!(lines[1].contains("run 1 of 1 failed"), "{lines:?}");
+    }
+
+    #[test]
+    fn a_users_report_left_untouched_is_said_without_a_guess_at_the_cause() {
+        use crate::reported::{ReportError, ReportSource};
+        let source = ReportSource::User(std::path::PathBuf::from("build/junit.xml"));
+        let spawn = (vec!["pytest".to_owned()], Vec::new());
+        let session = super::Session {
+            spawn: &spawn,
+            report_source: Some(&source),
+            plan: None,
+            gated_files: 0,
+        };
+        let lines =
+            super::unusable_report(&session, &ReportError::Untouched, (&[outcome(false)], 1));
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        assert!(lines[0].contains("`build/junit.xml` was not touched by this run"));
     }
 
     #[test]
     fn a_missing_user_junit_file_reports_the_path() {
         let missing = std::env::temp_dir().join("sooth-test-no-such-report.xml");
         let message =
-            super::load_report(&missing, None).expect_err("a missing --junit file should error");
+            super::load_report(&missing).expect_err("a missing --junit file should error");
         assert!(message.contains("failed to parse"));
         assert!(message.contains("sooth-test-no-such-report.xml"));
     }
@@ -1630,27 +1587,6 @@ mod tests {
     #[test]
     fn crash_context_is_silent_when_every_run_succeeded() {
         assert_eq!(super::crash_context(&[outcome(true)], 1), None);
-    }
-
-    #[test]
-    fn file_state_changes_when_the_file_is_rewritten() {
-        let path =
-            std::env::temp_dir().join(format!("sooth-state-test-{}.xml", std::process::id()));
-        std::fs::write(&path, "one").unwrap();
-        let before = super::file_state(&path);
-        assert!(before.is_some());
-        // Same state when untouched — the "runner wrote nothing" signal.
-        assert_eq!(super::file_state(&path), before);
-        std::fs::write(&path, "two-longer").unwrap();
-        assert_ne!(super::file_state(&path), before);
-        let _ = std::fs::remove_file(&path);
-    }
-
-    #[test]
-    fn a_missing_file_has_no_state() {
-        // Missing files take the parse-error path, which has a better message.
-        let missing = std::env::temp_dir().join("sooth-state-test-missing.xml");
-        assert_eq!(super::file_state(&missing), None);
     }
 
     #[test]
