@@ -1498,3 +1498,31 @@ prints plainly into the file, so the one failing run shown may look
 different from a run made by hand. And of several different failures across
 the runs, only the first run's output is seen; the report's per-test lines
 are what covers the rest.
+
+## The gate is shared through the project's own tooling, not a sooth file
+
+A pre-push hook in `.git/hooks` is not versioned, so every teammate had to
+recreate the README's hook by hand, and the command itself was one long
+line typed or copied each time (#241). For a team to adopt the gate, the
+command has to live in the repository.
+
+Three ways were on the table: a README recipe, a committed sooth file with
+default arguments (so `sooth run` works bare), and a `sooth hook` command
+that writes the hook. Bram chose the recipe:
+
+- **The repository already has a place for commands.** A Composer script
+  (`composer gate`), an npm script or a Makefile target is where a team
+  keeps them, and `git config core.hooksPath .githooks` makes a committed
+  hook the clone's hook. Nothing new to learn, and nothing of sooth's to
+  commit — which keeps "sooth never requires the host project to change
+  for sooth's sake" intact.
+- **A file format is forever.** Default arguments read from a file need a
+  name, a syntax, and precedence rules against the command line, and all of
+  it has to keep working. With preset inference the daily command is
+  already short (`sooth run -- php artisan test`); what was left of the
+  problem was sharing, and sharing does not need a format.
+- **`sooth hook` solves the typing, not the sharing.** The hook it writes
+  still lives in `.git/hooks`.
+
+Revisit the file when a team asks for defaults that a script cannot carry —
+per-directory settings, say — not before.
