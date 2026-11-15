@@ -32,6 +32,29 @@ const EXIT_SOOTH_ERROR: u8 = 2;
 /// given.
 const DEFAULT_SLOWEST: usize = 10;
 
+/// Sooth could not do what it was asked — not the tests failing, sooth
+/// itself. The lines say why, in the words of the place that knows; `main`
+/// prints each as `sooth: …` on stderr and exits 2. Every command returns
+/// this instead of exiting, so the exit-code contract is decided in one
+/// place and whatever a command holds (a temp report, a capture directory)
+/// is dropped, and so cleaned up, on the way out.
+#[derive(Debug)]
+struct SoothError {
+    lines: Vec<String>,
+}
+
+impl SoothError {
+    fn new(message: impl Into<String>) -> Self {
+        Self {
+            lines: vec![message.into()],
+        }
+    }
+}
+
+/// What a command comes back with: the suite's exit (0 or 1), or why sooth
+/// could not get that far.
+type Outcome = Result<ExitCode, SoothError>;
+
 fn main() -> ExitCode {
     // A panic is sooth failing, never the tests: exit 2, not Rust's 101
     // (see DECISIONS.md, exit codes).
@@ -39,6 +62,9 @@ fn main() -> ExitCode {
     std::panic::catch_unwind(dispatch).unwrap_or(ExitCode::from(EXIT_SOOTH_ERROR))
 }
 
+/// Parse the command line, run the command, and turn its outcome into the
+/// process exit — the one place exit 2 is decided for a command that ran.
+#[expect(clippy::print_stderr)]
 fn dispatch() -> ExitCode {
     let parsed = match Cli::try_parse() {
         Ok(parsed) => parsed,
@@ -52,15 +78,21 @@ fn dispatch() -> ExitCode {
             cli::with_tip(error, &typed).exit()
         }
     };
-    match parsed.command {
+    let outcome = match parsed.command {
         Command::Run(mut args) => {
             infer_preset(&mut args);
             run(&args)
         }
         Command::Explain(args) => explain(&args),
         Command::Import(args) => import(&args),
-        Command::History(args) => history_command(&args),
-    }
+        Command::History(args) => Ok(history_command(&args)),
+    };
+    outcome.unwrap_or_else(|error| {
+        for line in &error.lines {
+            eprintln!("sooth: {line}");
+        }
+        ExitCode::from(EXIT_SOOTH_ERROR)
+    })
 }
 
 /// Without `--preset` or `--junit`, take the preset the command itself
@@ -96,28 +128,22 @@ fn print_report_advice(command: &[String]) {
 /// the slowest tests. `--junit` points at a report the command already writes;
 /// `--preset` injects the right reporter flags and manages a temp report
 /// itself. Without either, the output is the plain per-run report.
-#[expect(clippy::print_stderr)]
-fn run(args: &cli::RunArgs) -> ExitCode {
+fn run(args: &cli::RunArgs) -> Outcome {
     if let Some(reason) = rejected_flag(args) {
-        eprintln!("sooth: {reason}");
-        return ExitCode::from(EXIT_SOOTH_ERROR);
+        return Err(SoothError::new(reason));
     }
     let style = report::Style::resolved(args.color);
 
     let plan = args
         .preset
         .map(|preset| preset::Plan::resolve(&args.command, preset));
-    let selection = match gate_selection(args, plan.as_ref(), style) {
-        Ok(Gate::Off) => None,
-        Ok(Gate::Files(selection)) => Some(selection),
-        Ok(Gate::Nothing) => return ExitCode::SUCCESS,
-        Err(exit) => return exit,
+    let selection = match gate_selection(args, plan.as_ref(), style)? {
+        Gate::Off => None,
+        Gate::Files(selection) => Some(selection),
+        Gate::Nothing => return Ok(ExitCode::SUCCESS),
     };
     let files = selection.as_ref().map_or(&[][..], |gated| &gated.files);
-    let ((command, envs), report_source) = match prepared_command(args, plan.as_ref(), files) {
-        Ok(prepared) => prepared,
-        Err(exit) => return exit,
-    };
+    let ((command, envs), report_source) = prepared_command(args, plan.as_ref(), files)?;
 
     let identity = identity_before_run(args, report_source.as_ref());
 
@@ -127,10 +153,7 @@ fn run(args: &cli::RunArgs) -> ExitCode {
         plan: plan.as_ref(),
         gated_files: files.len(),
     };
-    let (outcomes, reports) = match execute_runs(args, &session, style) {
-        Ok(executed) => executed,
-        Err(exit) => return exit,
-    };
+    let (outcomes, reports) = execute_runs(args, &session, style)?;
 
     let (junit_summary, flaky_analysis) = summarize_reports(args, &reports);
     let history_pass = record_history(identity, &reports);
@@ -173,7 +196,7 @@ fn run(args: &cli::RunArgs) -> ExitCode {
         print_disagreement(runs_failed, report_failures, !reports.is_empty());
     }
 
-    if let Some(exit) = emit_output(
+    emit_output(
         args,
         &outcomes,
         junit_summary.as_ref(),
@@ -181,15 +204,13 @@ fn run(args: &cli::RunArgs) -> ExitCode {
         report_failures,
         failed,
         style,
-    ) {
-        return exit;
-    }
+    )?;
 
-    if failed {
+    Ok(if failed {
         ExitCode::FAILURE
     } else {
         ExitCode::SUCCESS
-    }
+    })
 }
 
 /// What every run of one invocation shares: the command as it is spawned,
@@ -300,19 +321,19 @@ impl Drop for Capture {
 /// Repetition lives here, not in the runner: the report is parsed per run,
 /// and per-test outcomes across runs feed the flaky pass. Fixed order on
 /// purpose — see DECISIONS.md.
-#[expect(clippy::print_stderr)]
 fn execute_runs(
     args: &cli::RunArgs,
     session: &Session<'_>,
     style: report::Style,
-) -> Result<(Vec<runner::RunOutcome>, Vec<junit::JunitReport>), ExitCode> {
+) -> Result<(Vec<runner::RunOutcome>, Vec<junit::JunitReport>), SoothError> {
     let total = args.runs as usize;
     let (command, envs) = session.spawn;
     let report_source = session.report_source;
     let mut capture = if quiet_repeats(args) {
         Some(Capture::start().map_err(|err| {
-            eprintln!("sooth: failed to create a temp directory for the runs' output: {err}");
-            ExitCode::from(EXIT_SOOTH_ERROR)
+            SoothError::new(format!(
+                "failed to create a temp directory for the runs' output: {err}"
+            ))
         })?)
     } else {
         None
@@ -320,16 +341,6 @@ fn execute_runs(
     // Bare --json owns sooth's stdout: the runs ride in the document, and
     // what a quiet run wrote is replayed on stderr.
     let json_owns_stdout = matches!(args.json, Some(None));
-    let stop = |messages: &[String]| {
-        for message in messages {
-            eprintln!("sooth: {message}");
-        }
-        if let Some(ReportSource::Preset(path)) = report_source {
-            cleanup_preset_report(path);
-        }
-        ExitCode::from(EXIT_SOOTH_ERROR)
-    };
-
     let mut outcomes = Vec::with_capacity(total);
     let mut reports: Vec<junit::JunitReport> = Vec::with_capacity(total);
     for number in 1..=total {
@@ -337,8 +348,8 @@ fn execute_runs(
             // Delete the preset's report before every run: a runner that
             // stops writing must fail loudly instead of silently re-serving
             // the previous run's truth.
-            Some(ReportSource::Preset(path)) => {
-                let _ = std::fs::remove_file(path);
+            Some(ReportSource::Preset(report)) => {
+                let _ = std::fs::remove_file(report.path());
                 None
             }
             // A user's file is never deleted; remember its state instead so
@@ -360,7 +371,7 @@ fn execute_runs(
                 if let Some(capture) = &capture {
                     capture.replay_first_failure(total, json_owns_stdout, style);
                 }
-                return Err(stop(&[message]));
+                return Err(SoothError::new(message));
             }
         };
         outcomes.push(outcome);
@@ -373,7 +384,7 @@ fn execute_runs(
                         report::print_run(number, total, outcome, style);
                         capture.replay_before_stopping((number, total), json_owns_stdout, style);
                     }
-                    return Err(stop(&messages));
+                    return Err(SoothError { lines: messages });
                 }
             }
         }
@@ -390,11 +401,6 @@ fn execute_runs(
                 report::print_run(number, total, outcome, style);
             }
         }
-    }
-    if let Some(ReportSource::Preset(path)) = report_source {
-        // Best-effort cleanup of the preset's private report dir — every
-        // run's parse result is already in memory.
-        cleanup_preset_report(path);
     }
     if let Some(capture) = &capture {
         capture.replay_first_failure(total, json_owns_stdout, style);
@@ -413,20 +419,20 @@ fn started(
 /// The command to spawn, its environment, and where its report comes from:
 /// the preset injects flags and manages a temp report, `--junit` points at
 /// the user's own file. `files` is the gate's selection, empty without one.
-#[expect(clippy::print_stderr)]
 fn prepared_command(
     args: &cli::RunArgs,
     plan: Option<&preset::Plan>,
     files: &[String],
-) -> Result<(preset::Spawn, Option<ReportSource>), ExitCode> {
+) -> Result<(preset::Spawn, Option<ReportSource>), SoothError> {
     match plan {
         Some(plan) => {
-            let path = preset::report_path().map_err(|err| {
-                eprintln!("sooth: failed to create a temp directory for the report: {err}");
-                ExitCode::from(EXIT_SOOTH_ERROR)
+            let report = TempReport::create().map_err(|err| {
+                SoothError::new(format!(
+                    "failed to create a temp directory for the report: {err}"
+                ))
             })?;
-            let spawn = plan.run(&path, files);
-            Ok((spawn, Some(ReportSource::Preset(path))))
+            let spawn = plan.run(report.path(), files);
+            Ok((spawn, Some(ReportSource::Preset(report))))
         }
         None => Ok((
             (args.command.clone(), Vec::new()),
@@ -470,7 +476,7 @@ fn gate_selection(
     args: &cli::RunArgs,
     plan: Option<&preset::Plan>,
     style: report::Style,
-) -> Result<Gate, ExitCode> {
+) -> Result<Gate, SoothError> {
     let Some(base) = &args.changed else {
         return Ok(Gate::Off);
     };
@@ -479,25 +485,18 @@ fn gate_selection(
     // Before the selection is even resolved: a hook that works until the
     // day two test files change fails at the worst moment.
     if let Some(reason) = plan.gate_refusal() {
-        eprintln!("sooth: {reason}");
-        return Err(ExitCode::from(EXIT_SOOTH_ERROR));
+        return Err(SoothError::new(reason));
     }
     if let Some(selection) = plan.own_selection(std::path::Path::new(".")) {
-        eprintln!(
-            "sooth: the gate's command already selects `{selection}` — the runner would \
+        return Err(SoothError::new(format!(
+            "the gate's command already selects `{selection}` — the runner would \
              run that and the changed test files, `--runs` times over, while the gate \
              names only the changed ones. Give the gate the bare runner: it adds the \
              files itself"
-        );
-        return Err(ExitCode::from(EXIT_SOOTH_ERROR));
+        )));
     }
-    let selection = match gate::resolve(base.as_deref(), preset, std::path::Path::new(".")) {
-        Ok(selection) => selection,
-        Err(reason) => {
-            eprintln!("sooth: {reason}");
-            return Err(ExitCode::from(EXIT_SOOTH_ERROR));
-        }
-    };
+    let selection = gate::resolve(base.as_deref(), preset, std::path::Path::new("."))
+        .map_err(SoothError::new)?;
     if selection.files.is_empty() {
         return empty_gate(args, &selection).map(|()| Gate::Nothing);
     }
@@ -507,13 +506,12 @@ fn gate_selection(
     if preset == cli::Preset::Phpunit && selection.files.len() > 1 {
         match plan.phpunit_major() {
             Some(major) if major < 10 => {
-                eprintln!(
-                    "sooth: the gate selected {} test files, but PHPUnit {major} runs only \
+                return Err(SoothError::new(format!(
+                    "the gate selected {} test files, but PHPUnit {major} runs only \
                      the first path it is given — the rest would silently not be gated. \
                      Upgrade to PHPUnit 10+ to gate several files at once",
                     selection.files.len()
-                );
-                return Err(ExitCode::from(EXIT_SOOTH_ERROR));
+                )));
             }
             None => eprintln!(
                 "sooth: could not read a PHPUnit version from `{} --version` — if it is \
@@ -536,7 +534,7 @@ fn gate_selection(
 /// `--json` emits the document (zero runs), `--json=PATH` writes it and
 /// keeps the human line on stdout.
 #[expect(clippy::print_stdout)]
-fn empty_gate(args: &cli::RunArgs, selection: &gate::Selection) -> Result<(), ExitCode> {
+fn empty_gate(args: &cli::RunArgs, selection: &gate::Selection) -> Result<(), SoothError> {
     let analyses = Analyses {
         gate: Some(selection),
         ..Analyses::default()
@@ -563,14 +561,12 @@ fn empty_gate(args: &cli::RunArgs, selection: &gate::Selection) -> Result<(), Ex
 }
 
 /// Write the JSON document to `path`; a failure is sooth's own (exit 2).
-#[expect(clippy::print_stderr)]
-fn write_json_file(path: &std::path::Path, json: String) -> Result<(), ExitCode> {
+fn write_json_file(path: &std::path::Path, json: String) -> Result<(), SoothError> {
     std::fs::write(path, json + "\n").map_err(|err| {
-        eprintln!(
-            "sooth: failed to write JSON report `{}`: {err}",
+        SoothError::new(format!(
+            "failed to write JSON report `{}`: {err}",
             path.display()
-        );
-        ExitCode::from(EXIT_SOOTH_ERROR)
+        ))
     })
 }
 
@@ -720,38 +716,35 @@ fn verify_failures(
     }
     let mut verify_reports = Vec::with_capacity(verify::VERIFY_RUNS as usize);
     for attempt in 1..=verify::VERIFY_RUNS {
-        let path = match preset::report_path() {
-            Ok(path) => path,
+        // Dropped at the end of every attempt, however it ends.
+        let report = match TempReport::create() {
+            Ok(report) => report,
             Err(err) => {
                 eprintln!("sooth: verification skipped — could not create a temp report: {err}");
                 return None;
             }
         };
-        let Some((cmd, envs)) = plan.rerun(&path, &names) else {
+        let Some((cmd, envs)) = plan.rerun(report.path(), &names) else {
             eprintln!(
                 "sooth: verification is not supported for this preset yet — \
                  sooth cannot restrict its runner to a subset of tests"
             );
-            let _ = std::fs::remove_dir(path.parent().unwrap_or(&path));
             return None;
         };
         match runner::run_once(&cmd, &envs) {
             Ok(_) => {}
             Err(err) => {
                 eprintln!("sooth: verification run {attempt} failed to start: {err}");
-                cleanup_preset_report(&path);
                 return None;
             }
         }
-        match junit::parse_file(&path) {
-            Ok(report) => verify_reports.push(report),
+        match junit::parse_file(report.path()) {
+            Ok(parsed) => verify_reports.push(parsed),
             Err(err) => {
                 eprintln!("sooth: verification run {attempt} produced no usable report: {err}");
-                cleanup_preset_report(&path);
                 return None;
             }
         }
-        cleanup_preset_report(&path);
     }
     Some(verify::classify(&failed, &verify_reports))
 }
@@ -870,16 +863,10 @@ fn load_history(path: &std::path::Path) -> history::Loaded {
 /// Handle `sooth explain`: label every failure in a JUnit-XML report against
 /// the accumulated evidence. Runs nothing, records nothing (see
 /// `DECISIONS.md`); exits 0 when the report could be read, 2 when it could not.
-#[expect(clippy::print_stderr, clippy::print_stdout)]
-fn explain(args: &cli::ExplainArgs) -> ExitCode {
+#[expect(clippy::print_stdout)]
+fn explain(args: &cli::ExplainArgs) -> Outcome {
     let style = report::Style::resolved(args.color);
-    let report = match load_report(&args.junit, None) {
-        Ok(report) => report,
-        Err(message) => {
-            eprintln!("sooth: {message}");
-            return ExitCode::from(EXIT_SOOTH_ERROR);
-        }
-    };
+    let report = load_report(&args.junit, None).map_err(SoothError::new)?;
     let loaded = load_history(std::path::Path::new(history::HISTORY_PATH));
     let analysis = analyzers::history::analyze(&loaded.observations);
     let quarantine = load_quarantine();
@@ -893,14 +880,14 @@ fn explain(args: &cli::ExplainArgs) -> ExitCode {
 
     if args.json {
         println!("{}", report::explanation_json(&args.junit, &explanations));
-        return ExitCode::SUCCESS;
+        return Ok(ExitCode::SUCCESS);
     }
     if explanations.is_empty() {
         println!(
             "no failures in `{}` — nothing to explain",
             args.junit.display()
         );
-        return ExitCode::SUCCESS;
+        return Ok(ExitCode::SUCCESS);
     }
     report::print_explanation(
         &Analyses {
@@ -910,7 +897,7 @@ fn explain(args: &cli::ExplainArgs) -> ExitCode {
         },
         style,
     );
-    ExitCode::SUCCESS
+    Ok(ExitCode::SUCCESS)
 }
 
 /// The human report's sections, in the one order both output modes use.
@@ -970,13 +957,13 @@ type FileYield = Option<(
 )>;
 
 /// The outcomes one import file yields — `Ok(None)` is a green console log,
-/// which names no tests. Parse failures print here and become exit 2.
-#[expect(clippy::print_stderr, clippy::print_stdout)]
+/// which names no tests. A file that does not parse is sooth's error.
+#[expect(clippy::print_stdout)]
 fn file_outcomes(
     content: &str,
     log: Option<cli::LogFormat>,
     path: &std::path::Path,
-) -> Result<FileYield, ()> {
+) -> Result<FileYield, SoothError> {
     match log {
         Some(cli::LogFormat::Phpunit) => match phpunit_log::parse_str(content) {
             Ok(parsed) if parsed.failures.is_empty() => {
@@ -987,33 +974,26 @@ fn file_outcomes(
                 Ok(None)
             }
             Ok(parsed) => Ok(Some((parsed.failures, parsed.at))),
-            Err(err) => {
-                eprintln!(
-                    "sooth: failed to parse PHPUnit log `{}`: {err}",
-                    path.display()
-                );
-                Err(())
-            }
+            Err(err) => Err(SoothError::new(format!(
+                "failed to parse PHPUnit log `{}`: {err}",
+                path.display()
+            ))),
         },
         None => match junit::parse_str(content) {
             Ok(report) => Ok(Some((
                 analyzers::flaky::run_outcomes(&report),
                 junit::report_timestamp(content),
             ))),
-            Err(err) => {
-                eprintln!(
-                    "sooth: failed to parse JUnit-XML report `{}`: {err}",
-                    path.display()
-                );
-                Err(())
-            }
+            Err(err) => Err(SoothError::new(format!(
+                "failed to parse JUnit-XML report `{}`: {err}",
+                path.display()
+            ))),
         },
     }
 }
 
-/// `--commit` as the sha local runs record, or the refusal already printed.
-#[expect(clippy::print_stderr)]
-fn imported_commit(given: &str) -> Result<String, ExitCode> {
+/// `--commit` as the sha local runs record, or why it is refused.
+fn imported_commit(given: &str) -> Result<String, SoothError> {
     history::resolve_commit(std::path::Path::new("."), given).map_err(|error| {
         let why = match error {
             history::CommitError::NotASha => {
@@ -1023,32 +1003,23 @@ fn imported_commit(given: &str) -> Result<String, ExitCode> {
                 "names no commit this repository knows — pass the full sha, or fetch it first"
             }
         };
-        eprintln!("sooth: `--commit {given}` {why}");
-        ExitCode::from(EXIT_SOOTH_ERROR)
+        SoothError::new(format!("`--commit {given}` {why}"))
     })
 }
 
 #[expect(clippy::print_stdout)]
-fn import(args: &cli::ImportArgs) -> ExitCode {
+fn import(args: &cli::ImportArgs) -> Outcome {
     let style = report::Style::resolved(args.color);
-    let commit = match args.commit.as_deref().map(imported_commit).transpose() {
-        Ok(commit) => commit,
-        Err(code) => return code,
-    };
+    let commit = args.commit.as_deref().map(imported_commit).transpose()?;
     let ledger_path = std::path::Path::new(history::IMPORTED_PATH);
     let ledger = history::imported_hashes(ledger_path);
-    let (mut incoming, lines) = match read_imports(args, commit.as_deref(), &ledger) {
-        Ok(read) => read,
-        Err(exit) => return exit,
-    };
+    let (mut incoming, lines) = read_imports(args, commit.as_deref(), &ledger)?;
 
     // Ascending time order, so the file stays readable front to back; the
     // analysis itself no longer depends on it.
     incoming.sort_by_key(|entry| entry.at_epoch_secs);
     let history_path = std::path::Path::new(history::HISTORY_PATH);
-    if let Err(exit) = write_imports(history_path, &incoming) {
-        return exit;
-    }
+    write_imports(history_path, &incoming)?;
     // Said once it is true: the files are in the history now.
     for line in lines {
         println!("{line}");
@@ -1065,25 +1036,23 @@ fn import(args: &cli::ImportArgs) -> ExitCode {
         style,
     );
     report::print_history_size(loaded.observations.len(), loaded.truncated);
-    ExitCode::SUCCESS
+    Ok(ExitCode::SUCCESS)
 }
 
 /// Read every file of an import into observations, plus the line that
 /// says what became of each. Nothing is written here: a file that cannot
 /// be read or parsed fails the whole import before the history is touched.
-#[expect(clippy::print_stderr)]
 fn read_imports(
     args: &cli::ImportArgs,
     commit: Option<&str>,
     ledger: &std::collections::BTreeSet<u64>,
-) -> Result<(Vec<Incoming>, Vec<String>), ExitCode> {
+) -> Result<(Vec<Incoming>, Vec<String>), SoothError> {
     let mut incoming: Vec<Incoming> = Vec::new();
     let mut lines = Vec::new();
     let mut named_before = std::collections::BTreeSet::new();
     for path in &args.reports {
         let content = std::fs::read_to_string(path).map_err(|err| {
-            eprintln!("sooth: could not read `{}`: {err}", path.display());
-            ExitCode::from(EXIT_SOOTH_ERROR)
+            SoothError::new(format!("could not read `{}`: {err}", path.display()))
         })?;
         let hash = history::fnv1a64(content.as_bytes());
         // The same content twice on one command line is one file.
@@ -1103,8 +1072,7 @@ fn read_imports(
             ));
             continue;
         }
-        let parsed = file_outcomes(&content, args.log, path)
-            .map_err(|()| ExitCode::from(EXIT_SOOTH_ERROR))?;
+        let parsed = file_outcomes(&content, args.log, path)?;
         let Some((outcomes, content_stamp)) = parsed else {
             continue;
         };
@@ -1151,7 +1119,7 @@ fn read_imports(
 /// `--replace` imports a file again — written in the place of that file's
 /// earlier observations, in one rewrite.
 #[expect(clippy::print_stderr)]
-fn write_imports(history_path: &std::path::Path, incoming: &[Incoming]) -> Result<(), ExitCode> {
+fn write_imports(history_path: &std::path::Path, incoming: &[Incoming]) -> Result<(), SoothError> {
     let observations: Vec<history::Observation> = incoming
         .iter()
         .flat_map(|entry| entry.observations.iter().cloned())
@@ -1162,8 +1130,7 @@ fn write_imports(history_path: &std::path::Path, incoming: &[Incoming]) -> Resul
         .map(|entry| history::import_invocation(entry.hash))
         .collect();
     let failed = |err: std::io::Error| {
-        eprintln!("sooth: could not write {}: {err}", history_path.display());
-        ExitCode::from(EXIT_SOOTH_ERROR)
+        SoothError::new(format!("could not write {}: {err}", history_path.display()))
     };
     if !replaced.is_empty() {
         match history::replace_invocations(history_path, &replaced, &observations) {
@@ -1251,7 +1218,7 @@ fn emit_output(
     report_failures: usize,
     failed: bool,
     style: report::Style,
-) -> Option<ExitCode> {
+) -> Result<(), SoothError> {
     match (junit_summary, &args.json) {
         // Bare --json: sooth's own stdout output is exactly one line of
         // JSON, printed after the wrapped command finished (last-line
@@ -1264,9 +1231,7 @@ fn emit_output(
         (Some(summary), Some(Some(path))) => {
             print_sections(args, outcomes, summary, analyses, style);
             let json = report::to_json(outcomes, summary, analyses);
-            if let Err(exit) = write_json_file(path, json) {
-                return Some(exit);
-            }
+            write_json_file(path, json)?;
             println!(
                 "{}",
                 verdict(
@@ -1308,7 +1273,7 @@ fn emit_output(
             print_report_advice(&args.command);
         }
     }
-    None
+    Ok(())
 }
 
 /// The closing verdict line, pardon-aware: a pardoned run explains why it
@@ -1411,13 +1376,41 @@ fn suite_failed(outcomes: &[runner::RunOutcome], reports: &[junit::JunitReport])
 /// separate `args.preset` checks used to coordinate.
 enum ReportSource {
     User(std::path::PathBuf),
-    Preset(std::path::PathBuf),
+    Preset(TempReport),
 }
 
 impl ReportSource {
     fn path(&self) -> &std::path::Path {
         match self {
-            Self::User(path) | Self::Preset(path) => path,
+            Self::User(path) => path,
+            Self::Preset(report) => report.path(),
+        }
+    }
+}
+
+/// A report file sooth manages itself: in a fresh private directory (see
+/// `preset::report_path`), and gone again when this value is dropped —
+/// after a normal run, on an early return, and when a panic unwinds. The
+/// one owner of that cleanup; nothing else removes the directory.
+struct TempReport {
+    path: std::path::PathBuf,
+}
+
+impl TempReport {
+    fn create() -> std::io::Result<Self> {
+        preset::report_path().map(|path| Self { path })
+    }
+
+    fn path(&self) -> &std::path::Path {
+        &self.path
+    }
+}
+
+impl Drop for TempReport {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+        if let Some(dir) = self.path.parent() {
+            let _ = std::fs::remove_dir(dir);
         }
     }
 }
@@ -1512,14 +1505,6 @@ fn crash_context(outcomes: &[runner::RunOutcome], requested_runs: u32) -> Option
         outcome.status_label(),
         outcome.duration
     ))
-}
-
-/// Best-effort removal of a preset's private report directory (file + dir).
-fn cleanup_preset_report(path: &std::path::Path) {
-    let _ = std::fs::remove_file(path);
-    if let Some(dir) = path.parent() {
-        let _ = std::fs::remove_dir(dir);
-    }
 }
 
 #[cfg(test)]
