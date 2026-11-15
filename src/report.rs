@@ -174,9 +174,9 @@ impl JunitSummary {
 /// One line per run. The runner's own exit code is labeled `runner exit=` on
 /// purpose: a bare `exit=2` reads as sooth's own exit-code contract, where 2
 /// means "sooth itself failed" — two vocabularies that must stay distinct.
-pub fn print_runs(outcomes: &[RunOutcome], style: Style) {
+pub fn print_runs(outcomes: &[RunOutcome], requested: usize, style: Style) {
     for (index, outcome) in outcomes.iter().enumerate() {
-        print_run(index + 1, outcomes.len(), outcome, style);
+        print_run(index + 1, requested, outcome, style);
     }
 }
 
@@ -303,6 +303,31 @@ pub fn print_summary(summary: &JunitSummary, runs: usize, ranking_asked_for: boo
             style.dim(&format!("({duration:.2?})"))
         );
     }
+}
+
+/// The closing line when the runs were cut short. No verdict: the runs that
+/// were asked for did not all happen, so the suite was neither proven green
+/// nor seen through to red. It says what did happen: how many of the
+/// `requested` runs finished — `outcomes` — and how many of those `failed`.
+/// Not during which run: a request to stop can also land between two.
+pub fn interrupted_line(
+    outcomes: &[RunOutcome],
+    requested: usize,
+    failed: usize,
+    style: Style,
+) -> String {
+    let total: Duration = outcomes.iter().map(|outcome| outcome.duration).sum();
+    let finished = outcomes.len();
+    let how = match (finished, failed) {
+        (1, 0) => "it passed".to_owned(),
+        (1, _) => "it failed".to_owned(),
+        (_, 0) => "none of them failed".to_owned(),
+        (_, failed) => format!("{failed} of them failed"),
+    };
+    style.yellow(&format!(
+        "result: interrupted after {finished} of {} — {how} ({total:.2?} total)",
+        count(requested, "run")
+    ))
 }
 
 /// The closing verdict line: sooth's suite-level judgement at a glance.
@@ -850,6 +875,21 @@ pub struct Analyses<'a> {
     pub explanation: Option<&'a [explain::Explanation]>,
     /// The gate's selection when `--changed` gated this run.
     pub gate: Option<&'a gate::Selection>,
+    /// Set when sooth was asked to stop before it had done what it was
+    /// asked.
+    pub interrupted: Option<Interrupted>,
+}
+
+/// Sooth was asked to stop before it had done what it was asked: what it
+/// was doing then.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Interrupted {
+    /// Making the runs: `requested` were asked for and fewer finished, of
+    /// which `failed` failed. The report covers the ones that finished.
+    Runs { requested: usize, failed: usize },
+    /// Re-running the failures (`--verify`), after every run had finished:
+    /// the report is the suite's own, its failures unverified.
+    Verification,
 }
 
 impl<'a> Analyses<'a> {
@@ -876,6 +916,7 @@ pub fn to_json(outcomes: &[RunOutcome], summary: &JunitSummary, analyses: &Analy
         pardoned,
         explanation,
         gate,
+        interrupted,
         // Context for the human note only; the JSON carries the counts.
         history_observations: _,
     } = *analyses;
@@ -964,8 +1005,12 @@ pub fn to_json(outcomes: &[RunOutcome], summary: &JunitSummary, analyses: &Analy
         )
     });
 
+    let interrupted = interrupted.map_or(String::new(), |stop| {
+        interrupted_member(stop, outcomes.len())
+    });
+
     format!(
-        r#"{{"schema_version":{JSON_SCHEMA_VERSION},"sooth_version":"{}","runs":[{}],"junit":{{"total":{},"passed":{},"failed":{},"errors":{},"skipped":{},"slowest":[{}]}}{active}{history}{verification}{quarantine}{explanation}{gate}}}"#,
+        r#"{{"schema_version":{JSON_SCHEMA_VERSION},"sooth_version":"{}","runs":[{}],"junit":{{"total":{},"passed":{},"failed":{},"errors":{},"skipped":{},"slowest":[{}]}}{active}{history}{verification}{quarantine}{explanation}{gate}{interrupted}}}"#,
         env!("CARGO_PKG_VERSION"),
         runs.join(","),
         summary.total,
@@ -974,6 +1019,20 @@ pub fn to_json(outcomes: &[RunOutcome], summary: &JunitSummary, analyses: &Analy
         summary.error,
         summary.skipped,
         slowest.join(","),
+    )
+}
+
+/// The `interrupted` member, with its leading comma. Additive within
+/// `schema_version` 1: present when sooth was asked to stop before it was
+/// done. The document's `runs` are the `finished_runs`.
+fn interrupted_member(stop: Interrupted, finished_runs: usize) -> String {
+    let (during, requested) = match stop {
+        Interrupted::Runs { requested, .. } => ("runs", requested),
+        // Every run that was asked for had finished by then.
+        Interrupted::Verification => ("verification", finished_runs),
+    };
+    format!(
+        r#","interrupted":{{"during":"{during}","finished_runs":{finished_runs},"requested_runs":{requested}}}"#
     )
 }
 
@@ -1324,6 +1383,47 @@ mod tests {
             line.contains("0 tests, so this run proved nothing"),
             "got: {line}"
         );
+    }
+
+    #[test]
+    fn an_interrupted_run_says_how_many_runs_finished_and_how_they_went() {
+        use super::interrupted_line;
+        let two = [outcome(true), outcome(true)];
+        assert!(interrupted_line(&two, 5, 0, plain())
+            .starts_with("result: interrupted after 2 of 5 runs — none of them failed ("));
+        // Failed is the caller's count: a run can be red by its report alone.
+        assert!(interrupted_line(&two, 5, 1, plain())
+            .starts_with("result: interrupted after 2 of 5 runs — 1 of them failed ("));
+        let one = [outcome(true)];
+        assert!(interrupted_line(&one, 3, 0, plain())
+            .starts_with("result: interrupted after 1 of 3 runs — it passed ("));
+        assert!(interrupted_line(&one, 3, 1, plain())
+            .starts_with("result: interrupted after 1 of 3 runs — it failed ("));
+    }
+
+    #[test]
+    fn the_json_says_what_sooth_was_doing_when_it_was_asked_to_stop() {
+        use super::Interrupted;
+        let json_for = |interrupted| {
+            to_json(
+                &[outcome(false)],
+                &JunitSummary::empty(),
+                &Analyses {
+                    interrupted,
+                    ..Analyses::default()
+                },
+            )
+        };
+        assert!(!json_for(None).contains("interrupted"));
+        assert!(json_for(Some(Interrupted::Runs {
+            requested: 4,
+            failed: 1
+        }))
+        .ends_with(r#","interrupted":{"during":"runs","finished_runs":1,"requested_runs":4}}"#));
+        // The runs were all made; it is the re-runs that were not.
+        assert!(json_for(Some(Interrupted::Verification)).ends_with(
+            r#","interrupted":{"during":"verification","finished_runs":1,"requested_runs":1}}"#
+        ));
     }
 
     #[test]

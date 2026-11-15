@@ -902,6 +902,439 @@ fn the_history_records_how_long_each_test_took() {
     );
 }
 
+/// A sooth run of five in `cwd` whose third run hangs: runs 1 and 2 exit 0
+/// at once, run 3 becomes `sleep 30`. Returns the child once run 3 has
+/// started, with its stdout and stderr piped. `alone` puts sooth in a
+/// process group of its own, so a signal can be sent to the whole group
+/// the way a terminal's Ctrl-C is.
+fn sooth_hanging_in_its_third_run(cwd: &Path, extra: &[&str]) -> std::process::Child {
+    use std::os::unix::fs::PermissionsExt;
+    use std::os::unix::process::CommandExt;
+    use std::process::Stdio;
+    std::fs::write(
+        cwd.join("runner"),
+        concat!(
+            "#!/bin/sh\n",
+            "n=$(( $(cat invocations 2>/dev/null || echo 0) + 1 )); echo $n > invocations\n",
+            "echo $$ > \"pid-$n\"\n",
+            "echo \"speaking in run $n\"\n",
+            "[ $n -lt 3 ] || exec sleep 30\n",
+            "exit 0\n",
+        ),
+    )
+    .expect("write runner");
+    std::fs::set_permissions(cwd.join("runner"), std::fs::Permissions::from_mode(0o755))
+        .expect("chmod");
+    std::fs::create_dir_all(cwd.join("tmp")).expect("mkdir");
+    let child = Command::new(env!("CARGO_BIN_EXE_sooth"))
+        .current_dir(cwd)
+        .env("TMPDIR", cwd.join("tmp"))
+        .args(["run", "--color", "never", "--runs", "5"])
+        .args(extra)
+        .args(["--", "./runner"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .process_group(0)
+        .spawn()
+        .expect("sooth should start");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    while !cwd.join("pid-3").exists() {
+        assert!(std::time::Instant::now() < deadline, "run 3 never started");
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    child
+}
+
+/// `kill <signal> <target>`, asserting it was delivered.
+fn send_signal(signal: &str, target: &str) {
+    let sent = Command::new("kill")
+        .args([signal, "--", target])
+        .status()
+        .expect("kill should run");
+    assert!(sent.success(), "kill {signal} {target}");
+}
+
+/// Whether the process the runner's third invocation wrote down is alive.
+fn third_run_is_alive(cwd: &Path) -> bool {
+    let pid = std::fs::read_to_string(cwd.join("pid-3")).expect("pid-3");
+    Command::new("kill")
+        .args(["-0", pid.trim()])
+        .stderr(std::process::Stdio::null())
+        .status()
+        .is_ok_and(|status| status.success())
+}
+
+#[test]
+fn asked_to_stop_alone_sooth_reports_what_finished_and_takes_the_runner_down() {
+    // CI cancelling a job, a timeout wrapper, `kill`: only sooth gets the
+    // signal. The runner knows nothing and would run on as an orphan.
+    let cwd = Scratch::new("interrupt-alone");
+    let child = sooth_hanging_in_its_third_run(&cwd, &[]);
+    let asked = std::time::Instant::now();
+    send_signal("-TERM", &child.id().to_string());
+    let output = child.wait_with_output().expect("sooth should exit");
+    let waited = asked.elapsed();
+    let stdout = String::from_utf8(output.stdout).expect("stdout should be UTF-8");
+    let stderr = String::from_utf8(output.stderr).expect("stderr should be UTF-8");
+
+    assert_eq!(output.status.code(), Some(2), "got: {stdout:?} {stderr:?}");
+    assert!(
+        stdout.contains("run 1/5: runner exit=0") && stdout.contains("run 2/5: runner exit=0"),
+        "the runs that finished are reported: {stdout:?}"
+    );
+    assert!(
+        !stdout.contains("run 3/5:"),
+        "a run cut short is not a run: {stdout:?}"
+    );
+    assert!(
+        stdout.contains("result: interrupted after 2 of 5 runs — none of them failed"),
+        "no verdict, what happened: {stdout:?}"
+    );
+    assert!(
+        stderr.contains("interrupted after 2 of 5 runs — the report covers the runs that finished"),
+        "got: {stderr:?}"
+    );
+    // Quiet runs hide their output; for a run that hung, what it had
+    // written is the only trace of where.
+    assert!(
+        stdout.contains("output of run 3/5, the one that was cut short:\nspeaking in run 3\n"),
+        "got: {stdout:?}"
+    );
+    assert!(
+        !stdout.contains("speaking in run 1"),
+        "a run that finished and passed stays quiet: {stdout:?}"
+    );
+    assert!(
+        waited >= std::time::Duration::from_secs(2) && waited < std::time::Duration::from_secs(8),
+        "the runner got its moment, and no more: {waited:?}"
+    );
+    assert!(
+        !third_run_is_alive(&cwd),
+        "the runner must not outlive sooth"
+    );
+    let leftovers: Vec<_> = std::fs::read_dir(cwd.join("tmp")).expect("tmp").collect();
+    assert!(
+        leftovers.is_empty(),
+        "nothing left in the temp dir: {leftovers:?}"
+    );
+}
+
+#[test]
+fn a_ctrl_c_ends_sooth_at_once_with_the_runs_that_finished() {
+    // A terminal sends the signal to the whole foreground group: the
+    // runner dies of it by itself, and sooth has nothing to wait for.
+    let cwd = Scratch::new("interrupt-group");
+    let child = sooth_hanging_in_its_third_run(&cwd, &[]);
+    let asked = std::time::Instant::now();
+    send_signal("-INT", &format!("-{}", child.id()));
+    let output = child.wait_with_output().expect("sooth should exit");
+    let waited = asked.elapsed();
+    let stdout = String::from_utf8(output.stdout).expect("stdout should be UTF-8");
+
+    assert_eq!(output.status.code(), Some(2), "got: {stdout:?}");
+    assert!(
+        stdout.contains("result: interrupted after 2 of 5 runs — none of them failed"),
+        "got: {stdout:?}"
+    );
+    assert!(
+        waited < std::time::Duration::from_millis(1500),
+        "no grace to sit out when the runner is already gone: {waited:?}"
+    );
+    assert!(!third_run_is_alive(&cwd));
+}
+
+#[test]
+fn an_interrupted_run_under_json_says_so_in_the_document() {
+    let cwd = Scratch::new("interrupt-json");
+    // A report source, so --json is allowed: runs 1 and 2 leave a report.
+    let (report, write_report) = fresh_report(&cwd);
+    let child = {
+        use std::os::unix::process::CommandExt;
+        use std::process::Stdio;
+        let script = format!(
+            "n=$(( $(cat invocations 2>/dev/null || echo 0) + 1 )); echo $n > invocations; \
+             echo $$ > pid-$n; {write_report}; [ $n -lt 3 ] || exec sleep 30"
+        );
+        Command::new(env!("CARGO_BIN_EXE_sooth"))
+            .current_dir(&cwd)
+            .args([
+                "run",
+                "--no-history",
+                "--color",
+                "never",
+                "--runs",
+                "5",
+                "--json",
+            ])
+            .args(["--junit", &report.display().to_string()])
+            .args(["--", "sh", "-c", &script])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .process_group(0)
+            .spawn()
+            .expect("sooth should start")
+    };
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    while !cwd.join("pid-3").exists() {
+        assert!(std::time::Instant::now() < deadline, "run 3 never started");
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    send_signal("-INT", &format!("-{}", child.id()));
+    let output = child.wait_with_output().expect("sooth should exit");
+    let stdout = String::from_utf8(output.stdout).expect("stdout should be UTF-8");
+    let document = stdout.lines().last().unwrap_or_default();
+
+    assert_eq!(output.status.code(), Some(2), "got: {stdout:?}");
+    assert!(
+        document
+            .ends_with(r#""interrupted":{"during":"runs","finished_runs":2,"requested_runs":5}}"#),
+        "got: {document:?}"
+    );
+    assert_eq!(
+        document.matches(r#""exit_code""#).count(),
+        2,
+        "the document's runs are the two that finished: {document:?}"
+    );
+}
+
+/// An executable script `name` in `dir`.
+fn write_executable(dir: &Path, name: &str, script: &str) {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::write(dir.join(name), script).expect("write script");
+    std::fs::set_permissions(dir.join(name), std::fs::Permissions::from_mode(0o755))
+        .expect("chmod");
+}
+
+/// `sooth run --no-history --color never <args>` in `cwd`, in a process
+/// group of its own, so a signal to the group reaches sooth and its runner
+/// and not the test.
+fn sooth_in_its_own_group(cwd: &Path, args: &[&str]) -> std::process::Child {
+    use std::os::unix::process::CommandExt;
+    use std::process::Stdio;
+    Command::new(env!("CARGO_BIN_EXE_sooth"))
+        .current_dir(cwd)
+        .args(["run", "--no-history", "--color", "never"])
+        .args(args)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .process_group(0)
+        .spawn()
+        .expect("sooth should start")
+}
+
+/// Wait until the runner has written `file`: it is then inside that run.
+fn wait_for(file: &Path) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    while !file.exists() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "{} never appeared",
+            file.display()
+        );
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+}
+
+/// The start of a fake pytest: counts its invocations in `$n` and finds
+/// the report path sooth handed it in `$report`.
+const FAKE_PYTEST: &str = concat!(
+    "#!/bin/sh\n",
+    "n=$(( $(cat invocations 2>/dev/null || echo 0) + 1 )); echo $n > invocations\n",
+    "for a in \"$@\"; do case \"$a\" in --junit-xml=*) report=\"${a#--junit-xml=}\" ;; esac; done\n",
+);
+
+/// A report that sooth can only read after it was asked to stop: the
+/// runner leaves a pipe where the report goes and is gone at once; a
+/// process it left behind signals sooth — the runner's parent — and only
+/// then writes `xml` into the pipe.
+fn report_that_arrives_after_a_stop(xml: &str) -> String {
+    format!(
+        "mkfifo \"$report\"\n\
+         (sleep 0.3; kill -INT $PPID; sleep 0.3; printf '%s' '{xml}' > \"$report\") \
+         > /dev/null 2>&1 &\n"
+    )
+}
+
+const ONE_FAILING_TEST: &str =
+    r#"<testsuite><testcase classname="c" name="t"><failure/></testcase></testsuite>"#;
+
+#[test]
+fn an_interrupted_run_does_not_call_a_run_passed_that_its_report_calls_red() {
+    let cwd = Scratch::new("interrupt-red-report");
+    // Every run exits 0 over a report with a failure; the second hangs.
+    write_executable(
+        &cwd,
+        "pytest",
+        &format!(
+            "{FAKE_PYTEST}printf '%s' '{ONE_FAILING_TEST}' > \"$report\"\n\
+             echo $$ > \"pid-$n\"\n[ $n -lt 2 ] || exec sleep 30\nexit 0\n"
+        ),
+    );
+    let child = sooth_in_its_own_group(&cwd, &["--runs", "3", "--", "./pytest"]);
+    wait_for(&cwd.join("pid-2"));
+    send_signal("-INT", &format!("-{}", child.id()));
+    let output = child.wait_with_output().expect("sooth should exit");
+    let stdout = String::from_utf8(output.stdout).expect("stdout should be UTF-8");
+    let stderr = String::from_utf8(output.stderr).expect("stderr should be UTF-8");
+
+    assert_eq!(output.status.code(), Some(2), "got: {stdout:?} {stderr:?}");
+    assert!(
+        stdout.contains("result: interrupted after 1 of 3 runs — it failed"),
+        "the run that finished was red by its report: {stdout:?}"
+    );
+    assert!(
+        !stderr.contains("exiting 1"),
+        "the exit is 2, and nothing may say otherwise: {stderr:?}"
+    );
+}
+
+#[test]
+fn a_request_to_stop_that_comes_after_a_run_ended_still_counts_that_run() {
+    let cwd = Scratch::new("interrupt-after-run");
+    write_executable(
+        &cwd,
+        "pytest",
+        &format!(
+            "{FAKE_PYTEST}{}exit 0\n",
+            report_that_arrives_after_a_stop(
+                r#"<testsuite><testcase classname="c" name="t"/></testsuite>"#
+            )
+        ),
+    );
+    let child = sooth_in_its_own_group(&cwd, &["--runs", "2", "--", "./pytest"]);
+    let output = child.wait_with_output().expect("sooth should exit");
+    let stdout = String::from_utf8(output.stdout).expect("stdout should be UTF-8");
+    let stderr = String::from_utf8(output.stderr).expect("stderr should be UTF-8");
+
+    assert_eq!(output.status.code(), Some(2), "got: {stdout:?} {stderr:?}");
+    // The runner had exited when sooth was asked to stop: that run counts.
+    assert!(
+        stdout.contains("run 1/2: runner exit=0"),
+        "got: {stdout:?} {stderr:?}"
+    );
+    assert!(
+        stdout.contains("result: interrupted after 1 of 2 runs — it passed"),
+        "got: {stdout:?} {stderr:?}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(cwd.join("invocations"))
+            .expect("invocations")
+            .trim(),
+        "1",
+        "no run is started after the request"
+    );
+}
+
+#[test]
+fn asked_to_stop_before_verifying_sooth_starts_no_re_run_and_exits_two() {
+    let cwd = Scratch::new("interrupt-before-verify");
+    write_executable(
+        &cwd,
+        "pytest",
+        &format!(
+            "{FAKE_PYTEST}{}exit 1\n",
+            report_that_arrives_after_a_stop(ONE_FAILING_TEST)
+        ),
+    );
+    let child = sooth_in_its_own_group(&cwd, &["--verify", "--", "./pytest"]);
+    let output = child.wait_with_output().expect("sooth should exit");
+    let stdout = String::from_utf8(output.stdout).expect("stdout should be UTF-8");
+    let stderr = String::from_utf8(output.stderr).expect("stderr should be UTF-8");
+
+    assert_eq!(output.status.code(), Some(2), "got: {stdout:?} {stderr:?}");
+    assert_eq!(
+        std::fs::read_to_string(cwd.join("invocations"))
+            .expect("invocations")
+            .trim(),
+        "1",
+        "the suite ran; no re-run was started"
+    );
+    // The suite ran to its end: its verdict stands, its failures unverified.
+    assert!(stdout.contains("result: ✗ FAILED"), "got: {stdout:?}");
+    assert!(
+        stderr.contains("interrupted before the failures were verified"),
+        "got: {stderr:?}"
+    );
+}
+
+#[test]
+fn a_verification_cut_short_exits_two_with_the_suites_own_report() {
+    let cwd = Scratch::new("interrupt-during-verify");
+    // The suite fails and reports it; the first re-run hangs.
+    write_executable(
+        &cwd,
+        "pytest",
+        &format!(
+            "{FAKE_PYTEST}echo $$ > \"pid-$n\"\n[ $n -lt 2 ] || exec sleep 30\n\
+             printf '%s' '{ONE_FAILING_TEST}' > \"$report\"\nexit 1\n"
+        ),
+    );
+    let child = sooth_in_its_own_group(&cwd, &["--verify", "--", "./pytest"]);
+    wait_for(&cwd.join("pid-2"));
+    let asked = std::time::Instant::now();
+    send_signal("-INT", &format!("-{}", child.id()));
+    let output = child.wait_with_output().expect("sooth should exit");
+    let waited = asked.elapsed();
+    let stdout = String::from_utf8(output.stdout).expect("stdout should be UTF-8");
+    let stderr = String::from_utf8(output.stderr).expect("stderr should be UTF-8");
+
+    assert_eq!(output.status.code(), Some(2), "got: {stdout:?} {stderr:?}");
+    assert!(stdout.contains("result: ✗ FAILED"), "got: {stdout:?}");
+    assert!(
+        stderr.contains("interrupted before the failures were verified"),
+        "got: {stderr:?}"
+    );
+    assert!(
+        waited < std::time::Duration::from_millis(1500),
+        "the re-run died of the same Ctrl-C: {waited:?}"
+    );
+}
+
+#[test]
+fn interrupted_before_any_run_finished_there_is_nothing_to_report() {
+    use std::os::unix::process::CommandExt;
+    use std::process::Stdio;
+    let cwd = Scratch::new("interrupt-first");
+    let child = Command::new(env!("CARGO_BIN_EXE_sooth"))
+        .current_dir(&cwd)
+        .args([
+            "run",
+            "--color",
+            "never",
+            "--",
+            "sh",
+            "-c",
+            "echo $$ > pid-1; exec sleep 30",
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .process_group(0)
+        .spawn()
+        .expect("sooth should start");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    while !cwd.join("pid-1").exists() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the run never started"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    send_signal("-INT", &format!("-{}", child.id()));
+    let output = child.wait_with_output().expect("sooth should exit");
+    let stdout = String::from_utf8(output.stdout).expect("stdout should be UTF-8");
+    let stderr = String::from_utf8(output.stderr).expect("stderr should be UTF-8");
+
+    assert_eq!(output.status.code(), Some(2), "got: {stdout:?} {stderr:?}");
+    assert!(
+        stderr.contains("interrupted before the run finished — there is nothing to report"),
+        "got: {stderr:?}"
+    );
+    assert!(
+        !stdout.contains("result:"),
+        "no verdict on nothing: {stdout:?}"
+    );
+}
+
 #[test]
 fn json_to_a_file_keeps_the_human_report_on_stdout() {
     let (cwd, mut command) = sooth_in("json-file");

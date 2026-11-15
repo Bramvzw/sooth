@@ -18,6 +18,7 @@ src/
 ├── cli.rs        # EXISTS — clap definitions: `run`, `explain`, `import`, `history` and their flags
 ├── runner.rs      # EXISTS — spawns the test subprocess (with env injection), captures exit status + wall time
 ├── reported.rs    # EXISTS — one run and the report it leaves: the report source (user file or managed temp file), freshness, reading it
+├── interrupt.rs   # EXISTS — SIGINT/SIGTERM as a request to stop: the flag the runner and the run loop ask (signal-hook)
 ├── junit.rs       # EXISTS — tolerant JUnit-XML union schema (parse_str/parse_file)
 ├── phpunit_log.rs # EXISTS — failures from a PHPUnit console log, for `import --log phpunit`
 ├── preset.rs      # EXISTS — presets inject reporter flags/env, manage the temp report, and own per-runner selection knowledge (is_test_file, selected_paths)

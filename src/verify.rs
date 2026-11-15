@@ -4,9 +4,10 @@
 use std::collections::btree_map::Entry;
 use std::collections::BTreeMap;
 
+use crate::interrupt::Interrupt;
 use crate::junit::{JunitReport, TestStatus};
 use crate::preset::{self, Plan};
-use crate::reported::{self, ReportError, ReportSource};
+use crate::reported::{self, ReportError, ReportSource, Run};
 
 /// How many times a failed test is re-run (why two: see `DECISIONS.md`).
 pub const VERIFY_RUNS: u32 = 2;
@@ -71,16 +72,33 @@ pub struct Verdict {
     pub unverified: Vec<String>,
 }
 
+/// Why a verification came back without a verdict.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Unverified {
+    /// Sooth was asked to stop before the re-runs were done: sooth did not
+    /// do what it was asked, which is the caller's to say and to exit on.
+    Interrupted,
+    /// The verification was skipped, and this is why, in words: a skipped
+    /// verification changes no exit code, so the caller only says it.
+    Skipped(String),
+}
+
 /// Re-run only the tests that failed in `report` — [`VERIFY_RUNS`] times,
 /// each into a report of its own — and classify them. `Ok(None)` when
-/// nothing failed. `Err` is why the verification was skipped, in words: a
-/// skipped verification changes no exit code, so the caller only says it.
+/// nothing failed.
 ///
 /// # Errors
 ///
-/// When no failed test has a name the runner can be pointed at, the preset
-/// cannot select tests, a re-run does not start, or it leaves no report.
-pub fn run(plan: &Plan, report: &JunitReport) -> Result<Option<Verdict>, String> {
+/// [`Unverified::Skipped`] when no failed test has a name the runner can be
+/// pointed at, the preset cannot select tests, or a re-run does not start
+/// or leaves no report. [`Unverified::Interrupted`] when sooth is asked to
+/// stop: no re-run is started after that, and one in progress is cut short.
+pub fn run(
+    plan: &Plan,
+    report: &JunitReport,
+    interrupt: &Interrupt,
+) -> Result<Option<Verdict>, Unverified> {
+    let skipped = |why: String| Unverified::Skipped(why);
     let failed = failed_tests(report);
     if failed.is_empty() {
         return Ok(None);
@@ -94,35 +112,49 @@ pub fn run(plan: &Plan, report: &JunitReport) -> Result<Option<Verdict>, String>
         .filter(|name| preset::selectable(plan.preset(), name))
         .collect();
     if names.is_empty() {
-        return Err(
+        return Err(skipped(
             "verification skipped — no failed test has a name the runner can select".to_owned(),
-        );
+        ));
     }
     let mut reports = Vec::with_capacity(VERIFY_RUNS as usize);
     for attempt in 1..=VERIFY_RUNS {
+        // Asked to stop, whenever that was: nothing new is started.
+        if interrupt.requested() {
+            return Err(Unverified::Interrupted);
+        }
         // Dropped at the end of every attempt, however it ends.
         let source = ReportSource::temp().map_err(|err| {
-            format!("verification skipped — could not create a temp report: {err}")
+            skipped(format!(
+                "verification skipped — could not create a temp report: {err}"
+            ))
         })?;
-        let spawn = plan.rerun(source.path(), &names).ok_or(
-            "verification is not supported for this preset yet — sooth cannot restrict \
-             its runner to a subset of tests",
-        )?;
-        let ran = reported::run(&spawn, Some(&source), None)
-            .map_err(|err| format!("verification run {attempt} failed to start: {err}"))?;
+        let spawn = plan.rerun(source.path(), &names).ok_or_else(|| {
+            skipped(
+                "verification is not supported for this preset yet — sooth cannot restrict \
+                 its runner to a subset of tests"
+                    .to_owned(),
+            )
+        })?;
+        let ran = match reported::run(&spawn, Some(&source), None, interrupt)
+            .map_err(|err| skipped(format!("verification run {attempt} failed to start: {err}")))?
+        {
+            Run::Finished(ran) => ran,
+            // A re-run that was cut short says nothing about the test.
+            Run::CutShort => return Err(Unverified::Interrupted),
+        };
         match ran.report {
             Some(Ok(rerun)) => reports.push(rerun),
             Some(Err(ReportError::Unreadable(err))) => {
-                return Err(format!(
+                return Err(skipped(format!(
                     "verification run {attempt} produced no usable report: {err}"
-                ));
+                )));
             }
             // A managed report is deleted before the run, so it cannot be
             // untouched, and a run with a source always has an answer.
             Some(Err(ReportError::Untouched)) | None => {
-                return Err(format!(
+                return Err(skipped(format!(
                     "verification run {attempt} produced no usable report"
-                ));
+                )));
             }
         }
     }
@@ -261,6 +293,25 @@ pub fn failed_ids(report: &JunitReport) -> Vec<String> {
 mod tests {
     use super::{classify, failed_ids, failed_tests};
     use crate::junit::parse_str;
+
+    #[test]
+    fn asked_to_stop_no_re_run_is_started() {
+        // The runner does not exist: had a re-run been started, this would
+        // say it failed to start.
+        let command = ["sooth-no-such-runner".to_owned()];
+        let plan = crate::preset::Plan::resolve(&command, crate::cli::Preset::Pytest);
+        let red = report(r#"<testcase classname="c" name="t"><failure/></testcase>"#);
+        assert_eq!(
+            super::run(&plan, &red, &crate::interrupt::Interrupt::already()),
+            Err(super::Unverified::Interrupted)
+        );
+        // A green suite leaves nothing to verify, asked to stop or not.
+        let green = report(r#"<testcase classname="c" name="t"/>"#);
+        assert_eq!(
+            super::run(&plan, &green, &crate::interrupt::Interrupt::already()),
+            Ok(None)
+        );
+    }
 
     #[test]
     fn listing_the_failures_of_a_fully_red_suite_stays_linear() {

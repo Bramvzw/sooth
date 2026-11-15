@@ -73,8 +73,13 @@ command of a script, so the skeleton Laravel 12 shipped needs
 until then sooth says so and you can wrap `php artisan test` instead.
 
 Exit codes: `0` — the runner and its report agree everything passed; `1` —
-the suite failed; `2` — sooth itself failed (your CI can tell a red suite
-from a broken invocation).
+the suite failed; `2` — sooth itself failed, or was stopped before it had
+made every run (your CI can tell a red suite from a broken invocation).
+
+Stopping sooth is safe. On a Ctrl-C, or a `SIGTERM` from CI or a timeout
+wrapper, it reports the runs that had finished, stops the test command if
+that is still running, removes its temp files and exits 2. A second Ctrl-C
+ends it on the spot.
 
 ## Run history
 
