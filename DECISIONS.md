@@ -1647,3 +1647,23 @@ back). The capture directory of quiet runs works the same way.
 What a `Drop` cannot cover is a signal: the default disposition ends the
 process without unwinding. That is the rest of #140 and needs sooth to
 handle signals itself.
+
+## A run and its report are one thing, defined once
+
+Three steps always go together: make sure the report that will be read is
+this run's (delete sooth's own file; remember the state of the user's),
+spawn the command, read what it wrote. They were written out in the run
+loop and again in the `--verify` loop, and the order pass of v0.4 needs
+them a third time (#245).
+
+`reported::run` is those three steps. It takes the command as it will be
+spawned, the report source, and optionally a file for the command's output,
+and returns how the runner exited plus the report — or why there is none,
+as a value (`Untouched`, `Unreadable`), not as text. The callers decide
+what is theirs to decide: how many runs, in what order, with which command;
+whether a missing report is fatal (the run loop) or a skipped pass
+(`--verify`); and how to say it, because only the caller knows the command
+("…is `composer` the test runner itself…").
+
+`runner.rs` keeps its narrow job — spawn once, measure — and this module
+sits one step above it: a run that reports.

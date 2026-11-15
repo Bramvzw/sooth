@@ -590,6 +590,47 @@ fn an_earlier_failing_run_is_still_shown_when_a_later_one_stops_sooth() {
     );
 }
 
+#[test]
+fn an_earlier_failing_run_is_still_shown_when_the_next_ones_output_has_nowhere_to_go() {
+    use std::os::unix::fs::PermissionsExt;
+    let (cwd, mut command) = sooth_in("quiet-abort-no-capture");
+    let tmp = cwd.join("tmp");
+    std::fs::create_dir_all(&tmp).expect("mkdir");
+    // Run 1 fails. Run 2 takes away the place the runs' output is kept: run
+    // 3 cannot start, and sooth stops there.
+    let script = concat!(
+        "n=$(( $(cat invocations 2>/dev/null || echo 0) + 1 )); echo $n > invocations; ",
+        "[ $n -ne 1 ] || { echo 'FAILED 1'; exit 1; }; ",
+        "rm -f \"$TMPDIR\"/sooth-*/run.log; chmod 500 \"$TMPDIR\"/sooth-*",
+    );
+    let output = command
+        .env("TMPDIR", &tmp)
+        .args(["run", "--color", "never", "--runs", "3", "--", "sh", "-c"])
+        .arg(script)
+        .output()
+        .expect("sooth should run");
+    // The directory sooth could not empty: writable again, so the scratch
+    // directory can be removed.
+    for entry in std::fs::read_dir(&tmp).expect("read tmp") {
+        let _ = std::fs::set_permissions(
+            entry.expect("entry").path(),
+            std::fs::Permissions::from_mode(0o700),
+        );
+    }
+    let stdout = String::from_utf8(output.stdout).expect("stdout should be UTF-8");
+    let stderr = String::from_utf8(output.stderr).expect("stderr should be UTF-8");
+
+    assert_eq!(output.status.code(), Some(2), "got: {stdout:?} {stderr:?}");
+    assert!(
+        stderr.contains("failed to create a file for the run's output"),
+        "got: {stderr:?}"
+    );
+    assert!(
+        stdout.contains("output of run 1/3, the first that failed:\nFAILED 1\n"),
+        "run 1's failure is not lost with the abort: {stdout:?}"
+    );
+}
+
 /// `sooth run --color never --junit report.xml <args> -- cp src.xml
 /// report.xml` in a scratch dir, with `xml` as the report: its stdout.
 fn stdout_for_report(tag: &str, xml: &str, args: &[&str]) -> String {
