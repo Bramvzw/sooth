@@ -1621,3 +1621,29 @@ mismatch note fires in both directions and only then, and a self-closing
 root element is a report with no tests. One thing the tests turned up is
 not an invariant today and is left as a question (#276): a green seen only
 on a dirty tree is enough to call the streak after it a regression.
+
+## Exit 2 is decided in one place, and a temp file is owned by a value
+
+The exit contract (0 green, 1 the suite failed, 2 sooth failed) is a public
+interface. Exit 0 and 1 were always decided in one expression. Exit 2 was
+returned from fifteen sites in `main.rs`, each printing its own message and
+returning the code by hand, and on the preset path each also remembering to
+remove the temp report. The only way to see the whole contract was to grep
+for it, and a new early return could forget the cleanup (#191).
+
+Now a command returns `Result<ExitCode, SoothError>`. `SoothError` is the
+lines that say why — written where the context is, because those messages
+are the product ("…is `composer` the test runner itself…"), and printed in
+one place, `dispatch`, which also returns the 2. A usage error is still
+clap's and a panic still the hook's: three sources, each in one spot.
+
+The cleanup stopped being a duty and became ownership. A preset's report
+lives in a private temp directory; `TempReport` holds its path and removes
+file and directory when it is dropped. That happens after a normal run, on
+every `?`, and while a panic unwinds — which is why the release profile
+must keep unwinding (`panic = "abort"` would save 150 kB and bring the leak
+back). The capture directory of quiet runs works the same way.
+
+What a `Drop` cannot cover is a signal: the default disposition ends the
+process without unwinding. That is the rest of #140 and needs sooth to
+handle signals itself.

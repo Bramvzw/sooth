@@ -735,6 +735,78 @@ fn an_argument_that_is_not_utf8_is_a_usage_error_not_a_crash() {
 }
 
 #[test]
+fn sooth_leaves_nothing_behind_in_the_temp_dir_however_it_ends() {
+    use std::os::unix::fs::PermissionsExt;
+    use std::process::Stdio;
+    let cwd = Scratch::new("no-leftovers");
+    let tmp = cwd.join("tmp");
+    std::fs::create_dir_all(&tmp).expect("mkdir");
+    write_named_runner(&cwd, "pytest", "--junit-xml", "--none");
+    // A runner that fails and writes no report: sooth stops with exit 2.
+    std::fs::write(cwd.join("phpunit"), "#!/bin/sh\necho no report\nexit 3\n").expect("write");
+    std::fs::set_permissions(cwd.join("phpunit"), std::fs::Permissions::from_mode(0o755))
+        .expect("chmod");
+    write_verify_runner(&cwd);
+    let sooth = |args: &[&str]| {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_sooth"));
+        command
+            .current_dir(&cwd)
+            .env("TMPDIR", &tmp)
+            .env(
+                "SOOTH_TEST_VERIFY_CASE",
+                r#"<testcase classname="c" name="wob"><failure/></testcase>"#,
+            )
+            .args(["run", "--no-history", "--color", "never"])
+            .args(args);
+        command
+    };
+    let leftovers = || -> Vec<String> {
+        std::fs::read_dir(&tmp)
+            .expect("read tmp")
+            .map(|entry| {
+                entry
+                    .expect("entry")
+                    .file_name()
+                    .to_string_lossy()
+                    .into_owned()
+            })
+            .collect()
+    };
+
+    for (what, args, exit) in [
+        ("a green preset run", &["--", "./pytest"][..], 0),
+        ("quiet repeats", &["--runs", "3", "--", "./pytest"][..], 0),
+        ("a run that wrote no report", &["--", "./phpunit"][..], 2),
+        (
+            "quiet repeats that stop at a run",
+            &["--runs", "3", "--", "./phpunit"][..],
+            2,
+        ),
+        (
+            "a verified failure",
+            &["--verify", "--preset", "phpunit", "--", "./runner.sh"][..],
+            1,
+        ),
+    ] {
+        let output = sooth(args).output().expect("sooth should run");
+        assert_eq!(output.status.code(), Some(exit), "{what}");
+        assert_eq!(leftovers(), Vec::<String>::new(), "{what}");
+    }
+
+    // A reader that goes away: sooth dies on its next line, and the panic
+    // still unwinds through the guards.
+    let mut child = sooth(&["--runs", "3", "--", "./pytest"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("sooth should start");
+    drop(child.stdout.take());
+    let status = child.wait().expect("wait");
+    assert_eq!(status.code(), Some(2), "a closed pipe is sooth's failure");
+    assert_eq!(leftovers(), Vec::<String>::new(), "a closed pipe");
+}
+
+#[test]
 fn json_to_a_file_keeps_the_human_report_on_stdout() {
     let (cwd, mut command) = sooth_in("json-file");
     let (report, write_report) = fresh_report(&cwd);

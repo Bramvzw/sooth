@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- A run that dies on a closed pipe (`sooth run … | head -1`) no longer
+  leaves its temp report directory behind. The directory is now removed on
+  every way out of a run, a panic included.
+
 ## [0.3.3] - 2026-11-15
 
 ### Added
