@@ -40,7 +40,18 @@ fn main() -> ExitCode {
 }
 
 fn dispatch() -> ExitCode {
-    let parsed = Cli::parse();
+    let parsed = match Cli::try_parse() {
+        Ok(parsed) => parsed,
+        // clap prints and exits: 2 for a usage error, 0 for --help.
+        Err(error) => {
+            // Lossily: `args()` panics on an argument that is not UTF-8,
+            // and the tip only compares words clap itself could read.
+            let typed: Vec<String> = std::env::args_os()
+                .map(|argument| argument.to_string_lossy().into_owned())
+                .collect();
+            cli::with_tip(error, &typed).exit()
+        }
+    };
     match parsed.command {
         Command::Run(mut args) => {
             infer_preset(&mut args);

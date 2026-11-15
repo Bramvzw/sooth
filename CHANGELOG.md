@@ -15,6 +15,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `-h` is one line per flag; `--help` keeps the full text. The two were
+  identical, a paragraph per flag, so there was nowhere to look a
+  half-remembered flag up at a glance.
 - **Repeated runs are quiet.** With `--runs` above 1 the test command's
   output is no longer printed N times. Each run gets its line as it
   finishes (`run 7/20: runner exit=0 (0.47s)`), and if any run failed, the
@@ -35,6 +38,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A usage error says what was meant. `sooth run php artisan test` answered
+  `unexpected argument 'php' found` and nothing else; it now adds `tip: the
+  test command goes after --: sooth run -- php artisan test`. Likewise
+  `--json out.json` and `--changed origin/main` are told to use an `=`.
+- `sooth import --help` describes `--env` and `--commit`. Both entries were
+  blank, and what they mean was only in the README.
 - `--no-history` no longer says what the history holds. A failure read
   `new (nothing in history)` and the headline counted it as `1 new`, about
   a file that was never read. Such a line now ends at the test's name (or

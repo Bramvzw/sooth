@@ -26,6 +26,9 @@ sooth run -- php artisan test
 # a command that does not name its runner: say which preset it is
 sooth run --preset phpunit -- composer test
 
+# jest: the preset needs the jest-junit package, so it is never assumed
+sooth run --preset jest -- node_modules/.bin/jest
+
 # any other runner: point sooth at the JUnit-XML report your command writes
 sooth run --junit report.xml -- ./run-tests.sh
 
@@ -50,7 +53,8 @@ report takes its place for that run. To keep the file, point sooth at it
 instead: `sooth run --junit build/junit.xml -- vendor/bin/phpunit`.
 
 A preset needs the command after `--` to be the test runner itself — not a
-wrapper like `python -m pytest` or `npm test`. Laravel is the exception: the
+wrapper like `python -m pytest`, `npm test` or `npx jest` (the wrapper would
+get the flags). Laravel is the exception: the
 phpunit preset knows `php artisan test` and Composer scripts, and puts its
 flags where each of them forwards arguments, so Pest, PHPUnit and
 `--parallel` all work the way you run them every day:

@@ -1526,3 +1526,30 @@ that writes the hook. Bram chose the recipe:
 
 Revisit the file when a team asks for defaults that a script cannot carry —
 per-directory settings, say — not before.
+
+## A usage error carries the correction, in clap's own error
+
+clap parses the command line and words its own errors, and for two slips it
+can only say `unexpected argument 'x' found`: a test command typed without
+the `--` in front of it (`sooth run php artisan test` — the most natural
+first command there is), and a value handed to `--json` or `--changed` with
+a space where clap's optional-value flags need an `=`. The help text warned
+about the second; the error, where the user actually stands, did not (#242,
+#195).
+
+`cli::with_tip` looks at the command line as typed and, for those two
+shapes only, adds a tip to clap's error through the context clap itself
+renders (`ContextKind::Suggested`), so the message keeps clap's layout, its
+usage line and its exit code 2. The tip is the corrected command, not a
+description of the rule: `sooth run --runs 3 -- pytest -k x`. No hand-rolled
+parsing decides anything — clap still rejects the line; sooth only explains.
+And the explanation is checked by clap too: the word may stand in more than
+one place on the line (`--junit pytest pytest`), so each place is tried and
+a corrected command is offered only if clap parses it. Only `sooth run` gets
+a tip, and an unknown `--flag` never does: it is not a command.
+
+`-h` and `--help` used to print the same paragraph per flag, because clap
+takes both from one doc comment. Each flag's comment is now a one-line
+summary, a blank line, and the detail: clap shows the summary for `-h` (the
+place to look up a half-remembered flag) and all of it for `--help` (#194).
+A unit test keeps every `-h` line of `sooth run` within 100 columns.

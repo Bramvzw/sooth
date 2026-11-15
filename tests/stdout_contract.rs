@@ -690,6 +690,51 @@ fn the_slowest_ranking_lists_measurements_and_only_when_it_ranks() {
 }
 
 #[test]
+fn a_usage_error_says_what_was_meant() {
+    for (args, tip) in [
+        (
+            &["run", "php", "artisan", "test"][..],
+            "tip: the test command goes after `--`: `sooth run -- php artisan test`",
+        ),
+        (
+            &["run", "--json", "out.json", "--", "true"][..],
+            "tip: `--json` takes its value with an `=`: `--json=out.json`",
+        ),
+    ] {
+        let (_cwd, mut command) = sooth_in("usage-tip");
+        let output = command.args(args).output().expect("sooth should run");
+        let stderr = String::from_utf8(output.stderr).expect("stderr should be UTF-8");
+
+        assert_eq!(
+            output.status.code(),
+            Some(2),
+            "a usage error is sooth's: {stderr:?}"
+        );
+        assert!(stderr.contains(tip), "got: {stderr:?}");
+        assert!(output.stdout.is_empty(), "nothing ran");
+    }
+}
+
+#[test]
+fn an_argument_that_is_not_utf8_is_a_usage_error_not_a_crash() {
+    use std::os::unix::ffi::OsStrExt;
+    let (_cwd, mut command) = sooth_in("usage-not-utf8");
+    let output = command
+        .args(["run", "--junit"])
+        .arg(OsStr::from_bytes(b"\xff"))
+        .arg("pytest")
+        .output()
+        .expect("sooth should run");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert_eq!(output.status.code(), Some(2), "got: {stderr:?}");
+    assert!(
+        stderr.contains("error: ") && !stderr.contains("internal error"),
+        "clap's own error, whatever it says about the bytes: {stderr:?}"
+    );
+}
+
+#[test]
 fn json_to_a_file_keeps_the_human_report_on_stdout() {
     let (cwd, mut command) = sooth_in("json-file");
     let (report, write_report) = fresh_report(&cwd);
