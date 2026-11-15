@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `sooth import --replace`: import a file again in the place of its earlier
+  import. A report imported with the wrong `--env` or `--commit` could not
+  be corrected — the second attempt was `skipped (already imported)` and
+  the wrong observations stayed. The skip message now names the flag.
 - `--show-output`: show the test command's output for every run of
   `--runs N`, as before this release. Without `--runs` it is refused: a
   single run always shows its output.

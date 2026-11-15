@@ -143,7 +143,9 @@ from a clean checkout of that commit; without it the observations count in
 totals but can never be proof, because flaky proof needs a known clean
 commit. The abbreviated sha your CI shows is fine — sooth resolves it against
 your clone, and refuses one your clone does not know. Importing the same
-file twice is harmless: sooth keeps a ledger and skips it.
+file twice is harmless: sooth keeps a ledger and skips it. Imported it with
+the wrong `--env` or `--commit`? `sooth import --replace …` imports the file
+again in the place of its earlier observations.
 
 One thing has to match for local runs and CI reports to meet: the runner. A
 test is known by the name its report gives it, and Pest (`php artisan test`

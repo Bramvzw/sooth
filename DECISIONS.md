@@ -1553,3 +1553,47 @@ takes both from one doc comment. Each flag's comment is now a one-line
 summary, a blank line, and the detail: clap shows the summary for `-h` (the
 place to look up a half-remembered flag) and all of it for `--help` (#194).
 A unit test keeps every `-h` line of `sooth run` within 100 columns.
+
+## A wrong import is replaced, not doubled
+
+The import ledger skips a file it has seen, by content hash, so importing
+twice is harmless. The same rule made a mistake permanent: a report imported
+with the wrong `--env` or `--commit` was `skipped (already imported)` on the
+second, corrected attempt, and its wrong observations kept counting (#244).
+
+The issue offered a hint in the message or a `--force`. A flag that merely
+imports again would leave the wrong observations next to the right ones —
+worse than before, since the history would now hold a contradiction. So the
+flag is `--replace`, and it does what the word says: the earlier import's
+observations go, the new ones come in their place.
+
+That is possible because every observation of an imported file carries the
+file's invocation id (`import-<content hash>`, see "One invocation is one
+piece of evidence"), so the ones to remove are named exactly. It is the
+first time sooth rewrites the history instead of appending to it, which is
+why the rewrite is as small and as safe as it can be:
+
+- **One write.** The records that stay and the new observations go into a
+  file beside the history, which is renamed over it. A crash or a full disk
+  leaves the old history or the new one — never the old one with the file's
+  observations gone and nothing in their place.
+- **Nothing else is touched.** Every line that holds no record of the file
+  is kept byte for byte: a fragment a crash left, a line that is not even
+  text, a CRLF. Those are not this command's to judge. Only a line that
+  glued one of the file's records to others is rewritten, as its other
+  records.
+- **Said when it is true.** The per-file lines (`…, replacing its earlier
+  import`) are printed after the write succeeded.
+- **The same file twice on one command line is one file**, with or without
+  `--replace`.
+
+Two cases need no replacing. With no history file left, `--replace` is a
+plain import. With a history that holds no observation under the file's id
+— a hand-edited one, or an import recorded before v0.3.1, when imports
+carried no id — nothing is removed, the file's observations are added, and
+sooth says exactly that rather than guessing which lines were the file's.
+
+Not covered: another sooth appending to the history while this rewrite runs
+can lose its lines. The history has no lock; appends are single writes and
+have not needed one, and a lock for the one rewriting command is not worth
+its failure modes yet.
