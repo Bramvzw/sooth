@@ -56,28 +56,68 @@ pub fn print_order(ended: &OrderReport<'_>, style: Style) {
         "tests: {} compared in both orders",
         count(analysis.compared, "test")
     );
-    let both_times = |difference: &order::Difference| match difference.passed_in {
-        order::PassedIn::Given => "passed in your order, failed shuffled",
-        order::PassedIn::Shuffled => "failed in your order, passed shuffled",
-    };
-    let lines = |differences: &[order::Difference], mark: &str, tail: &str| {
-        for difference in differences {
-            // What held in the suite and then did not hold alone is said
-            // as that; everything else in its list shares one tail.
-            let tail = match difference.alone {
-                order::Alone::Mixed => ", twice each — and alone it passed once and failed once",
-                _ => tail,
-            };
-            println!(
-                "  {mark} {} — {}{tail}",
-                identity(&difference.id, style),
-                both_times(difference)
-            );
-            if let Some(direction) = direction(difference.alone) {
-                println!("      {}", style.dim(direction));
-            }
+    print_differences(analysis, style);
+    let nothing_differed = analysis.order_dependent.is_empty()
+        && analysis.unstable.is_empty()
+        && analysis.unconfirmed.is_empty()
+        && analysis.known_flakes.is_empty();
+    if nothing_differed {
+        println!(
+            "no test behaved differently in the shuffled order — two orders are a sample, \
+             not a proof, and another seed is another sample"
+        );
+    }
+    if ended.alone.not_run > 0 {
+        println!(
+            "{}",
+            style.dim(&format!(
+                "note: {} run alone; the other {} not — sooth stops there",
+                match ended.alone.tests {
+                    1 => "1 test was".to_owned(),
+                    many => format!("{many} tests were"),
+                },
+                match ended.alone.not_run {
+                    1 => "1 was".to_owned(),
+                    many => format!("{many} were"),
+                }
+            ))
+        );
+    }
+    if ended.shuffles == crate::preset::Shuffles::EachFile {
+        println!(
+            "{}",
+            style.dim(
+                "note: this runner shuffles the tests inside each file; the files \
+                 themselves run apart from each other"
+            )
+        );
+    }
+    println!(
+        "{}",
+        style.dim(&format!("replay this order: {}", ended.replay))
+    );
+    println!("{}", order_verdict(ended, style));
+}
+
+/// Every test that differed between the orders, under a heading that says
+/// what was seen of it and no more: "depends on the order" is kept for a
+/// test that did one thing twice in each order.
+fn print_differences(analysis: &order::Analysis, style: Style) {
+    let line = |difference: &order::Difference, mark: &str, tail: &str| {
+        let seen = match difference.passed_in {
+            order::PassedIn::Given => "passed in your order, failed shuffled",
+            order::PassedIn::Shuffled => "failed in your order, passed shuffled",
+        };
+        println!(
+            "  {mark} {} — {seen}{tail}",
+            identity(&difference.id, style)
+        );
+        if let Some(direction) = direction(difference.alone) {
+            println!("      {}", style.dim(direction));
         }
     };
+    let them = |tests: usize| if tests == 1 { "it" } else { "them" };
+
     if !analysis.order_dependent.is_empty() {
         println!(
             "{}",
@@ -89,62 +129,58 @@ pub fn print_order(ended: &OrderReport<'_>, style: Style) {
                 }
             ))
         );
-        lines(&analysis.order_dependent, &style.red("✗"), ", twice each");
+        for difference in &analysis.order_dependent {
+            line(difference, &style.red("✗"), ", twice each");
+        }
     }
-    if !analysis.unstable.is_empty() {
+    let (mixed, changed): (Vec<_>, Vec<_>) = analysis
+        .unstable
+        .iter()
+        .partition(|difference| difference.alone == order::Alone::Mixed);
+    if !changed.is_empty() {
         println!(
-            "{} differed between the orders and did not hold when run again — that is \
-             not an order's doing",
-            count(analysis.unstable.len(), "test")
+            "{} differed between the orders, and not the same way when both ran again",
+            count(changed.len(), "test")
         );
-        lines(
-            &analysis.unstable,
-            &flaky_mark(style),
-            ", the first time only",
+        for difference in changed {
+            line(difference, &flaky_mark(style), ", the first time");
+        }
+    }
+    if !mixed.is_empty() {
+        println!(
+            "{} followed the order in the suite and did not do the same thing alone twice \
+             — sooth does not call {} order-dependent",
+            count(mixed.len(), "test"),
+            them(mixed.len())
         );
+        for difference in mixed {
+            line(
+                difference,
+                &flaky_mark(style),
+                ", twice each; alone it passed once and failed once",
+            );
+        }
+    }
+    if !analysis.unconfirmed.is_empty() {
+        println!(
+            "{} differed between the orders, and a second run had no result for {}",
+            count(analysis.unconfirmed.len(), "test"),
+            them(analysis.unconfirmed.len())
+        );
+        for difference in &analysis.unconfirmed {
+            line(difference, &style.dim("?"), ", once");
+        }
     }
     if !analysis.known_flakes.is_empty() {
         println!(
             "{} differed that the history already proved flaky — no word on order from {}",
             count(analysis.known_flakes.len(), "test"),
-            if analysis.known_flakes.len() == 1 {
-                "it"
-            } else {
-                "them"
-            }
+            them(analysis.known_flakes.len())
         );
-        lines(&analysis.known_flakes, &flaky_mark(style), "");
+        for difference in &analysis.known_flakes {
+            line(difference, &flaky_mark(style), "");
+        }
     }
-    let nothing_differed = analysis.order_dependent.is_empty()
-        && analysis.unstable.is_empty()
-        && analysis.known_flakes.is_empty();
-    if nothing_differed {
-        println!(
-            "no test behaved differently in the shuffled order — two orders are a sample, \
-             not a proof, and another seed is another sample"
-        );
-    }
-    if ended.not_run_alone > 0 {
-        println!(
-            "{}",
-            style.dim(&format!(
-                "note: {} not run alone — sooth stops at {} of them",
-                match ended.not_run_alone {
-                    1 => "1 of these tests was".to_owned(),
-                    many => format!("{many} of these tests were"),
-                },
-                analysis.order_dependent.len() - ended.not_run_alone
-            ))
-        );
-    }
-    if let Some(scope) = ended.scope {
-        println!("{}", style.dim(&format!("note: {scope}")));
-    }
-    println!(
-        "{}",
-        style.dim(&format!("replay this order: {}", ended.replay))
-    );
-    println!("{}", order_verdict(ended, style));
 }
 
 /// Which way a dependency runs, as the line under its test says it. `None`
@@ -161,6 +197,10 @@ fn direction(alone: order::Alone) -> Option<&'static str> {
         order::Alone::FailedDifferently => Some(
             "alone it fails in another way than in the suite, which says nothing about \
              this failure",
+        ),
+        order::Alone::InCompany => Some(
+            "not seen alone: asked for this test, the runner ran others with it, so \
+             which way the dependency runs is not known",
         ),
         order::Alone::Mixed | order::Alone::Unknown => None,
     }
@@ -179,8 +219,9 @@ pub fn print_order_alone(tests: usize, times: usize) {
 }
 
 /// The closing line of an order pass. Three things it can say: a test
-/// followed the order; no test did, but a run was red anyway; or the two
-/// orders agreed on every test.
+/// followed the order; none did in these runs, and one of them was red;
+/// or the two orders agreed on every test. None of them says an order
+/// could not matter: two orders are a sample.
 fn order_verdict(ended: &OrderReport<'_>, style: Style) -> String {
     let analysis = ended.analysis;
     let total: Duration = ended.runs.iter().map(|run| run.outcome.duration).sum();
@@ -193,7 +234,7 @@ fn order_verdict(ended: &OrderReport<'_>, style: Style) -> String {
     }
     if ended.failed {
         return style.bold_red(&format!(
-            "result: ✗ FAILED — a run was red, and not because of the order \
+            "result: ✗ FAILED — a run was red; no test followed the order in these runs \
              ({total:.2?} total)"
         ));
     }

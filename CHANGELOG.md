@@ -9,12 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **`sooth order` says which way a dependency runs.** Every test it finds
-  runs by itself, twice. One that fails alone as it failed in the suite
-  needs something a test before it leaves behind; one that passes alone is
-  broken by something a test before it leaves behind. The first needs a
-  setup of its own, the second a fix in the test that leaks. A test that
-  does not do the same thing alone twice is not called order-dependent.
+- **`sooth order` says which way a dependency runs.** The tests it finds
+  (twenty at most) are run by themselves, twice. One that fails alone as
+  it failed in the suite needs something a test before it leaves behind;
+  one that passes alone is broken by something a test before it leaves
+  behind. The first needs a setup of its own, the second a fix in the test
+  that leaks. A test that does not do the same thing alone twice is not
+  called order-dependent, and a run in which the runner ran other tests
+  along is not taken for a run alone.
 - **`sooth order`: find the tests whose result depends on the order they
   run in.** `sooth order -- php artisan test` runs the suite once in its
   own order and once shuffled under a seed, and reports the tests whose

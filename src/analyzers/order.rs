@@ -12,6 +12,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::analyzers::flaky;
 use crate::junit::{JunitReport, TestStatus};
+use crate::preset::Shuffles;
 use crate::verify::{self, FailureSignature};
 
 /// In which of the two orders a test passed. It failed in the other one.
@@ -37,9 +38,13 @@ pub enum Alone {
     /// It fails alone, but not the way it failed in the suite: isolation
     /// brought out another failure, which says nothing about this one.
     FailedDifferently,
-    /// It passed alone once and failed alone once. Nothing ran before it
-    /// either time, so no order explains that.
+    /// It passed alone once and failed alone once. Nothing else ran with
+    /// it either time, so an order did not do that.
     Mixed,
+    /// The runner was asked for this test and ran others with it — a
+    /// selection by name reaches every test that answers to the name. A run
+    /// in company says nothing about the test alone, whatever it did there.
+    InCompany,
     /// It was not run alone, or its runs alone had no result for it.
     Unknown,
 }
@@ -60,9 +65,19 @@ pub struct Comparison {
     /// Tests with a pass or a failure in both orders. A skip carries no
     /// signal, and a test only one run reported cannot be compared.
     pub compared: usize,
-    /// Whether the shuffled run ran those tests in another order at all.
-    /// When it did not, the pass compared an order with itself.
+    /// Whether the shuffled run ran those tests in another order at all —
+    /// inside a class or file, when that is as far as the runner's shuffle
+    /// reaches. When it did not, the pass compared an order with itself.
     pub reordered: bool,
+    /// Whether the shuffle had anything to reorder that a report shows: two
+    /// compared tests with names of their own within its reach — the
+    /// suite, or one file. Without them no seed makes `reordered` true.
+    pub shufflable: bool,
+    /// Compared tests that more than one case of a run stands behind, like
+    /// the rows of a `test.each` under one title. A report cannot show
+    /// those changing places among each other, so for them `reordered`
+    /// says nothing either way.
+    pub namesakes: usize,
     /// Sorted by id.
     pub differences: Vec<Difference>,
 }
@@ -74,10 +89,15 @@ pub struct Analysis {
     /// The outcome followed the order: one thing in the given order, twice,
     /// and the other in the shuffled order, twice.
     pub order_dependent: Vec<Difference>,
-    /// Differed between the orders once, and then did not do the same
-    /// thing again in one of them. No order explains that; it is what a
-    /// flaky test does.
+    /// Differed between the orders, and then did something else in one of
+    /// them the second time — or held in the suite and did not do the same
+    /// thing alone twice ([`Alone::Mixed`]). Either way the result changed
+    /// while the order did not.
     pub unstable: Vec<Difference>,
+    /// Differed between the orders, and a second run had no result for the
+    /// test — skipped, or not reported — while no second run contradicted
+    /// the first. Neither confirmed nor refuted.
+    pub unconfirmed: Vec<Difference>,
     /// Differed, but the history already proved the test flaky, so its
     /// difference says nothing about order — however the replay went.
     pub known_flakes: Vec<Difference>,
@@ -108,12 +128,105 @@ fn verdicts(report: &JunitReport) -> BTreeMap<String, bool> {
         .collect()
 }
 
-/// Lay the run in the command's own order beside the shuffled one.
-pub fn compare(given: &JunitReport, shuffled: &JunitReport) -> Comparison {
+/// The compared tests of one run in the order they first appear, each with
+/// the file it stands in — the report's `file` attribute, which a runner
+/// that shuffles per file is asked to write. Without one the class stands
+/// in for it. Only jest-junit's `file` is known to be a file: Pest writes
+/// the test's name behind it, so a second runner that shuffles per file
+/// needs its attribute looked at before it is grouped by here.
+fn sequence<'a>(report: &'a JunitReport, compared: &BTreeSet<String>) -> Vec<(&'a str, String)> {
+    let mut seen = BTreeSet::new();
+    report
+        .test_cases
+        .iter()
+        .filter_map(|case| {
+            let id = case.qualified_name();
+            let file = case
+                .file
+                .as_deref()
+                .or(case.classname.as_deref())
+                .unwrap_or_default();
+            (compared.contains(&id) && seen.insert(id.clone())).then_some((file, id))
+        })
+        .collect()
+}
+
+/// Whether the tests both runs spoke for ran in another order in the
+/// shuffled run. Where the runner shuffles the whole suite, any change in
+/// their sequence counts. Where it shuffles inside each file and runs the
+/// files apart, only a change inside one does: files finishing in another
+/// order is not an order any test was put in.
+fn reordered(
+    given: &JunitReport,
+    shuffled: &JunitReport,
+    compared: &BTreeSet<String>,
+    reach: Shuffles,
+) -> bool {
+    let (given, shuffled) = (sequence(given, compared), sequence(shuffled, compared));
+    match reach {
+        Shuffles::TheSuite => {
+            let ids = |run: &[(&str, String)]| -> Vec<String> {
+                run.iter().map(|(_, id)| id.clone()).collect()
+            };
+            ids(&given) != ids(&shuffled)
+        }
+        Shuffles::EachFile => {
+            let by_file = |run: Vec<(&str, String)>| {
+                let mut files: BTreeMap<String, Vec<String>> = BTreeMap::new();
+                for (file, id) in run {
+                    files.entry(file.to_owned()).or_default().push(id);
+                }
+                files
+            };
+            by_file(given) != by_file(shuffled)
+        }
+    }
+}
+
+/// Whether a shuffle that reaches as far as `reach` has two of the compared
+/// tests to put in another order.
+fn shufflable(given: &JunitReport, compared: &BTreeSet<String>, reach: Shuffles) -> bool {
+    match reach {
+        Shuffles::TheSuite => compared.len() > 1,
+        Shuffles::EachFile => {
+            let mut files = BTreeSet::new();
+            sequence(given, compared)
+                .into_iter()
+                .any(|(file, _)| !files.insert(file))
+        }
+    }
+}
+
+/// How many of the compared tests more than one case stands behind, in
+/// either run.
+fn namesakes(runs: [&JunitReport; 2], compared: &BTreeSet<String>) -> usize {
+    let mut shared = BTreeSet::new();
+    for run in runs {
+        let mut seen = BTreeSet::new();
+        for case in &run.test_cases {
+            let id = case.qualified_name();
+            if compared.contains(&id) && !seen.insert(id.clone()) {
+                shared.insert(id);
+            }
+        }
+    }
+    shared.len()
+}
+
+/// Lay the run in the command's own order beside the shuffled one. `reach`
+/// is how far the runner's shuffle goes.
+pub fn compare(given: &JunitReport, shuffled: &JunitReport, reach: Shuffles) -> Comparison {
     let in_given = verdicts(given);
     let in_shuffled = verdicts(shuffled);
+    let compared: BTreeSet<String> = in_given
+        .keys()
+        .filter(|id| in_shuffled.contains_key(*id))
+        .cloned()
+        .collect();
     let mut comparison = Comparison {
-        reordered: flaky::reordered(given, shuffled),
+        reordered: reordered(given, shuffled, &compared, reach),
+        shufflable: shufflable(given, &compared, reach),
+        namesakes: namesakes([given, shuffled], &compared),
         ..Comparison::default()
     };
     for (id, passed_given) in in_given {
@@ -149,7 +262,7 @@ pub struct Again<'a> {
 /// that fails in that order. `proven_flaky` are the tests the history has
 /// already seen pass and fail on one commit. A difference a second run does
 /// not speak to — the test was skipped there, or there were no second runs
-/// — is not proven and counts as unstable.
+/// — is neither proven nor refuted, and is filed as unconfirmed.
 pub fn analyze(
     comparison: Comparison,
     again: Option<Again<'_>>,
@@ -165,15 +278,24 @@ pub fn analyze(
     };
     for difference in comparison.differences {
         let passed_given = difference.passed_in == PassedIn::Given;
-        // In each order it did, the second time, what it did the first.
-        let held = given_again.get(&difference.id) == Some(&passed_given)
-            && shuffled_again.get(&difference.id) == Some(&!passed_given);
+        let second = (
+            given_again.get(&difference.id),
+            shuffled_again.get(&difference.id),
+        );
+        // Whether a second run did something else than the first run of
+        // its order: one such run settles that the difference did not hold,
+        // whatever the other one said or did not say.
+        let contradicted = second.0.is_some_and(|given| *given != passed_given)
+            || second.1.is_some_and(|shuffled| *shuffled == passed_given);
         let bucket = if proven_flaky.contains(&difference.id) {
             &mut analysis.known_flakes
-        } else if held {
+        } else if contradicted {
+            &mut analysis.unstable
+        } else if second.0.is_some() && second.1.is_some() {
+            // In each order it did, the second time, what it did the first.
             &mut analysis.order_dependent
         } else {
-            &mut analysis.unstable
+            &mut analysis.unconfirmed
         };
         bucket.push(difference);
     }
@@ -192,9 +314,8 @@ pub struct Lone<'a> {
 
 /// Settle which way each dependency runs, from the tests' runs alone. A
 /// test that did not do the same thing in every run alone is no longer
-/// called order-dependent: with nothing before it either time, its result
-/// changed all the same, and it is filed under the differences that did
-/// not hold.
+/// called order-dependent: with nothing else running either time, its
+/// result changed all the same, and it is filed as unstable.
 pub fn direct(analysis: &mut Analysis, lone: &[Lone<'_>]) {
     let heard: BTreeMap<&str, Alone> = lone.iter().map(|test| (test.id, alone(test))).collect();
     let (mixed, mut settled): (Vec<Difference>, Vec<Difference>) =
@@ -213,14 +334,29 @@ pub fn direct(analysis: &mut Analysis, lone: &[Lone<'_>]) {
     analysis.unstable.sort_by(|a, b| a.id.cmp(&b.id));
 }
 
-/// What one test's runs alone say. Every run has to speak for it — a run
-/// that skipped it or did not report it leaves the question open — and one
-/// reproduction of the suite's failure is a reproduction, as for `--verify`.
+/// What one test's runs alone say. A run in which the runner ran anything
+/// else as well was not a run alone, and settles nothing: the test's
+/// predecessor may have been among the company. Every run has to speak for
+/// the test — one that skipped it or did not report it leaves the question
+/// open — and one reproduction of the suite's failure is a reproduction, as
+/// for `--verify`.
 fn alone(test: &Lone<'_>) -> Alone {
     let mut passed = 0;
     let mut reproduced = false;
     for run in test.runs {
-        match verify::run_signatures(run).get(test.id) {
+        // Every case that ran, the test's own namesakes included: two rows
+        // of a table under one title share an id, the runner selects both,
+        // and the second may need the first.
+        let ran = run
+            .test_cases
+            .iter()
+            .filter(|case| case.status != TestStatus::Skipped)
+            .count();
+        if ran > 1 {
+            return Alone::InCompany;
+        }
+        let signatures = verify::run_signatures(run);
+        match signatures.get(test.id) {
             Some(signature) if signature.status == TestStatus::Passed => passed += 1,
             Some(signature)
                 if matches!(signature.status, TestStatus::Failed | TestStatus::Error) =>
@@ -248,6 +384,7 @@ mod tests {
     use super::{analyze, compare, direct, Again, Alone, Analysis, Difference, Lone, PassedIn};
     use crate::junit::TestStatus;
     use crate::junit::{parse_str, JunitReport};
+    use crate::preset::Shuffles;
     use crate::verify::FailureSignature;
     use std::collections::BTreeSet;
 
@@ -354,12 +491,8 @@ mod tests {
 
     #[test]
     fn a_test_its_runs_alone_do_not_speak_for_keeps_its_question_open() {
-        // Skipped alone, absent from the report, or never run alone.
-        for runs in [
-            vec![run(&["t?"]), run(&["t!"])],
-            vec![run(&["other"])],
-            Vec::new(),
-        ] {
+        // Skipped alone, a report with nothing in it, or never run alone.
+        for runs in [vec![run(&["t?"]), run(&["t!"])], vec![run(&[])], Vec::new()] {
             assert_eq!(directed(&runs, &assertion()), (true, Alone::Unknown));
         }
     }
@@ -388,7 +521,7 @@ mod tests {
         // fails behind `leak` and passes in front of it.
         let given = run(&["setup", "needs", "victim", "leak"]);
         let shuffled = run(&["leak", "victim!", "needs!", "setup"]);
-        let comparison = compare(&given, &shuffled);
+        let comparison = compare(&given, &shuffled, Shuffles::TheSuite);
         assert_eq!(comparison.compared, 4);
         assert!(comparison.reordered);
 
@@ -416,7 +549,11 @@ mod tests {
             given: &given,
             shuffled: &shuffled,
         };
-        let analysis = analyze(compare(&given, &shuffled), Some(again), &none_proven());
+        let analysis = analyze(
+            compare(&given, &shuffled, Shuffles::TheSuite),
+            Some(again),
+            &none_proven(),
+        );
         assert_eq!(
             analysis.order_dependent,
             [difference("c::victim", PassedIn::Shuffled)]
@@ -433,7 +570,11 @@ mod tests {
             given: &given,
             shuffled: &run(&["wob", "a"]),
         };
-        let analysis = analyze(compare(&given, &shuffled), Some(again), &none_proven());
+        let analysis = analyze(
+            compare(&given, &shuffled, Shuffles::TheSuite),
+            Some(again),
+            &none_proven(),
+        );
         assert!(analysis.order_dependent.is_empty());
         assert_eq!(analysis.unstable, [difference("c::wob", PassedIn::Given)]);
         assert!(!analysis.found_dependence());
@@ -450,7 +591,11 @@ mod tests {
             given: &run(&["a", "wob"]),
             shuffled: &shuffled,
         };
-        let analysis = analyze(compare(&given, &shuffled), Some(again), &none_proven());
+        let analysis = analyze(
+            compare(&given, &shuffled, Shuffles::TheSuite),
+            Some(again),
+            &none_proven(),
+        );
         assert!(analysis.order_dependent.is_empty());
         assert_eq!(
             analysis.unstable,
@@ -459,19 +604,25 @@ mod tests {
     }
 
     #[test]
-    fn a_difference_without_a_word_from_a_second_run_is_not_proven() {
+    fn a_difference_without_a_word_from_a_second_run_is_neither_proven_nor_refuted() {
         let given = run(&["a", "b"]);
         let shuffled = run(&["b!", "a"]);
-        // Skipped the second time, or no second runs at all.
+        // Skipped the second time, or no second runs at all: nobody saw it
+        // hold, and nobody saw it not hold.
         let skipped = run(&["b?", "a"]);
         let silent = Again {
             given: &given,
             shuffled: &skipped,
         };
         for again in [Some(silent), None] {
-            let analysis = analyze(compare(&given, &shuffled), again, &none_proven());
+            let analysis = analyze(
+                compare(&given, &shuffled, Shuffles::TheSuite),
+                again,
+                &none_proven(),
+            );
             assert!(analysis.order_dependent.is_empty());
-            assert_eq!(analysis.unstable.len(), 1);
+            assert!(analysis.unstable.is_empty());
+            assert_eq!(analysis.unconfirmed, [difference("c::b", PassedIn::Given)]);
         }
     }
 
@@ -485,7 +636,11 @@ mod tests {
             given: &given,
             shuffled: &shuffled,
         };
-        let analysis = analyze(compare(&given, &shuffled), Some(again), &proven);
+        let analysis = analyze(
+            compare(&given, &shuffled, Shuffles::TheSuite),
+            Some(again),
+            &proven,
+        );
         assert!(analysis.order_dependent.is_empty());
         assert_eq!(
             analysis.known_flakes,
@@ -498,7 +653,7 @@ mod tests {
         // Red in both orders is a failing test, not an order-dependent one.
         let given = run(&["a", "b!", "c"]);
         let shuffled = run(&["c", "b!", "a"]);
-        let comparison = compare(&given, &shuffled);
+        let comparison = compare(&given, &shuffled, Shuffles::TheSuite);
         assert!(comparison.differences.is_empty());
         assert_eq!(comparison.compared, 3);
     }
@@ -507,15 +662,154 @@ mod tests {
     fn a_skip_and_a_test_only_one_run_saw_are_not_compared() {
         let given = run(&["a", "b", "only_given", "s?"]);
         let shuffled = run(&["s!", "b", "a", "only_shuffled!"]);
-        let comparison = compare(&given, &shuffled);
+        let comparison = compare(&given, &shuffled, Shuffles::TheSuite);
         assert_eq!(comparison.compared, 2);
         assert!(comparison.differences.is_empty());
     }
 
     #[test]
+    fn two_cases_under_one_id_are_company_for_each_other() {
+        // Jest's `test.each` under a fixed title: both rows carry the same
+        // id, the runner selects both, and row two passes because row one
+        // ran. Read as one test alone, that would say "it passes alone".
+        let both_rows = [run(&["t", "t"]), run(&["t", "t"])];
+        assert_eq!(directed(&both_rows, &assertion()), (true, Alone::InCompany));
+        // One of them skipped is one that ran, and no company — but a
+        // skip under the test's own id is also no clean result for it:
+        // the question stays open instead of being answered by half.
+        let one_ran = [run(&["t?", "t"]), run(&["t?", "t"])];
+        assert_eq!(directed(&one_ran, &assertion()), (true, Alone::Unknown));
+    }
+
+    #[test]
+    fn one_second_run_that_contradicts_the_first_settles_it() {
+        // The given order flipped the second time; the shuffled one had no
+        // result. Nobody needs the shuffled run to know this did not hold.
+        let given = run(&["a", "b"]);
+        let shuffled = run(&["b!", "a"]);
+        let again = Again {
+            given: &run(&["a", "b!"]),
+            shuffled: &run(&["b?", "a"]),
+        };
+        let analysis = analyze(
+            compare(&given, &shuffled, Shuffles::TheSuite),
+            Some(again),
+            &none_proven(),
+        );
+        assert_eq!(analysis.unstable, [difference("c::b", PassedIn::Given)]);
+        assert!(analysis.unconfirmed.is_empty());
+    }
+
+    #[test]
+    fn a_run_in_company_is_not_a_run_alone_whatever_the_test_did_there() {
+        // Asked for `t`, the runner also ran `setup` — a selection by name
+        // reaches what answers to the name. With its predecessor along the
+        // test passes, and "alone it passes" would point the wrong way.
+        let in_company = [run(&["setup", "t"]), run(&["setup", "t"])];
+        assert_eq!(
+            directed(&in_company, &assertion()),
+            (true, Alone::InCompany)
+        );
+        // Company that only shows up skipped is no company: jest reports
+        // the tests it did not select that way.
+        let beside_skips = [run(&["other?", "t!"]), run(&["other?", "t!"])];
+        assert_eq!(
+            directed(&beside_skips, &assertion()),
+            (true, Alone::NeedsPredecessor)
+        );
+        // And a flip in company is not held against the test either.
+        let flips = [run(&["setup", "t"]), run(&["setup", "t!"])];
+        assert_eq!(directed(&flips, &assertion()), (true, Alone::InCompany));
+    }
+
+    /// A report of `(file, test)` pairs in this order, all passing, the
+    /// way jest-junit writes them under sooth's settings: the file in its
+    /// own attribute, and in front of the describe in the classname.
+    fn files(cases: &[(&str, &str)]) -> JunitReport {
+        use std::fmt::Write as _;
+        let mut xml = String::new();
+        for (file, name) in cases {
+            let _ = write!(
+                xml,
+                r#"<testcase classname="{file} about {name}" name="{name}" file="{file}"/>"#
+            );
+        }
+        parse_str(&format!("<testsuite>{xml}</testsuite>")).unwrap()
+    }
+
+    #[test]
+    fn files_finishing_in_another_order_is_not_an_order_a_test_was_put_in() {
+        // The same order inside each file; the files swapped places.
+        let given = files(&[("a.js", "one"), ("a.js", "two"), ("b.js", "three")]);
+        let swapped = files(&[("b.js", "three"), ("a.js", "one"), ("a.js", "two")]);
+        assert!(compare(&given, &swapped, Shuffles::TheSuite).reordered);
+        assert!(!compare(&given, &swapped, Shuffles::EachFile).reordered);
+        // A change inside a file is what a runner that shuffles there did.
+        let inside = files(&[("a.js", "two"), ("a.js", "one"), ("b.js", "three")]);
+        assert!(compare(&given, &inside, Shuffles::EachFile).reordered);
+    }
+
+    #[test]
+    fn cases_that_share_a_name_are_places_a_report_cannot_show() {
+        // Three rows under one title beside a test with a name of its own:
+        // however the rows were shuffled, the report reads the same.
+        let rows = files(&[
+            ("a.js", "row"),
+            ("a.js", "row"),
+            ("a.js", "row"),
+            ("b.js", "x"),
+        ]);
+        let comparison = compare(&rows, &rows, Shuffles::EachFile);
+        assert_eq!(
+            (
+                comparison.compared,
+                comparison.reordered,
+                comparison.namesakes
+            ),
+            (2, false, 1)
+        );
+        // Names of their own leave nothing unseen.
+        let own = files(&[("a.js", "one"), ("a.js", "two")]);
+        assert_eq!(compare(&own, &own, Shuffles::EachFile).namesakes, 0);
+    }
+
+    #[test]
+    fn a_shuffle_needs_two_tests_with_names_of_their_own_within_its_reach() {
+        // A shuffle inside each file has nothing to show for files of one
+        // test, nor for rows under one title: no seed changes that.
+        let rows = files(&[("a.js", "row"), ("a.js", "row"), ("b.js", "x")]);
+        assert!(!compare(&rows, &rows, Shuffles::EachFile).shufflable);
+        // A shuffle of the whole suite can swap the two files' tests.
+        assert!(compare(&rows, &rows, Shuffles::TheSuite).shufflable);
+        // Two names in one file: an order that stayed is then a finding.
+        let pair = files(&[
+            ("a.js", "one"),
+            ("a.js", "two"),
+            ("a.js", "row"),
+            ("a.js", "row"),
+        ]);
+        let comparison = compare(&pair, &pair, Shuffles::EachFile);
+        assert!(comparison.shufflable && !comparison.reordered);
+        // A test that was skipped is not one a shuffle could show moving.
+        let skipped = run(&["a", "s?"]);
+        assert!(!compare(&skipped, &skipped, Shuffles::TheSuite).shufflable);
+    }
+
+    #[test]
+    fn a_test_that_was_not_compared_cannot_make_a_run_reordered() {
+        // Only the skipped test moved: of the tests that said something,
+        // nothing changed place.
+        let given = run(&["s?", "a", "b"]);
+        let shuffled = run(&["a", "b", "s?"]);
+        let comparison = compare(&given, &shuffled, Shuffles::TheSuite);
+        assert_eq!(comparison.compared, 2);
+        assert!(!comparison.reordered);
+    }
+
+    #[test]
     fn a_shuffle_that_changed_nothing_is_said_to_have_changed_nothing() {
         let given = run(&["a", "b", "c"]);
-        assert!(!compare(&given, &given).reordered);
-        assert!(compare(&given, &run(&["c", "a", "b"])).reordered);
+        assert!(!compare(&given, &given, Shuffles::TheSuite).reordered);
+        assert!(compare(&given, &run(&["c", "a", "b"]), Shuffles::TheSuite).reordered);
     }
 }

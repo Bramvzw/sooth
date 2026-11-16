@@ -12,10 +12,11 @@ use std::process::ExitCode;
 
 use super::capture::Capture;
 use super::run::{
-    inferred_preset, record_history, run_failed, unusable_report, write_json_file, Session,
+    inferred_preset, record_history, run_failed, unusable_report, write_json_file, HistoryPass,
+    Session,
 };
-use super::{Outcome, SoothError};
-use crate::preset::Plan;
+use super::{load_history, Outcome, SoothError};
+use crate::preset::{Plan, Shuffles};
 use crate::reported::{ReportSource, Run};
 use crate::{analyzers, cli, history, interrupt, junit, report, reported, runner, verify};
 
@@ -169,19 +170,24 @@ impl Pass<'_> {
 }
 
 impl Pass<'_> {
-    /// Run the one test the runner selects by `name`, with nothing before
-    /// it. `Ok(None)` when the run has nothing to say — the runner could
-    /// not be pointed at the name, did not start, or left no report: the
-    /// question stays open, as it does for `--verify`. Its output is not
-    /// shown, and how it ended is not the pass's exit.
-    fn alone(&mut self, name: &str) -> Result<Option<junit::JunitReport>, Stopped> {
+    /// Ask the runner for the one test `name` of `classname`. `Ok(None)`
+    /// when the run has nothing to say — the runner could not be pointed
+    /// at the test, did not start, or left no report: the question stays
+    /// open, as it does for `--verify`. Whether the runner then ran that
+    /// test and nothing else is for whoever reads the report to check. Its
+    /// output is not shown, and how it ended is not the pass's exit.
+    fn alone(
+        &mut self,
+        classname: Option<&str>,
+        name: &str,
+    ) -> Result<Option<junit::JunitReport>, Stopped> {
         if self.interrupt.requested() {
             return Err(Stopped);
         }
         let Ok(source) = ReportSource::temp() else {
             return Ok(None);
         };
-        let Some(spawn) = self.plan.rerun(source.path(), &[name.to_owned()]) else {
+        let Some(spawn) = self.plan.alone(source.path(), classname, name) else {
             return Ok(None);
         };
         let Ok(hidden) = self.capture.open() else {
@@ -253,11 +259,7 @@ pub fn run(args: &cli::OrderArgs) -> Outcome {
         Some((given, shuffled))
     };
 
-    let proven_flaky: BTreeSet<String> = history
-        .iter()
-        .flat_map(|history| &history.analysis.flaky)
-        .map(|flake| flake.outcomes.id.clone())
-        .collect();
+    let proven_flaky = proven_flaky(history.as_ref(), !args.no_history);
     let mut analysis = analyzers::order::analyze(
         comparison,
         again
@@ -266,8 +268,7 @@ pub fn run(args: &cli::OrderArgs) -> Outcome {
         &proven_flaky,
     );
     // Which way each dependency runs: the tests it found, one by one.
-    let not_run_alone = analysis.order_dependent.len().saturating_sub(ALONE_AT_MOST);
-    let stopped = isolate(&mut pass, &mut analysis, (&given, &shuffled));
+    let alone = isolate(&mut pass, &mut analysis, (&given, &shuffled));
     pass.capture
         .replay_first_failure(pass.json_owns_stdout, style);
     let runs: Vec<report::OrderRun> = pass
@@ -285,8 +286,8 @@ pub fn run(args: &cli::OrderArgs) -> Outcome {
         runs: &runs,
         failed: pass.failed,
         replay: &replay_command(args, seed),
-        scope: plan.shuffle_scope(),
-        not_run_alone,
+        shuffles: plan.shuffles(),
+        alone,
     };
     match &args.json {
         None => report::print_order(&ended, style),
@@ -298,7 +299,7 @@ pub fn run(args: &cli::OrderArgs) -> Outcome {
     }
     // The pass was made and reported; what was cut short is the last part
     // of what was asked, so the exit is 2 all the same.
-    if stopped {
+    if alone.interrupted {
         return Err(SoothError::new(
             "interrupted while the tests were run alone — the report says which way a \
              dependency runs only for the tests that were",
@@ -311,19 +312,40 @@ pub fn run(args: &cli::OrderArgs) -> Outcome {
     })
 }
 
+/// The tests the history has proved flaky. They come with the pass that
+/// recorded the first run; when that run could not be written, the history
+/// is read all the same — a failed write is no reason to forget what the
+/// file holds. `consult` is false under `--no-history`.
+fn proven_flaky(recorded: Option<&HistoryPass>, consult: bool) -> BTreeSet<String> {
+    let ids = |analysis: &analyzers::history::Analysis| -> BTreeSet<String> {
+        analysis
+            .flaky
+            .iter()
+            .map(|flake| flake.outcomes.id.clone())
+            .collect()
+    };
+    match recorded {
+        Some(recorded) => ids(&recorded.analysis),
+        None if consult => {
+            let loaded = load_history(std::path::Path::new(history::HISTORY_PATH));
+            ids(&analyzers::history::analyze(&loaded.observations))
+        }
+        None => BTreeSet::new(),
+    }
+}
+
 /// Run each order-dependent test by itself and let the analysis hear it:
 /// that says which way its dependency runs, and takes a test back out that
-/// does not behave the same alone twice. Returns whether sooth was asked to
-/// stop before all of them had run.
+/// does not behave the same alone twice.
 ///
 /// The failure a test showed in the suite is taken from the run it failed
 /// in — the shuffled one when it passed in the given order, else the given
-/// one — together with the name the runner selects it by.
+/// one — together with the class and name the runner selects it by.
 fn isolate(
     pass: &mut Pass<'_>,
     analysis: &mut analyzers::order::Analysis,
     (given, shuffled): (&junit::JunitReport, &junit::JunitReport),
-) -> bool {
+) -> report::AloneRuns {
     use analyzers::order::PassedIn;
     let failed_in = |passed_in| match passed_in {
         PassedIn::Given => verify::failed_tests(shuffled),
@@ -343,8 +365,14 @@ fn isolate(
             failed.iter().find(|test| test.id == difference.id)
         })
         .collect();
+    let mut alone = report::AloneRuns {
+        tests: candidates.len(),
+        // Counted now: a test that does not hold alone leaves the list.
+        not_run: analysis.order_dependent.len() - candidates.len(),
+        interrupted: false,
+    };
     if candidates.is_empty() {
-        return false;
+        return alone;
     }
     if !pass.json_owns_stdout {
         report::print_order_alone(candidates.len(), verify::VERIFY_RUNS as usize);
@@ -352,9 +380,15 @@ fn isolate(
     let mut stopped = false;
     let mut heard: Vec<Vec<junit::JunitReport>> = Vec::with_capacity(candidates.len());
     for test in &candidates {
+        // The id is the class or file, `::`, and the name; the name alone
+        // may itself contain `::`, so it is taken off the end.
+        let classname = test
+            .id
+            .strip_suffix(&test.name)
+            .and_then(|class| class.strip_suffix("::"));
         let mut runs = Vec::new();
         for _ in 0..verify::VERIFY_RUNS {
-            match pass.alone(&test.name) {
+            match pass.alone(classname, &test.name) {
                 Ok(Some(report)) => runs.push(report),
                 // A run that says nothing leaves the question open, and
                 // one more would not close it.
@@ -384,7 +418,8 @@ fn isolate(
         })
         .collect();
     analyzers::order::direct(analysis, &lone);
-    stopped
+    alone.interrupted = stopped;
+    alone
 }
 
 /// Sooth was asked to stop while a test ran alone.
@@ -393,18 +428,31 @@ struct Stopped;
 /// Run the suite shuffled and lay it beside the run in its own order. A
 /// seed that leaves the tests in the order they already ran in compared
 /// nothing, so — unless the seed was asked for — the next one is tried.
+/// When the shuffle had nothing to show whatever the seed, that is said
+/// instead, and at once.
 fn shuffle(
     pass: &mut Pass<'_>,
     given: &junit::JunitReport,
     asked: Option<u32>,
 ) -> Result<(u32, junit::JunitReport, analyzers::order::Comparison), SoothError> {
     let mut seed = asked.unwrap_or_else(fresh_seed);
+    // What an unchanged report shows, as far as the shuffle reaches: files
+    // that finish in another order move every test in the report, and no
+    // test inside its file.
+    let unmoved = match pass.plan.shuffles() {
+        Shuffles::TheSuite => {
+            "lists the tests that ran in both runs in the order the first run had them"
+        }
+        Shuffles::EachFile => {
+            "lists the tests that ran in both runs in the order the first run had them inside \
+             every file"
+        }
+    };
     for attempt in 1..=SEEDS_TRIED {
         let shuffled = pass.make(Order::Shuffled(seed))?;
-        let comparison = analyzers::order::compare(given, &shuffled);
-        if comparison.reordered {
-            return Ok((seed, shuffled, comparison));
-        }
+        let comparison = analyzers::order::compare(given, &shuffled, pass.plan.shuffles());
+        // Before anything else: fewer than two tests have no order, however
+        // the reports happen to list them.
         if comparison.compared < 2 {
             return Err(SoothError::new(format!(
                 "the order pass needs at least two tests that ran in both runs, and found \
@@ -412,19 +460,48 @@ fn shuffle(
                 comparison.compared
             )));
         }
+        if !comparison.shufflable {
+            return Err(SoothError::new(nothing_to_show(comparison.namesakes)));
+        }
+        if comparison.reordered {
+            return Ok((seed, shuffled, comparison));
+        }
         if asked.is_some() || attempt == SEEDS_TRIED {
             break;
         }
-        report::note(&format!(
-            "seed {seed} left the tests in the order they already ran in — trying another"
-        ));
+        report::note(&format!("seed {seed} {unmoved} — trying another"));
         seed = seed % 999_999 + 1;
     }
+    // What the report lists, not what ran: cases that share a name may
+    // have changed places where no report shows it.
     Err(SoothError::new(format!(
-        "the shuffled run (seed {seed}) ran the tests in the order they already ran in, so \
-         the order pass compared nothing. An order set in the runner's configuration or \
-         inside a script outranks the flag sooth adds: is one set there?"
+        "the shuffled run (seed {seed}) {unmoved}, so the order pass compared nothing. An \
+         order set in the runner's configuration or inside a script outranks the flag sooth \
+         adds: is one set there?"
     )))
+}
+
+/// The refusal for a shuffle no seed could have shown: the runner shuffles
+/// inside each file, and no file has two tests a report tells apart.
+/// `namesakes` are the tests that stand for several cases under one name,
+/// which is the one cause the user can do something about.
+fn nothing_to_show(namesakes: usize) -> String {
+    let rows = match namesakes {
+        0 => String::new(),
+        1 => " 1 test stands".to_owned(),
+        several => format!(" {several} tests stand"),
+    };
+    let advice = if namesakes == 0 {
+        ""
+    } else {
+        " for several cases under one name — the rows of a `test.each` with one title, for \
+         one — and no report shows those changing places: give them names of their own."
+    };
+    format!(
+        "the order pass has no order to compare: this runner shuffles the tests inside each \
+         file, and no file has two tests with names of their own that ran in both \
+         runs.{rows}{advice}"
+    )
 }
 
 /// A seed for this pass. Any will do, as long as it is said: six digits at
@@ -436,23 +513,34 @@ fn fresh_seed() -> u32 {
     (nanos ^ std::process::id().rotate_left(16)) % 999_999 + 1
 }
 
-/// The command line that runs this pass again under the same seed.
+/// The command line that runs this pass again under the same seed, safe to
+/// paste into a shell: a word is left bare only when it is made of
+/// characters no shell reads anything into.
 fn replay_command(args: &cli::OrderArgs, seed: u32) -> String {
+    let plain = |c: char| c.is_ascii_alphanumeric() || "_./=:,@%+-".contains(c);
     let preset = args
         .preset
         .map_or_else(String::new, |preset| format!(" --preset {}", preset.name()));
+    let no_history = if args.no_history { " --no-history" } else { "" };
     let command: Vec<String> = args
         .command
         .iter()
         .map(|word| {
-            if word.is_empty() || word.contains(|c: char| c.is_whitespace() || c == '\'') {
-                format!("'{}'", word.replace('\'', r"'\''"))
-            } else {
+            // `=` is safe everywhere but in zsh, which reads `=word` as
+            // the path of a command: at the start of a word, and under
+            // `magic_equal_subst` behind another `=` as well.
+            let zsh_reads = word.starts_with('=') || word.contains("==");
+            if !word.is_empty() && !zsh_reads && word.chars().all(plain) {
                 word.clone()
+            } else {
+                format!("'{}'", word.replace('\'', r"'\''"))
             }
         })
         .collect();
-    format!("sooth order --seed {seed}{preset} -- {}", command.join(" "))
+    format!(
+        "sooth order --seed {seed}{preset}{no_history} -- {}",
+        command.join(" ")
+    )
 }
 
 #[cfg(test)]
@@ -498,6 +586,24 @@ mod tests {
         assert_eq!(
             replay_command(&args, 7),
             r"sooth order --seed 7 --preset phpunit -- vendor/bin/pest --filter 'it'\''s a b'"
+        );
+        // Anything a shell would read something into is quoted, and a flag
+        // of the pass itself comes along.
+        let args = order_args(&[
+            "sooth",
+            "order",
+            "--no-history",
+            "--",
+            "./phpunit",
+            "--group",
+            "a|b;$HOME",
+            "",
+            "=ls",
+            "--x==ls",
+        ]);
+        assert_eq!(
+            replay_command(&args, 7),
+            "sooth order --seed 7 --no-history -- ./phpunit --group 'a|b;$HOME' '' '=ls' '--x==ls'"
         );
     }
 
