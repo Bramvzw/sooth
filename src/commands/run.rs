@@ -425,7 +425,7 @@ fn gate_selection(
             None => report::warn(&format!(
                 "could not read a PHPUnit version from `{} --version` — if it is \
                  older than 10, only the first of the {} selected files will run",
-                plan.version_probe().display(),
+                plan.version_probe().join(" "),
                 selection.files.len()
             )),
             Some(_) => {}

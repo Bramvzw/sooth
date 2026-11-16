@@ -9,14 +9,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **`sooth order` says which way a dependency runs.** The tests it finds
-  (twenty at most) are run by themselves, twice. One that fails alone as
-  it failed in the suite needs something a test before it leaves behind;
-  one that passes alone is broken by something a test before it leaves
-  behind. The first needs a setup of its own, the second a fix in the test
-  that leaks. A test that does not do the same thing alone twice is not
-  called order-dependent, and a run in which the runner ran other tests
-  along is not taken for a run alone.
 - **`sooth order`: find the tests whose result depends on the order they
   run in.** `sooth order -- php artisan test` runs the suite once in its
   own order and once shuffled under a seed, and reports the tests whose
@@ -25,6 +17,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   order. For PHPUnit, Pest, `php artisan test`, Composer scripts and Jest;
   `--json` gives the findings as a document. A test that fails in another
   order fails a run, so the pass exits 1.
+- **`sooth order` says which way a dependency runs.** The tests it finds
+  (twenty at most) are run by themselves, twice. One that fails alone as
+  it failed in the suite needs something a test before it leaves behind;
+  one that passes alone is broken by something a test before it leaves
+  behind. The first needs a setup of its own, the second a fix in the test
+  that leaks. A test that does not do the same thing alone twice is not
+  called order-dependent, and a run in which the runner ran other tests
+  along is not taken for a run alone.
+
+### Fixed
+
+- **A runner started through PHP is the runner.** `sooth run -- php
+  vendor/bin/phpunit` (or `pest`, or `paratest`) read only the exit code,
+  and with `--preset phpunit` could not run at all: sooth put its reporter
+  flags right behind `php`, which read them as its own. They now go behind
+  the script PHP runs, with options of PHP's own in front of it or without
+  (`php -d memory_limit=1G vendor/bin/phpunit`, `php -d memory_limit=1G
+  artisan test`), and such a command is recognised without `--preset`.
 
 ## [0.3.4] - 2026-11-15
 

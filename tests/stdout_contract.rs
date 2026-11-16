@@ -215,6 +215,57 @@ fn first_command_a_runner_that_names_itself_needs_no_preset() {
 }
 
 #[test]
+fn first_command_a_runner_php_runs_is_named_and_gets_its_flags_behind_the_script() {
+    let cwd = Scratch::new("first-php-script");
+    write_named_runner(&cwd, "phpunit", "--log-junit", "--none");
+    // A PHP binary, as far as its command line goes: its own options, then
+    // the script and what is the script's. An option it does not know
+    // stops it, as `--log-junit` stops the real one.
+    write_executable(
+        &cwd,
+        "php",
+        concat!(
+            "#!/bin/sh\n",
+            "while [ $# -gt 0 ]; do\n",
+            "  case \"$1\" in\n",
+            "    -d) shift 2 ;;\n",
+            "    -*) echo \"php: unknown option $1\" >&2; exit 1 ;;\n",
+            "    *) break ;;\n",
+            "  esac\n",
+            "done\n",
+            "exec \"$@\"\n",
+        ),
+    );
+    let (exit, stdout, stderr) = first_command(
+        &cwd,
+        &[
+            "--",
+            "./php",
+            "-d",
+            "memory_limit=1G",
+            "./phpunit",
+            "--testdox",
+        ],
+    );
+
+    assert_eq!(exit, Some(0), "got: {stdout:?} {stderr:?}");
+    assert!(
+        stdout.contains("tests: 1 total"),
+        "the report was read: {stdout:?}"
+    );
+    assert!(
+        stderr.contains("`--preset phpunit`")
+            && stderr.contains("`./php -d memory_limit=1G ./phpunit`"),
+        "the choice is said out loud: {stderr:?}"
+    );
+    let ran_with = std::fs::read_to_string(cwd.join("ran-with")).expect("the runner ran");
+    assert!(
+        ran_with.starts_with("--log-junit\n") && ran_with.ends_with("--testdox\n"),
+        "the runner got sooth's flags, then the user's: {ran_with:?}"
+    );
+}
+
+#[test]
 fn first_command_pest_is_a_name_for_the_phpunit_preset() {
     let cwd = Scratch::new("first-pest");
     write_named_runner(&cwd, "pest", "--log-junit", "--none");
