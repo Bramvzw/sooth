@@ -12,6 +12,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::analyzers::flaky;
 use crate::junit::{JunitReport, TestStatus};
+use crate::verify::{self, FailureSignature};
 
 /// In which of the two orders a test passed. It failed in the other one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -22,12 +23,35 @@ pub enum PassedIn {
     Shuffled,
 }
 
+/// What a test did when it ran alone, and what that says about a result
+/// that follows the order. A shuffle shows that a dependency exists; only
+/// the test by itself shows which way it runs, and that decides the fix.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Alone {
+    /// It fails alone the way it failed in the suite: it needs something a
+    /// test before it leaves behind. The fix is a setup of its own.
+    NeedsPredecessor,
+    /// It passes alone: something a test before it leaves behind breaks
+    /// it. The fix is in the test that leaks.
+    BrokenByPredecessor,
+    /// It fails alone, but not the way it failed in the suite: isolation
+    /// brought out another failure, which says nothing about this one.
+    FailedDifferently,
+    /// It passed alone once and failed alone once. Nothing ran before it
+    /// either time, so no order explains that.
+    Mixed,
+    /// It was not run alone, or its runs alone had no result for it.
+    Unknown,
+}
+
 /// A test whose outcome was not the same in both orders.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Difference {
     /// The test's identity (`classname::name`).
     pub id: String,
     pub passed_in: PassedIn,
+    /// [`Alone::Unknown`] until [`direct`] has heard the test's runs alone.
+    pub alone: Alone,
 }
 
 /// The two orders side by side, before anything is concluded from them.
@@ -105,6 +129,7 @@ pub fn compare(given: &JunitReport, shuffled: &JunitReport) -> Comparison {
                 } else {
                     PassedIn::Shuffled
                 },
+                alone: Alone::Unknown,
             });
         }
     }
@@ -155,10 +180,75 @@ pub fn analyze(
     analysis
 }
 
+/// One order-dependent test with what it takes to hear it alone: the
+/// failure it showed in the order it failed in, and its runs by itself.
+pub struct Lone<'a> {
+    pub id: &'a str,
+    /// The failure the suite saw, for the runs alone to reproduce — or not.
+    pub suite_failure: &'a FailureSignature,
+    /// The reports of its runs alone. Empty when it was not run alone.
+    pub runs: &'a [JunitReport],
+}
+
+/// Settle which way each dependency runs, from the tests' runs alone. A
+/// test that did not do the same thing in every run alone is no longer
+/// called order-dependent: with nothing before it either time, its result
+/// changed all the same, and it is filed under the differences that did
+/// not hold.
+pub fn direct(analysis: &mut Analysis, lone: &[Lone<'_>]) {
+    let heard: BTreeMap<&str, Alone> = lone.iter().map(|test| (test.id, alone(test))).collect();
+    let (mixed, mut settled): (Vec<Difference>, Vec<Difference>) =
+        std::mem::take(&mut analysis.order_dependent)
+            .into_iter()
+            .map(|mut difference| {
+                difference.alone = heard
+                    .get(difference.id.as_str())
+                    .copied()
+                    .unwrap_or(Alone::Unknown);
+                difference
+            })
+            .partition(|difference| difference.alone == Alone::Mixed);
+    analysis.order_dependent.append(&mut settled);
+    analysis.unstable.extend(mixed);
+    analysis.unstable.sort_by(|a, b| a.id.cmp(&b.id));
+}
+
+/// What one test's runs alone say. Every run has to speak for it — a run
+/// that skipped it or did not report it leaves the question open — and one
+/// reproduction of the suite's failure is a reproduction, as for `--verify`.
+fn alone(test: &Lone<'_>) -> Alone {
+    let mut passed = 0;
+    let mut reproduced = false;
+    for run in test.runs {
+        match verify::run_signatures(run).get(test.id) {
+            Some(signature) if signature.status == TestStatus::Passed => passed += 1,
+            Some(signature)
+                if matches!(signature.status, TestStatus::Failed | TestStatus::Error) =>
+            {
+                reproduced |= verify::same_failure(test.suite_failure, signature);
+            }
+            _ => return Alone::Unknown,
+        }
+    }
+    if test.runs.is_empty() {
+        Alone::Unknown
+    } else if passed == test.runs.len() {
+        Alone::BrokenByPredecessor
+    } else if passed > 0 {
+        Alone::Mixed
+    } else if reproduced {
+        Alone::NeedsPredecessor
+    } else {
+        Alone::FailedDifferently
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{analyze, compare, Again, Difference, PassedIn};
+    use super::{analyze, compare, direct, Again, Alone, Analysis, Difference, Lone, PassedIn};
+    use crate::junit::TestStatus;
     use crate::junit::{parse_str, JunitReport};
+    use crate::verify::FailureSignature;
     use std::collections::BTreeSet;
 
     /// A report of the named tests in this order; a name ending in `!`
@@ -185,7 +275,107 @@ mod tests {
         Difference {
             id: id.to_owned(),
             passed_in,
+            alone: Alone::Unknown,
         }
+    }
+
+    /// A plain assertion failure, as `run`'s `!` writes it.
+    fn assertion() -> FailureSignature {
+        FailureSignature {
+            status: TestStatus::Failed,
+            failure_type: None,
+        }
+    }
+
+    /// What `direct` makes of one order-dependent test `c::t`, given its
+    /// runs alone: where it ended up, and with which answer.
+    fn directed(runs: &[JunitReport], suite_failure: &FailureSignature) -> (bool, Alone) {
+        let mut analysis = Analysis {
+            compared: 2,
+            order_dependent: vec![difference("c::t", PassedIn::Given)],
+            ..Analysis::default()
+        };
+        let lone = [Lone {
+            id: "c::t",
+            suite_failure,
+            runs,
+        }];
+        direct(&mut analysis, &lone);
+        let still_dependent = analysis.found_dependence();
+        let filed = analysis
+            .order_dependent
+            .iter()
+            .chain(&analysis.unstable)
+            .next()
+            .expect("the test is filed somewhere");
+        (still_dependent, filed.alone)
+    }
+
+    #[test]
+    fn a_test_that_fails_alone_as_in_the_suite_needs_a_test_before_it() {
+        let runs = [run(&["t!"]), run(&["t!"])];
+        assert_eq!(
+            directed(&runs, &assertion()),
+            (true, Alone::NeedsPredecessor)
+        );
+    }
+
+    #[test]
+    fn a_test_that_passes_alone_is_broken_by_a_test_before_it() {
+        let runs = [run(&["t"]), run(&["t"])];
+        assert_eq!(
+            directed(&runs, &assertion()),
+            (true, Alone::BrokenByPredecessor)
+        );
+    }
+
+    #[test]
+    fn a_test_that_does_not_do_the_same_thing_alone_twice_is_not_order_dependent() {
+        // Nothing ran before it either time, and its result changed: that
+        // is a flake, whatever its four runs in the suite looked like.
+        let runs = [run(&["t"]), run(&["t!"])];
+        assert_eq!(directed(&runs, &assertion()), (false, Alone::Mixed));
+    }
+
+    #[test]
+    fn a_failure_alone_that_is_not_the_suites_failure_says_nothing_about_it() {
+        // The suite saw a TypeError; alone the test trips over something
+        // else. A misconfigured selection does exactly this.
+        let type_error = FailureSignature {
+            status: TestStatus::Error,
+            failure_type: Some("TypeError".to_owned()),
+        };
+        let runs = [run(&["t!"]), run(&["t!"])];
+        assert_eq!(
+            directed(&runs, &type_error),
+            (true, Alone::FailedDifferently)
+        );
+    }
+
+    #[test]
+    fn a_test_its_runs_alone_do_not_speak_for_keeps_its_question_open() {
+        // Skipped alone, absent from the report, or never run alone.
+        for runs in [
+            vec![run(&["t?"]), run(&["t!"])],
+            vec![run(&["other"])],
+            Vec::new(),
+        ] {
+            assert_eq!(directed(&runs, &assertion()), (true, Alone::Unknown));
+        }
+    }
+
+    #[test]
+    fn a_test_nobody_ran_alone_stays_order_dependent_with_no_direction() {
+        let mut analysis = Analysis {
+            compared: 2,
+            order_dependent: vec![difference("c::t", PassedIn::Given)],
+            ..Analysis::default()
+        };
+        direct(&mut analysis, &[]);
+        assert_eq!(
+            analysis.order_dependent,
+            [difference("c::t", PassedIn::Given)]
+        );
     }
 
     fn none_proven() -> BTreeSet<String> {

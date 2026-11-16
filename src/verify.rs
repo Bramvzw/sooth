@@ -36,7 +36,7 @@ impl FailureSignature {
 /// Whether two failures read as the same one. Absent metadata never
 /// manufactures a difference: kinds must match, classes only when both
 /// sides carry one.
-fn same_failure(suite: &FailureSignature, isolation: &FailureSignature) -> bool {
+pub(crate) fn same_failure(suite: &FailureSignature, isolation: &FailureSignature) -> bool {
     suite.status == isolation.status
         && match (&suite.failure_type, &isolation.failure_type) {
             (Some(left), Some(right)) => left == right,
@@ -214,7 +214,7 @@ pub fn classify(failed: &[FailedTest], verify_reports: &[JunitReport]) -> Verdic
 
 /// One run's signature per test id, collapsing duplicates to the worst
 /// status (the same rule as `run_outcomes`), with the `type` riding along.
-fn run_signatures(report: &JunitReport) -> BTreeMap<String, FailureSignature> {
+pub(crate) fn run_signatures(report: &JunitReport) -> BTreeMap<String, FailureSignature> {
     let mut map: BTreeMap<String, FailureSignature> = BTreeMap::new();
     for case in &report.test_cases {
         let candidate = FailureSignature {

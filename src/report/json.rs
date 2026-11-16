@@ -158,11 +158,18 @@ pub fn order_json(ended: &OrderReport<'_>) -> String {
             .iter()
             .map(|difference| {
                 format!(
-                    r#"{{"name":"{}","passed_in":"{}"}}"#,
+                    r#"{{"name":"{}","passed_in":"{}","alone":{}}}"#,
                     escape(&difference.id),
                     match difference.passed_in {
                         order::PassedIn::Given => "given",
                         order::PassedIn::Shuffled => "shuffled",
+                    },
+                    match difference.alone {
+                        order::Alone::NeedsPredecessor => r#""needs_predecessor""#,
+                        order::Alone::BrokenByPredecessor => r#""broken_by_predecessor""#,
+                        order::Alone::FailedDifferently => r#""failed_differently""#,
+                        order::Alone::Mixed => r#""mixed""#,
+                        order::Alone::Unknown => "null",
                     }
                 )
             })
@@ -402,17 +409,22 @@ mod tests {
 
     #[test]
     fn the_order_json_carries_the_seed_the_runs_and_every_difference_by_what_it_proves() {
-        use crate::analyzers::order::{Analysis, Difference, PassedIn};
+        use crate::analyzers::order::{Alone, Analysis, Difference, PassedIn};
         use crate::report::{OrderReport, OrderRun};
-        let difference = |id: &str, passed_in| Difference {
+        let difference = |id: &str, passed_in, alone| Difference {
             id: id.to_owned(),
             passed_in,
+            alone,
         };
         let analysis = Analysis {
             compared: 9,
-            order_dependent: vec![difference("c::needs", PassedIn::Given)],
-            unstable: vec![difference("c::\"wob\"", PassedIn::Shuffled)],
-            known_flakes: vec![difference("c::old", PassedIn::Given)],
+            order_dependent: vec![
+                difference("c::needs", PassedIn::Given, Alone::NeedsPredecessor),
+                difference("c::victim", PassedIn::Shuffled, Alone::BrokenByPredecessor),
+                difference("c::odd", PassedIn::Given, Alone::FailedDifferently),
+            ],
+            unstable: vec![difference("c::\"wob\"", PassedIn::Shuffled, Alone::Mixed)],
+            known_flakes: vec![difference("c::old", PassedIn::Given, Alone::Unknown)],
         };
         let runs = [
             OrderRun {
@@ -431,6 +443,7 @@ mod tests {
             failed: true,
             replay: "sooth order --seed 42 -- phpunit",
             scope: None,
+            not_run_alone: 0,
         });
         assert_eq!(
             json,
@@ -439,9 +452,11 @@ mod tests {
                     r#"{{"schema_version":1,"sooth_version":"{}","order":{{"seed":42,"compared":9,"#,
                     r#""runs":[{{"order":"given","exit_code":0,"success":true,"duration_seconds":0.001}},"#,
                     r#"{{"order":"shuffled","seed":42,"exit_code":1,"success":false,"duration_seconds":0.001}}],"#,
-                    r#""order_dependent":[{{"name":"c::needs","passed_in":"given"}}],"#,
-                    r#""unstable":[{{"name":"c::\"wob\"","passed_in":"shuffled"}}],"#,
-                    r#""known_flakes":[{{"name":"c::old","passed_in":"given"}}]}}}}"#
+                    r#""order_dependent":[{{"name":"c::needs","passed_in":"given","alone":"needs_predecessor"}},"#,
+                    r#"{{"name":"c::victim","passed_in":"shuffled","alone":"broken_by_predecessor"}},"#,
+                    r#"{{"name":"c::odd","passed_in":"given","alone":"failed_differently"}}],"#,
+                    r#""unstable":[{{"name":"c::\"wob\"","passed_in":"shuffled","alone":"mixed"}}],"#,
+                    r#""known_flakes":[{{"name":"c::old","passed_in":"given","alone":null}}]}}}}"#
                 ),
                 env!("CARGO_PKG_VERSION")
             )
