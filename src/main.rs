@@ -65,6 +65,7 @@ fn dispatch() -> ExitCode {
         Command::Explain(args) => commands::explain::run(&args),
         Command::Import(args) => commands::import::run(&args),
         Command::History(args) => commands::history::run(&args),
+        Command::Order(args) => commands::order::run(&args),
     };
     outcome.unwrap_or_else(|error| {
         report::error(&error.lines);

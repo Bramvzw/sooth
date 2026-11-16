@@ -9,10 +9,11 @@ use std::borrow::Cow;
 use std::time::Duration;
 
 use super::{
-    count, Analyses, ImportFate, ImportedFile, Interrupted, JunitSummary, Replay, RunReport, Style,
+    count, Analyses, ImportFate, ImportedFile, Interrupted, JunitSummary, OrderReport, Replay,
+    RunReport, Style,
 };
 use crate::analyzers::history::PriorEvidence;
-use crate::analyzers::{explain, flaky, history};
+use crate::analyzers::{explain, flaky, history, order};
 use crate::gate;
 use crate::runner::RunOutcome;
 
@@ -36,6 +37,121 @@ pub fn print_run(number: usize, total: usize, outcome: &RunOutcome, style: Style
     println!("run {number}/{total}: {status} ({:.2?})", outcome.duration);
 }
 
+/// One run of the order pass: which order it ran in, how the runner
+/// exited, how long it took.
+pub fn print_order_run(order: &str, outcome: &RunOutcome, style: Style) {
+    let status = outcome.status_label();
+    let status = if outcome.success {
+        style.green(&status)
+    } else {
+        style.red(&status)
+    };
+    println!("{order}: {status} ({:.2?})", outcome.duration);
+}
+
+/// What the order pass found, and its verdict.
+pub fn print_order(ended: &OrderReport<'_>, style: Style) {
+    let analysis = ended.analysis;
+    println!(
+        "tests: {} compared in both orders",
+        count(analysis.compared, "test")
+    );
+    let both_times = |difference: &order::Difference| match difference.passed_in {
+        order::PassedIn::Given => "passed in your order, failed shuffled",
+        order::PassedIn::Shuffled => "failed in your order, passed shuffled",
+    };
+    let lines = |differences: &[order::Difference], mark: &str, tail: &str| {
+        for difference in differences {
+            println!(
+                "  {mark} {} — {}{tail}",
+                identity(&difference.id, style),
+                both_times(difference)
+            );
+        }
+    };
+    if !analysis.order_dependent.is_empty() {
+        println!(
+            "{}",
+            style.bold_red(&format!(
+                "{} on the order",
+                match analysis.order_dependent.len() {
+                    1 => "1 test depends".to_owned(),
+                    many => format!("{many} tests depend"),
+                }
+            ))
+        );
+        lines(&analysis.order_dependent, &style.red("✗"), ", twice each");
+    }
+    if !analysis.unstable.is_empty() {
+        println!(
+            "{} differed between the orders once, and not when both ran again — that is \
+             not an order's doing",
+            count(analysis.unstable.len(), "test")
+        );
+        lines(
+            &analysis.unstable,
+            &flaky_mark(style),
+            ", the first time only",
+        );
+    }
+    if !analysis.known_flakes.is_empty() {
+        println!(
+            "{} differed that the history already proved flaky — no word on order from {}",
+            count(analysis.known_flakes.len(), "test"),
+            if analysis.known_flakes.len() == 1 {
+                "it"
+            } else {
+                "them"
+            }
+        );
+        lines(&analysis.known_flakes, &flaky_mark(style), "");
+    }
+    let nothing_differed = analysis.order_dependent.is_empty()
+        && analysis.unstable.is_empty()
+        && analysis.known_flakes.is_empty();
+    if nothing_differed {
+        println!(
+            "no test behaved differently in the shuffled order — two orders are a sample, \
+             not a proof, and another seed is another sample"
+        );
+    }
+    if let Some(scope) = ended.scope {
+        println!("{}", style.dim(&format!("note: {scope}")));
+    }
+    println!(
+        "{}",
+        style.dim(&format!("replay this order: {}", ended.replay))
+    );
+    println!("{}", order_verdict(ended, style));
+}
+
+/// The closing line of an order pass. Three things it can say: a test
+/// followed the order; no test did, but a run was red anyway; or the two
+/// orders agreed on every test.
+fn order_verdict(ended: &OrderReport<'_>, style: Style) -> String {
+    let analysis = ended.analysis;
+    let total: Duration = ended.runs.iter().map(|run| run.outcome.duration).sum();
+    if analysis.found_dependence() {
+        return style.bold_red(&format!(
+            "result: ✗ ORDER-DEPENDENT — {} of {} ({total:.2?} total)",
+            analysis.order_dependent.len(),
+            count(analysis.compared, "test")
+        ));
+    }
+    if ended.failed {
+        return style.bold_red(&format!(
+            "result: ✗ FAILED — a run was red, and not because of the order \
+             ({total:.2?} total)"
+        ));
+    }
+    style.bold_green(&format!(
+        "result: ✓ NO DIFFERENCE — {} behaved the same in both orders, seed {} \
+         ({total:.2?} total)",
+        count(analysis.compared, "test"),
+        ended.seed
+    ))
+}
+
 /// Show a quiet run's output between two lines that say whose it is. The
 /// output is the runner's, byte for byte as it would have reached the
 /// terminal — both of its streams, in the order it wrote them — closed
@@ -43,14 +159,9 @@ pub fn print_run(number: usize, total: usize, outcome: &RunOutcome, style: Style
 /// stdout belongs to the JSON document.
 pub fn print_replay(replay: &Replay<'_>, to_stderr: bool, style: Style) {
     use std::io::Write;
-    let Replay {
-        number,
-        total,
-        why,
-        output,
-    } = replay;
-    let opening = style.dim(&format!("output of run {number}/{total}, {why}:"));
-    let closing = style.dim(&format!("end of the output of run {number}/{total}"));
+    let Replay { run, why, output } = replay;
+    let opening = style.dim(&format!("output of {run}, {why}:"));
+    let closing = style.dim(&format!("end of the output of {run}"));
     let newline: &[u8] = if output.last().is_some_and(|last| *last != b'\n') {
         b"\n"
     } else {

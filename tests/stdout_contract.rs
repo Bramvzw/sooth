@@ -1485,6 +1485,421 @@ fn pruning_the_history_changes_its_size_and_not_what_it_says() {
     assert_eq!(findings(&again), findings(&before));
 }
 
+/// A fake `phpunit` whose tests depend on the order they run in. `needs`
+/// passes only behind `setup`; `victim` fails behind `leak`. Asked for a
+/// random order (`--random-order-seed=N`) it runs them back to front, the
+/// same way for every seed. Knobs, through the environment: `TESTS` (the
+/// tests in their own order), `WOB_FAILS_IN` (the invocations in which the
+/// test `wob` fails), `HANG_IN` (the invocation in which the test `hangs`
+/// never comes back), `KEEP_ORDER` (ignore the shuffle). It writes down the
+/// seed of every invocation in `seeds`, an empty line for none.
+fn write_order_runner(dir: &Path) {
+    write_executable(
+        dir,
+        "phpunit",
+        concat!(
+            "#!/bin/sh\n",
+            "n=$(( $(cat invocations 2>/dev/null || echo 0) + 1 )); echo $n > invocations\n",
+            "seed=''; report=''; prev=''\n",
+            "for a in \"$@\"; do\n",
+            "  case \"$a\" in --random-order-seed=*) seed=\"${a#--random-order-seed=}\" ;; esac\n",
+            "  [ \"$prev\" = '--log-junit' ] && report=\"$a\"\n",
+            "  prev=\"$a\"\n",
+            "done\n",
+            "echo \"$seed\" >> seeds\n",
+            "order=${TESTS:-setup needs victim leak steady}\n",
+            "if [ -n \"$seed\" ] && [ -z \"${KEEP_ORDER:-}\" ]; then\n",
+            "  back=''; for t in $order; do back=\"$t $back\"; done; order=$back\n",
+            "fi\n",
+            "cases=''; ran=' '; failed=''\n",
+            "for t in $order; do\n",
+            "  fail=''\n",
+            "  case \"$t\" in\n",
+            "    needs) case \"$ran\" in *' setup '*) ;; *) fail=1 ;; esac ;;\n",
+            "    victim) case \"$ran\" in *' leak '*) fail=1 ;; esac ;;\n",
+            "    wob) case \" ${WOB_FAILS_IN:-} \" in *\" $n \"*) fail=1 ;; esac ;;\n",
+            "    hangs) [ \"${HANG_IN:-}\" != \"$n\" ] || { echo $$ > hanging; exec sleep 30; } ;;\n",
+            "  esac\n",
+            "  if [ -n \"$fail\" ]; then\n",
+            "    cases=\"$cases<testcase classname=\\\"c\\\" name=\\\"$t\\\"><failure/></testcase>\"; failed=1\n",
+            "  else\n",
+            "    cases=\"$cases<testcase classname=\\\"c\\\" name=\\\"$t\\\"/>\"\n",
+            "  fi\n",
+            "  ran=\"$ran$t \"\n",
+            "done\n",
+            "printf '<testsuite>%s</testsuite>' \"$cases\" > \"$report\"\n",
+            "echo \"ran: $order\"\n",
+            "[ -z \"$failed\" ]\n",
+        ),
+    );
+}
+
+/// `sooth order --color never <args> -- ./phpunit` in `cwd`, with `envs`
+/// for the fake runner.
+fn order_pass(cwd: &Path, args: &[&str], envs: &[(&str, &str)]) -> std::process::Output {
+    Command::new(env!("CARGO_BIN_EXE_sooth"))
+        .current_dir(cwd)
+        .envs(envs.iter().copied())
+        .args(["order", "--color", "never"])
+        .args(args)
+        .args(["--", "./phpunit"])
+        .output()
+        .expect("sooth should run")
+}
+
+fn lines_of(cwd: &Path, file: &str) -> Vec<String> {
+    std::fs::read_to_string(cwd.join(file))
+        .unwrap_or_default()
+        .lines()
+        .map(str::to_owned)
+        .collect()
+}
+
+#[test]
+fn the_order_pass_finds_the_tests_whose_result_follows_the_order() {
+    let cwd = Scratch::new("order-finds");
+    write_order_runner(&cwd);
+    let output = order_pass(&cwd, &[], &[]);
+    let stdout = String::from_utf8(output.stdout).expect("stdout should be UTF-8");
+    let stderr = String::from_utf8(output.stderr).expect("stderr should be UTF-8");
+
+    // A test that fails in another order fails a run: exit 1.
+    assert_eq!(output.status.code(), Some(1), "got: {stdout:?} {stderr:?}");
+    // Your order, shuffled — and, because tests differed, both once more.
+    let seeds = lines_of(&cwd, "seeds");
+    assert_eq!(seeds.len(), 4, "got: {seeds:?}");
+    assert!(seeds[0].is_empty() && seeds[3].is_empty(), "got: {seeds:?}");
+    assert!(
+        !seeds[1].is_empty() && seeds[1] == seeds[2],
+        "one seed, replayed: {seeds:?}"
+    );
+    let seed = &seeds[1];
+    for line in [
+        "your order: runner exit=0".to_owned(),
+        format!("shuffled, seed {seed}: runner exit=1"),
+        format!("shuffled again, seed {seed}: runner exit=1"),
+        "your order again: runner exit=0".to_owned(),
+        "tests: 5 tests compared in both orders".to_owned(),
+        "2 tests depend on the order".to_owned(),
+        "  ✗ c::needs — passed in your order, failed shuffled, twice each".to_owned(),
+        "  ✗ c::victim — passed in your order, failed shuffled, twice each".to_owned(),
+        format!("replay this order: sooth order --seed {seed} -- ./phpunit"),
+        "result: ✗ ORDER-DEPENDENT — 2 of 5 tests".to_owned(),
+    ] {
+        assert!(stdout.contains(&line), "missing {line:?} in {stdout:?}");
+    }
+    // Quiet runs: the runner speaks once, for the first run that failed.
+    assert!(
+        stdout.contains(
+            "output of the shuffled run, the first that failed:\nran: steady leak victim needs setup \n"
+        ),
+        "got: {stdout:?}"
+    );
+    assert_eq!(stdout.matches("ran: ").count(), 1, "got: {stdout:?}");
+    assert!(
+        stderr.contains("using `--preset phpunit`, inferred from `./phpunit`"),
+        "got: {stderr:?}"
+    );
+    // The run in the suite's own order is an ordinary run and is recorded;
+    // the shuffled ones would read as flakes to the history and are not.
+    assert_eq!(lines_of(&cwd, ".sooth/history.jsonl").len(), 5);
+}
+
+#[test]
+fn the_order_pass_replays_the_order_of_a_seed_it_is_given() {
+    let cwd = Scratch::new("order-seed");
+    write_order_runner(&cwd);
+    let output = order_pass(&cwd, &["--no-history", "--seed", "7"], &[]);
+    let stdout = String::from_utf8(output.stdout).expect("stdout should be UTF-8");
+
+    assert_eq!(output.status.code(), Some(1), "got: {stdout:?}");
+    assert_eq!(lines_of(&cwd, "seeds"), ["", "7", "7", ""]);
+    assert!(
+        stdout.contains("replay this order: sooth order --seed 7 -- ./phpunit"),
+        "got: {stdout:?}"
+    );
+    assert!(!cwd.join(".sooth").exists(), "--no-history records nothing");
+}
+
+#[test]
+fn two_orders_that_agree_are_two_runs_and_a_sample_not_a_proof() {
+    let cwd = Scratch::new("order-agrees");
+    write_order_runner(&cwd);
+    let output = order_pass(&cwd, &["--no-history"], &[("TESTS", "a b c")]);
+    let stdout = String::from_utf8(output.stdout).expect("stdout should be UTF-8");
+
+    assert_eq!(output.status.code(), Some(0), "got: {stdout:?}");
+    assert_eq!(lines_of(&cwd, "seeds").len(), 2, "nothing to run again");
+    assert!(
+        stdout.contains(
+            "no test behaved differently in the shuffled order — two orders are a sample, \
+             not a proof"
+        ),
+        "got: {stdout:?}"
+    );
+    assert!(
+        stdout.contains("result: ✓ NO DIFFERENCE — 3 tests behaved the same in both orders, seed "),
+        "got: {stdout:?}"
+    );
+    assert!(
+        !stdout.contains("ran: "),
+        "a green pass stays quiet: {stdout:?}"
+    );
+}
+
+#[test]
+fn a_difference_that_does_not_hold_is_not_called_an_order_dependency() {
+    let cwd = Scratch::new("order-flake");
+    write_order_runner(&cwd);
+    // `wob` fails in invocation 2, the first shuffled run, and never again.
+    let output = order_pass(
+        &cwd,
+        &["--no-history"],
+        &[("TESTS", "a wob b"), ("WOB_FAILS_IN", "2")],
+    );
+    let stdout = String::from_utf8(output.stdout).expect("stdout should be UTF-8");
+
+    assert_eq!(output.status.code(), Some(1), "a run was red: {stdout:?}");
+    assert_eq!(lines_of(&cwd, "seeds").len(), 4);
+    assert!(
+        stdout.contains(
+            "1 test differed between the orders once, and not when both ran again — that \
+             is not an order's doing"
+        ),
+        "got: {stdout:?}"
+    );
+    assert!(
+        stdout.contains("  ~ c::wob — passed in your order, failed shuffled, the first time only"),
+        "got: {stdout:?}"
+    );
+    assert!(!stdout.contains("ORDER-DEPENDENT"), "got: {stdout:?}");
+    assert!(
+        stdout.contains("result: ✗ FAILED — a run was red, and not because of the order"),
+        "got: {stdout:?}"
+    );
+}
+
+#[test]
+fn a_flake_in_the_first_run_is_not_a_test_that_fails_in_your_order() {
+    let cwd = Scratch::new("order-flake-first");
+    write_order_runner(&cwd);
+    // `wob` fails in invocation 1 only: red in your order once, green in
+    // the shuffled order twice. Only your order, run again, tells.
+    let output = order_pass(
+        &cwd,
+        &["--no-history"],
+        &[("TESTS", "a wob b"), ("WOB_FAILS_IN", "1")],
+    );
+    let stdout = String::from_utf8(output.stdout).expect("stdout should be UTF-8");
+
+    assert_eq!(output.status.code(), Some(1), "got: {stdout:?}");
+    assert!(
+        stdout.contains("  ~ c::wob — failed in your order, passed shuffled, the first time only"),
+        "got: {stdout:?}"
+    );
+    assert!(!stdout.contains("ORDER-DEPENDENT"), "got: {stdout:?}");
+}
+
+#[test]
+fn the_order_pass_refuses_what_it_cannot_do_before_it_runs_anything() {
+    let cwd = Scratch::new("order-refuses");
+    write_order_runner(&cwd);
+    let refused = |args: &[&str], command: &[&str]| {
+        let output = Command::new(env!("CARGO_BIN_EXE_sooth"))
+            .current_dir(&cwd)
+            .args(["order", "--color", "never"])
+            .args(args)
+            .arg("--")
+            .args(command)
+            .output()
+            .expect("sooth should run");
+        assert_eq!(output.status.code(), Some(2), "{args:?} {command:?}");
+        String::from_utf8(output.stderr).expect("stderr should be UTF-8")
+    };
+    assert!(refused(&["--preset", "pytest"], &["./phpunit"]).contains("cannot shuffle pytest yet"));
+    assert!(refused(&[], &["./phpunit", "--order-by=defects"])
+        .contains("the command sets an order of its own (`--order-by=defects`)"));
+    assert!(refused(&[], &["./phpunit", "--parallel"]).contains("spreads the tests over workers"));
+    // A command that names no runner sooth knows.
+    assert!(refused(&[], &["sh", "-c", "true"]).contains("it has to know the runner"));
+    assert!(
+        !cwd.join("invocations").exists(),
+        "nothing ran for a pass that was refused"
+    );
+}
+
+#[test]
+fn a_shuffle_that_changed_nothing_is_a_pass_that_was_not_made() {
+    let cwd = Scratch::new("order-unchanged");
+    write_order_runner(&cwd);
+    // The runner ignores the shuffle, as it does when its own configuration
+    // sets an order. A seed that was asked for is not second-guessed.
+    let output = order_pass(
+        &cwd,
+        &["--no-history", "--seed", "3"],
+        &[("KEEP_ORDER", "1")],
+    );
+    let stderr = String::from_utf8(output.stderr).expect("stderr should be UTF-8");
+    assert_eq!(output.status.code(), Some(2), "got: {stderr:?}");
+    assert!(
+        stderr.contains(
+            "the shuffled run (seed 3) ran the tests in the order they already ran in, so \
+             the order pass compared nothing"
+        ),
+        "got: {stderr:?}"
+    );
+    assert_eq!(lines_of(&cwd, "seeds").len(), 2);
+
+    // Without one, a few more seeds are tried before giving up.
+    std::fs::remove_file(cwd.join("seeds")).expect("remove");
+    let output = order_pass(&cwd, &["--no-history"], &[("KEEP_ORDER", "1")]);
+    let stderr = String::from_utf8(output.stderr).expect("stderr should be UTF-8");
+    assert_eq!(output.status.code(), Some(2), "got: {stderr:?}");
+    assert_eq!(
+        lines_of(&cwd, "seeds").len(),
+        6,
+        "one given run, five seeds"
+    );
+    assert!(stderr.contains("trying another"), "got: {stderr:?}");
+
+    // One test has no order to depend on.
+    let output = order_pass(&cwd, &["--no-history"], &[("TESTS", "only")]);
+    let stderr = String::from_utf8(output.stderr).expect("stderr should be UTF-8");
+    assert_eq!(output.status.code(), Some(2), "got: {stderr:?}");
+    assert!(
+        stderr.contains("needs at least two tests that ran in both runs, and found 1"),
+        "got: {stderr:?}"
+    );
+}
+
+#[test]
+fn a_test_the_history_proved_flaky_is_not_called_order_dependent() {
+    let cwd = Scratch::new("order-known-flake");
+    write_order_runner(&cwd);
+    // The history has seen `c::wob` pass and fail on one clean commit.
+    std::fs::create_dir_all(cwd.join(".sooth")).expect("mkdir");
+    let seen = |at: u32, status: &str| {
+        format!(
+            r#"{{"at":{at},"commit":"aaa","dirty":false,"env":"local","run":"run-{at}-1","status":"{status}","id":"c::wob"}}"#
+        ) + "\n"
+    };
+    std::fs::write(
+        cwd.join(".sooth/history.jsonl"),
+        seen(1, "passed") + &seen(2, "failed") + &seen(3, "passed"),
+    )
+    .expect("write history");
+    // Here it fails in both shuffled runs and in neither of the others:
+    // what an order-dependent test does, and what a flake can do too.
+    let output = order_pass(&cwd, &[], &[("TESTS", "a wob b"), ("WOB_FAILS_IN", "2 3")]);
+    let stdout = String::from_utf8(output.stdout).expect("stdout should be UTF-8");
+
+    assert_eq!(output.status.code(), Some(1), "got: {stdout:?}");
+    assert!(
+        stdout.contains(
+            "1 test differed that the history already proved flaky — no word on order from it"
+        ),
+        "got: {stdout:?}"
+    );
+    assert!(
+        stdout.contains("  ~ c::wob — passed in your order, failed shuffled"),
+        "got: {stdout:?}"
+    );
+    assert!(!stdout.contains("ORDER-DEPENDENT"), "got: {stdout:?}");
+
+    // Without the history there is nothing to hold against the four runs.
+    std::fs::remove_file(cwd.join("invocations")).expect("remove");
+    let output = order_pass(
+        &cwd,
+        &["--no-history"],
+        &[("TESTS", "a wob b"), ("WOB_FAILS_IN", "2 3")],
+    );
+    let stdout = String::from_utf8(output.stdout).expect("stdout should be UTF-8");
+    assert!(
+        stdout.contains("1 test depends on the order"),
+        "got: {stdout:?}"
+    );
+}
+
+#[test]
+fn an_order_pass_that_is_cut_short_reports_nothing_and_exits_two() {
+    use std::os::unix::process::CommandExt;
+    use std::process::Stdio;
+    let cwd = Scratch::new("order-interrupted");
+    write_order_runner(&cwd);
+    std::fs::create_dir_all(cwd.join("tmp")).expect("mkdir");
+    // The shuffled run, the second invocation, never comes back.
+    let child = Command::new(env!("CARGO_BIN_EXE_sooth"))
+        .current_dir(&cwd)
+        .env("TMPDIR", cwd.join("tmp"))
+        .env("TESTS", "a hangs b")
+        .env("HANG_IN", "2")
+        .args([
+            "order",
+            "--no-history",
+            "--color",
+            "never",
+            "--",
+            "./phpunit",
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .process_group(0)
+        .spawn()
+        .expect("sooth should start");
+    wait_for(&cwd.join("hanging"));
+    send_signal("-INT", &format!("-{}", child.id()));
+    let output = child.wait_with_output().expect("sooth should exit");
+    let stdout = String::from_utf8(output.stdout).expect("stdout should be UTF-8");
+    let stderr = String::from_utf8(output.stderr).expect("stderr should be UTF-8");
+
+    assert_eq!(output.status.code(), Some(2), "got: {stdout:?} {stderr:?}");
+    assert!(
+        stderr.contains(
+            "interrupted during the shuffled run — the order pass compares whole runs, so \
+             there is nothing to report"
+        ),
+        "got: {stderr:?}"
+    );
+    assert!(
+        !stdout.contains("result:"),
+        "no verdict on half a pass: {stdout:?}"
+    );
+    let leftovers: Vec<_> = std::fs::read_dir(cwd.join("tmp")).expect("tmp").collect();
+    assert!(
+        leftovers.is_empty(),
+        "nothing left in the temp dir: {leftovers:?}"
+    );
+}
+
+#[test]
+fn the_order_pass_under_bare_json_prints_the_document_and_nothing_else() {
+    let cwd = Scratch::new("order-json");
+    write_order_runner(&cwd);
+    let output = order_pass(&cwd, &["--no-history", "--seed", "7", "--json"], &[]);
+    let stdout = String::from_utf8(output.stdout).expect("stdout should be UTF-8");
+    let stderr = String::from_utf8(output.stderr).expect("stderr should be UTF-8");
+
+    assert_eq!(output.status.code(), Some(1), "got: {stdout:?}");
+    assert_eq!(stdout.lines().count(), 1, "one line of JSON: {stdout:?}");
+    assert!(
+        stdout.starts_with(r#"{"schema_version":1,"sooth_version":""#),
+        "got: {stdout:?}"
+    );
+    for part in [
+        r#""order":{"seed":7,"compared":5,"runs":[{"order":"given","exit_code":0,"success":true,"#,
+        r#"{"order":"shuffled","seed":7,"exit_code":1,"success":false,"#,
+        r#""order_dependent":[{"name":"c::needs","passed_in":"given"},{"name":"c::victim","passed_in":"given"}],"unstable":[],"known_flakes":[]}}"#,
+    ] {
+        assert!(stdout.contains(part), "missing {part} in {stdout:?}");
+    }
+    assert_eq!(stdout.matches(r#""order":"shuffled""#).count(), 2);
+    // What the quiet runs wrote goes to stderr: stdout is the document's.
+    assert!(
+        stderr.contains("output of the shuffled run, the first that failed:"),
+        "got: {stderr:?}"
+    );
+}
+
 #[test]
 fn json_to_a_file_keeps_the_human_report_on_stdout() {
     let (cwd, mut command) = sooth_in("json-file");

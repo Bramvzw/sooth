@@ -1,8 +1,8 @@
 //! The machine report: one JSON document per command, hand-rolled (see
 //! `DECISIONS.md`). Nothing here prints; a document is a `String`.
 
-use super::{Analyses, Interrupted, JunitSummary};
-use crate::analyzers::{explain, flaky, history};
+use super::{Analyses, Interrupted, JunitSummary, OrderReport};
+use crate::analyzers::{explain, flaky, history, order};
 use crate::json::escape;
 use crate::runner::RunOutcome;
 use crate::verify;
@@ -126,6 +126,59 @@ pub fn to_json(outcomes: &[RunOutcome], summary: &JunitSummary, analyses: &Analy
         summary.error,
         summary.skipped,
         slowest.join(","),
+    )
+}
+
+/// The whole machine output of `sooth order`: the seed that replays the
+/// shuffled order, the runs that were made, and every test that differed
+/// under what the pass made of it. Its own document, versioned like the
+/// run's.
+pub fn order_json(ended: &OrderReport<'_>) -> String {
+    let runs: Vec<String> = ended
+        .runs
+        .iter()
+        .map(|run| {
+            let exit_code = run
+                .outcome
+                .exit_code
+                .map_or_else(|| "null".to_owned(), |code| code.to_string());
+            let order = run.seed.map_or_else(
+                || r#""order":"given""#.to_owned(),
+                |seed| format!(r#""order":"shuffled","seed":{seed}"#),
+            );
+            format!(
+                r#"{{{order},"exit_code":{exit_code},"success":{},"duration_seconds":{}}}"#,
+                run.outcome.success,
+                run.outcome.duration.as_secs_f64()
+            )
+        })
+        .collect();
+    let differences = |differences: &[order::Difference]| -> String {
+        differences
+            .iter()
+            .map(|difference| {
+                format!(
+                    r#"{{"name":"{}","passed_in":"{}"}}"#,
+                    escape(&difference.id),
+                    match difference.passed_in {
+                        order::PassedIn::Given => "given",
+                        order::PassedIn::Shuffled => "shuffled",
+                    }
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(",")
+    };
+    let analysis = ended.analysis;
+    format!(
+        r#"{{"schema_version":{JSON_SCHEMA_VERSION},"sooth_version":"{}","order":{{"seed":{},"compared":{},"runs":[{}],"order_dependent":[{}],"unstable":[{}],"known_flakes":[{}]}}}}"#,
+        env!("CARGO_PKG_VERSION"),
+        ended.seed,
+        analysis.compared,
+        runs.join(","),
+        differences(&analysis.order_dependent),
+        differences(&analysis.unstable),
+        differences(&analysis.known_flakes),
     )
 }
 
@@ -346,6 +399,54 @@ mod tests {
     use crate::analyzers::{explain, flaky};
     use crate::junit::{JunitReport, TestStatus};
     use crate::report::{Analyses, JunitSummary};
+
+    #[test]
+    fn the_order_json_carries_the_seed_the_runs_and_every_difference_by_what_it_proves() {
+        use crate::analyzers::order::{Analysis, Difference, PassedIn};
+        use crate::report::{OrderReport, OrderRun};
+        let difference = |id: &str, passed_in| Difference {
+            id: id.to_owned(),
+            passed_in,
+        };
+        let analysis = Analysis {
+            compared: 9,
+            order_dependent: vec![difference("c::needs", PassedIn::Given)],
+            unstable: vec![difference("c::\"wob\"", PassedIn::Shuffled)],
+            known_flakes: vec![difference("c::old", PassedIn::Given)],
+        };
+        let runs = [
+            OrderRun {
+                seed: None,
+                outcome: outcome(true),
+            },
+            OrderRun {
+                seed: Some(42),
+                outcome: outcome(false),
+            },
+        ];
+        let json = super::order_json(&OrderReport {
+            analysis: &analysis,
+            seed: 42,
+            runs: &runs,
+            failed: true,
+            replay: "sooth order --seed 42 -- phpunit",
+            scope: None,
+        });
+        assert_eq!(
+            json,
+            format!(
+                concat!(
+                    r#"{{"schema_version":1,"sooth_version":"{}","order":{{"seed":42,"compared":9,"#,
+                    r#""runs":[{{"order":"given","exit_code":0,"success":true,"duration_seconds":0.001}},"#,
+                    r#"{{"order":"shuffled","seed":42,"exit_code":1,"success":false,"duration_seconds":0.001}}],"#,
+                    r#""order_dependent":[{{"name":"c::needs","passed_in":"given"}}],"#,
+                    r#""unstable":[{{"name":"c::\"wob\"","passed_in":"shuffled"}}],"#,
+                    r#""known_flakes":[{{"name":"c::old","passed_in":"given"}}]}}}}"#
+                ),
+                env!("CARGO_PKG_VERSION")
+            )
+        );
+    }
 
     #[test]
     fn the_json_says_what_sooth_was_doing_when_it_was_asked_to_stop() {

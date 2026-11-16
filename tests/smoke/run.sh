@@ -5,7 +5,8 @@
 # what sooth does, but not how a real runner parses the command sooth builds
 # or what its reporter writes — which is where the bugs of v0.2 and v0.3 were.
 # Each flavour here is a three-test project: one steady test, one that fails
-# on every second invocation, one that always fails.
+# on every second invocation, one that always fails. The order pass gets
+# four more, written here, that depend on the order they run in.
 #
 #   tests/smoke/run.sh <phpunit|pest|composer|jest|pytest>
 #
@@ -61,6 +62,16 @@ run() {
   echo "── $flavour: $label"
   set +e
   output=$("$sooth" run --color never "$@" 2>&1)
+  status=$?
+  set -e
+}
+
+# order <label> <sooth arguments…>: the same for `sooth order`.
+order() {
+  label=$1; shift
+  echo "── $flavour: $label"
+  set +e
+  output=$("$sooth" order --color never "$@" 2>&1)
   status=$?
   set -e
 }
@@ -157,6 +168,43 @@ case "$flavour" in
     expect 'Drop `--parallel`'
     ;;
 esac
+
+# 6. The order pass: four tests that each pass only in their own place in
+#    the file, so any shuffle of the file flips at least two of them. Which
+#    seed shuffles it is the runner's business: the first of four that does.
+rm -f "${new:-}"
+case "$project" in
+  phpunit) queue=tests/QueueTest.php; queued='QueueTest::test_'
+    printf '<?php\nuse PHPUnit\\Framework\\TestCase;\nfinal class QueueTest extends TestCase\n{\n    private static int $served = 0;\n    public function test_first(): void { $this->assertSame(1, ++self::$served); }\n    public function test_second(): void { $this->assertSame(2, ++self::$served); }\n    public function test_third(): void { $this->assertSame(3, ++self::$served); }\n    public function test_fourth(): void { $this->assertSame(4, ++self::$served); }\n}\n' > "$queue" ;;
+  pest)    queue=tests/QueueTest.php; queued='QueueTest::'
+    printf "<?php\nfinal class Queue { public static int \$served = 0; }\ntest('first', fn () => expect(++Queue::\$served)->toBe(1));\ntest('second', fn () => expect(++Queue::\$served)->toBe(2));\ntest('third', fn () => expect(++Queue::\$served)->toBe(3));\ntest('fourth', fn () => expect(++Queue::\$served)->toBe(4));\n" > "$queue" ;;
+  jest)    queue=queue.test.js; queued='queue.test.js::'
+    printf "let served = 0;\ntest('first', () => { expect(++served).toBe(1); });\ntest('second', () => { expect(++served).toBe(2); });\ntest('third', () => { expect(++served).toBe(3); });\ntest('fourth', () => { expect(++served).toBe(4); });\n" > "$queue" ;;
+esac
+if [ "$project" = pytest ]; then
+  # pytest has no random order of its own: refused before anything runs.
+  order "order, a runner sooth cannot shuffle" --no-history -- "${runner[@]}"
+  expect_exit 2
+  expect "cannot shuffle pytest yet"
+else
+  found=""
+  for seed in 1 2 3 4; do
+    # wobbly passes in the first run and fails in the second: a difference
+    # between the orders that does not hold when both run again.
+    echo 0 > "$SMOKE_COUNTER"
+    order "order, seed $seed" --no-history --seed "$seed" ${preset[@]+"${preset[@]}"} -- "${runner[@]}"
+    if grep -qF "on the order" <<<"$output"; then found=$seed; break; fi
+  done
+  [ -n "$found" ] || fail "none of the seeds 1 to 4 changed the order inside the file"
+  expect_exit 1
+  expect "shuffled, seed $found: "
+  expect "shuffled again, seed $found: "
+  expect "your order again: "
+  expect_on_line "$queued" "twice each"
+  expect_on_line "$wobbly" "the first time only"
+  expect "replay this order: sooth order --seed $found"
+  expect "result: ✗ ORDER-DEPENDENT — "
+fi
 
 if [ "$failures" -gt 0 ]; then
   echo "$flavour: $failures check(s) failed"

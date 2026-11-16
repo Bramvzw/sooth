@@ -150,6 +150,90 @@ impl Plan {
         Some((self.with(args), envs))
     }
 
+    /// The command for a run in a shuffled order that `seed` fixes: the
+    /// reporter flags, then the runner's own way of asking for a random
+    /// order. The same seed gives the same order again, which is what makes
+    /// a finding of the order pass something to replay. `None` when sooth
+    /// cannot ask this runner for one (see [`Plan::order_refusal`]).
+    pub fn shuffled(&self, report: &Path, seed: u32) -> Option<Spawn> {
+        let order = order_args(self.preset, seed)?;
+        let Injection { mut args, envs } = injection(self.preset, report);
+        args.extend(order);
+        Some((self.with(args), envs))
+    }
+
+    /// Why the order pass cannot run this command, if it cannot: a runner
+    /// sooth cannot ask for a seeded order, a command that spreads its tests
+    /// over workers, or one that already sets an order. Only what the
+    /// command line shows is seen — an order set in `phpunit.xml` or inside
+    /// a Composer script is not, and the pass checks afterwards whether its
+    /// shuffle changed the order at all.
+    pub fn order_refusal(&self) -> Option<String> {
+        match self.preset {
+            Preset::Pytest => {
+                return Some(
+                    "`sooth order` cannot shuffle pytest yet: pytest has no random order \
+                     of its own — it takes a plugin (pytest-randomly, pytest-random-order), \
+                     and sooth does not drive those"
+                        .to_owned(),
+                );
+            }
+            Preset::Go => {
+                return Some(
+                    "`sooth order` cannot shuffle Go tests yet: `go test -shuffle` goes \
+                     behind gotestsum's `--`, where sooth does not put flags"
+                        .to_owned(),
+                );
+            }
+            Preset::Phpunit | Preset::Jest => {}
+        }
+        let arguments = self.runner_arguments();
+        let parallel = if self.preset == Preset::Phpunit {
+            if self.shape == Shape::Runner && is_named(&self.command, 0, &["paratest"]) {
+                Some("paratest")
+            } else {
+                arguments
+                    .iter()
+                    .map(String::as_str)
+                    .find(|arg| matches!(*arg, "--parallel" | "-p"))
+            }
+        } else {
+            None
+        };
+        if let Some(parallel) = parallel {
+            return Some(format!(
+                "an order is what one process runs: `{parallel}` spreads the tests over \
+                 workers, and no seed fixes which test runs behind which there. Run the \
+                 order pass without it"
+            ));
+        }
+        let own_order: &[&str] = match self.preset {
+            Preset::Phpunit => &["--order-by", "--random-order", "--reverse-order"],
+            Preset::Jest => &["--randomize", "--seed"],
+            Preset::Pytest | Preset::Go => &[],
+        };
+        let flag = arguments
+            .iter()
+            .find(|arg| own_order.iter().any(|flag| arg.starts_with(flag)))?;
+        Some(format!(
+            "the command sets an order of its own (`{flag}`). The order pass runs the \
+             suite once the way it normally runs and once in an order sooth picks: \
+             leave `{flag}` out of the command for it"
+        ))
+    }
+
+    /// What the shuffle of this runner does not reach, when that is worth
+    /// knowing before reading "no difference".
+    pub fn shuffle_scope(&self) -> Option<&'static str> {
+        match self.preset {
+            Preset::Jest => Some(
+                "jest shuffles the tests inside each file; the files themselves run \
+                 apart from each other",
+            ),
+            Preset::Phpunit | Preset::Pytest | Preset::Go => None,
+        }
+    }
+
     /// The preset this command runs under.
     pub fn preset(&self) -> Preset {
         self.preset
@@ -508,6 +592,21 @@ fn selection_args(preset: Preset, names: &[String]) -> Option<Vec<String>> {
     }
 }
 
+/// The flags that make `preset`'s runner shuffle its tests under `seed`,
+/// reproducibly: the same seed, the same order. `None` for a runner sooth
+/// cannot ask.
+fn order_args(preset: Preset, seed: u32) -> Option<Vec<String>> {
+    match preset {
+        // Pest and `artisan test` hand both to PHPUnit unchanged.
+        Preset::Phpunit => Some(vec![
+            "--order-by=random".to_owned(),
+            format!("--random-order-seed={seed}"),
+        ]),
+        Preset::Jest => Some(vec!["--randomize".to_owned(), format!("--seed={seed}")]),
+        Preset::Pytest | Preset::Go => None,
+    }
+}
+
 /// Whether a runner can be pointed at the test with this raw `name`. An
 /// empty one — or, for pytest, one that is empty before its `[parameters]`
 /// — turns `--filter '/::()/'`, `-t '()'` or `-k ''` into "every test".
@@ -707,6 +806,86 @@ mod tests {
         names: &[String],
     ) -> Option<Spawn> {
         Plan::resolve(command, preset).rerun(report, names)
+    }
+
+    fn words(command: &[&str]) -> Vec<String> {
+        command.iter().map(|word| (*word).to_owned()).collect()
+    }
+
+    #[test]
+    fn a_shuffled_run_asks_each_runner_for_a_seeded_order_where_its_flags_go() {
+        let report = Path::new("/tmp/r.xml");
+        let shuffled = |command: &[&str], preset| {
+            Plan::resolve(&words(command), preset)
+                .shuffled(report, 42)
+                .map(|(command, _)| command.join(" "))
+        };
+        assert_eq!(
+            shuffled(&["vendor/bin/phpunit", "tests"], Preset::Phpunit).as_deref(),
+            Some(
+                "vendor/bin/phpunit --log-junit /tmp/r.xml --order-by=random \
+                 --random-order-seed=42 tests"
+            )
+        );
+        assert_eq!(
+            shuffled(&["php", "artisan", "test"], Preset::Phpunit).as_deref(),
+            Some(
+                "php artisan test --log-junit /tmp/r.xml --order-by=random \
+                 --random-order-seed=42"
+            )
+        );
+        // Composer hands what follows the `--` to the script.
+        assert_eq!(
+            shuffled(&["composer", "test"], Preset::Phpunit).as_deref(),
+            Some(
+                "composer test -- --log-junit /tmp/r.xml --order-by=random \
+                 --random-order-seed=42"
+            )
+        );
+        assert_eq!(
+            shuffled(&["jest"], Preset::Jest).as_deref(),
+            Some("jest --reporters=default --reporters=jest-junit --randomize --seed=42")
+        );
+        assert_eq!(shuffled(&["pytest"], Preset::Pytest), None);
+        assert_eq!(shuffled(&["gotestsum"], Preset::Go), None);
+    }
+
+    #[test]
+    fn the_order_pass_refuses_what_it_cannot_shuffle_and_says_why() {
+        let refusal = |command: &[&str], preset| {
+            Plan::resolve(&words(command), preset)
+                .order_refusal()
+                .unwrap_or_default()
+        };
+        assert_eq!(refusal(&["vendor/bin/phpunit"], Preset::Phpunit), "");
+        assert_eq!(refusal(&["php", "artisan", "test"], Preset::Phpunit), "");
+        assert_eq!(refusal(&["jest", "--ci"], Preset::Jest), "");
+        // A runner sooth cannot ask for a seeded order.
+        assert!(refusal(&["pytest"], Preset::Pytest).contains("pytest has no random order"));
+        assert!(refusal(&["gotestsum"], Preset::Go).contains("go test -shuffle"));
+        // Workers: no seed fixes who runs behind whom.
+        for parallel in [
+            &["php", "artisan", "test", "--parallel"][..],
+            &["vendor/bin/pest", "-p"],
+            &["vendor/bin/paratest"],
+        ] {
+            assert!(
+                refusal(parallel, Preset::Phpunit).contains("spreads the tests over workers"),
+                "{parallel:?}"
+            );
+        }
+        // An order the command already sets.
+        assert!(refusal(
+            &["vendor/bin/phpunit", "--order-by=defects"],
+            Preset::Phpunit
+        )
+        .contains("`--order-by=defects`"));
+        assert!(refusal(
+            &["vendor/bin/phpunit", "--random-order-seed", "7"],
+            Preset::Phpunit
+        )
+        .contains("sets an order of its own"));
+        assert!(refusal(&["jest", "--randomize"], Preset::Jest).contains("`--randomize`"));
     }
 
     #[test]

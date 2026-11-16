@@ -4,9 +4,11 @@
 //! holds what the commands share: how one fails, and how each reads and
 //! extends sooth's local files.
 
+mod capture;
 pub mod explain;
 pub mod history;
 pub mod import;
+pub mod order;
 pub mod run;
 
 use std::process::ExitCode;
