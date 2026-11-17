@@ -4482,6 +4482,162 @@ fn sooth_history_reads_the_evidence_without_touching_it() {
     assert_eq!(before, after, "a look at the history changed it");
 }
 
+/// History lines for `id`: one timed pass per invocation, `runs` of them on
+/// `commit` at `ms` each, local and clean. `first` numbers the invocations.
+fn timed_lines(id: &str, commit: &str, ms: u64, first: u64, runs: u64) -> String {
+    (first..first + runs)
+        .map(|run| {
+            format!(
+                r#"{{"at":{run},"commit":"{commit}","dirty":false,"env":"local","run":"r{run}","ms":{ms},"status":"passed","id":"{id}"}}"#
+            ) + "\n"
+        })
+        .collect()
+}
+
+#[test]
+fn a_test_that_takes_longer_since_a_commit_is_named_with_the_commit() {
+    let (cwd, mut command) = sooth_in("history-slower-since");
+    std::fs::create_dir_all(cwd.join(".sooth")).expect("mkdir");
+    // Three runs at 15 ms, then five at 284 ms from commit bbb on; a second
+    // test that got slower by too little to say, and one that did not move.
+    let history = [
+        timed_lines("c::export", "aaa", 15, 1, 3),
+        timed_lines("c::export", "bbb1234def", 284, 4, 5),
+        timed_lines("c::invoice", "aaa", 2, 1, 3),
+        timed_lines("c::invoice", "bbb1234def", 15, 4, 5),
+        timed_lines("c::steady", "aaa", 1200, 1, 3),
+        timed_lines("c::steady", "bbb1234def", 1250, 4, 5),
+    ]
+    .concat();
+    std::fs::write(cwd.join(".sooth/history.jsonl"), history).expect("write");
+
+    let output = command
+        .args(["history", "--color", "never"])
+        .output()
+        .expect("sooth should run");
+    let stdout = String::from_utf8(output.stdout).expect("stdout should be UTF-8");
+
+    assert_eq!(output.status.code(), Some(0), "slower is no failure");
+    assert!(
+        stdout.contains(
+            "slower since bbb1234 (local) — 1 test of the 2 that take 20ms or more:\n  \
+             ▲ c::export 15ms → 284ms (3 runs before, 5 since)\n"
+        ),
+        "got: {stdout:?}"
+    );
+    assert!(
+        !stdout.contains("c::invoice"),
+        "13 ms is not said: {stdout:?}"
+    );
+    assert!(!stdout.contains("c::steady"), "got: {stdout:?}");
+    assert!(!stdout.contains("nothing stands out"), "got: {stdout:?}");
+}
+
+#[test]
+fn many_tests_slower_at_one_commit_are_said_to_be_many_and_shown_in_part() {
+    let (cwd, mut command) = sooth_in("history-slower-many");
+    std::fs::create_dir_all(cwd.join(".sooth")).expect("mkdir");
+    // Twelve tests a hundred times as slow from one commit on, each by a
+    // little more than the one before it, among twenty that did not move:
+    // the typical test is as fast as it was, and twelve of thirty-two is a
+    // lot of tests to change at once. A debugger that traces PHP and
+    // leaves a call into C alone looks like this.
+    let slowed = (1..=12_u64).map(|test| {
+        let id = format!("c::t{test:02}");
+        timed_lines(&id, "aaa", 10, 1, 3) + &timed_lines(&id, "bbb1234def", 1000 + test, 4, 3)
+    });
+    let steady = (1..=20_u64).map(|test| {
+        let id = format!("c::s{test:02}");
+        timed_lines(&id, "aaa", 50, 1, 3) + &timed_lines(&id, "bbb1234def", 50, 4, 3)
+    });
+    let history: String = slowed.chain(steady).collect();
+    std::fs::write(cwd.join(".sooth/history.jsonl"), history).expect("write");
+
+    let output = command
+        .args(["history", "--color", "never"])
+        .output()
+        .expect("sooth should run");
+    let stdout = String::from_utf8(output.stdout).expect("stdout should be UTF-8");
+
+    assert!(
+        stdout.contains(
+            "slower since bbb1234 (local) — 12 tests of the 32 that take 20ms or more — that \
+             many at once can as well be the machine, a setting or something the tests \
+             share: sooth reads the clock, not the cause. The 3 that gained most:\n"
+        ),
+        "got: {stdout:?}"
+    );
+    // Three of them stand for the rest, the one that gained most first.
+    let shown: Vec<&str> = stdout.lines().filter(|line| line.contains("▲ ")).collect();
+    assert_eq!(shown.len(), 3, "got: {stdout:?}");
+    assert!(
+        shown[0].contains("c::t12 10ms → 1.0s (3 runs before, 3 since)")
+            && shown[2].contains("c::t10 "),
+        "got: {stdout:?}"
+    );
+    assert!(stdout.contains("  … and 9 more\n"), "got: {stdout:?}");
+}
+
+#[test]
+fn tests_that_got_slower_with_the_rest_of_the_suite_are_one_line_and_no_name() {
+    let (cwd, mut command) = sooth_in("history-slower-withheld");
+    std::fs::create_dir_all(cwd.join(".sooth")).expect("mkdir");
+    // Six tests, each 2.6 times as long from one commit on: what a laptop
+    // on battery does to a suite, and what a slower fixture they all use
+    // does. Not six findings.
+    let history: String = (1..=6_u64)
+        .map(|test| {
+            let id = format!("c::t{test}");
+            timed_lines(&id, "aaa", 100 * test, 1, 3)
+                + &timed_lines(&id, "bbb1234def", 260 * test, 4, 3)
+        })
+        .collect();
+    std::fs::write(cwd.join(".sooth/history.jsonl"), history).expect("write");
+
+    let output = command
+        .args(["history", "--color", "never"])
+        .output()
+        .expect("sooth should run");
+    let stdout = String::from_utf8(output.stdout).expect("stdout should be UTF-8");
+
+    assert_eq!(output.status.code(), Some(0));
+    assert!(
+        stdout.contains(
+            "slower since bbb1234 (local) — 6 tests by their own clock, not named: over the \
+             same runs, a quarter of the other tests that took 20ms or more before took 2.6 \
+             times as long or more, read from at least 5 of them. The machine, a setting or \
+             something the tests share.\n"
+        ),
+        "got: {stdout:?}"
+    );
+    assert!(!stdout.contains('▲'), "got: {stdout:?}");
+    assert!(!stdout.contains("nothing stands out"), "got: {stdout:?}");
+}
+
+#[test]
+fn a_history_in_which_nothing_got_slower_says_so_among_the_rest() {
+    let (cwd, mut command) = sooth_in("history-nothing-slower");
+    std::fs::create_dir_all(cwd.join(".sooth")).expect("mkdir");
+    std::fs::write(
+        cwd.join(".sooth/history.jsonl"),
+        timed_lines("c::steady", "aaa", 40, 1, 3) + &timed_lines("c::steady", "bbb", 44, 4, 3),
+    )
+    .expect("write");
+
+    let output = command
+        .args(["history", "--color", "never"])
+        .output()
+        .expect("sooth should run");
+    let stdout = String::from_utf8(output.stdout).expect("stdout should be UTF-8");
+    assert!(
+        stdout.contains(
+            "nothing stands out: no proven flakes, no failing-since pointers, no \
+             slower-since pointers"
+        ),
+        "got: {stdout:?}"
+    );
+}
+
 #[test]
 fn a_regression_prints_its_mark_and_the_commit_it_started_at() {
     let (cwd, mut command) = sooth_in("history-failing-since");

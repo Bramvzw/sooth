@@ -63,6 +63,19 @@ pub struct Observation {
     pub at_epoch_secs: u64,
 }
 
+impl Observation {
+    /// Whether this observation can ever be evidence: it was made on a tree
+    /// known to be clean. A dirty tree, or one whose state is unknown (no
+    /// git, a HEAD that moved during the run, an import without
+    /// `--commit`), is code sooth cannot name — such an observation counts
+    /// in the totals and proves nothing. The one definition: every
+    /// analysis and the "all N earlier observations were made on a dirty
+    /// tree" note must mean the same thing.
+    pub fn is_evidence(&self) -> bool {
+        self.dirty == Some(false)
+    }
+}
+
 /// A duration as the history stores it: whole milliseconds, which is finer
 /// than any slowness worth reporting and keeps the line short.
 pub fn whole_millis(duration: &std::time::Duration) -> u64 {

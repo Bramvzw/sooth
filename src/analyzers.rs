@@ -5,3 +5,4 @@ pub mod explain;
 pub mod flaky;
 pub mod history;
 pub mod order;
+pub mod slow;

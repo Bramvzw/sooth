@@ -292,6 +292,8 @@ mod tests {
                 failed_runs: 6,
             }],
             never_passed: Vec::new(),
+            slower_since: Vec::new(),
+            slower_withheld: Vec::new(),
         }
     }
 
