@@ -8,13 +8,13 @@
 # on every second invocation, one that always fails. The order pass gets
 # four more, written here, that depend on the order they run in.
 #
-#   tests/smoke/run.sh <phpunit|pest|composer|jest|pytest>
+#   tests/smoke/run.sh <phpunit|pest|composer|php|jest|pytest>
 #
 # Needs the runner's package manager (composer, npm) or the runner (pytest)
 # on PATH, and a built binary: target/debug/sooth, or $SOOTH.
 set -euo pipefail
 
-flavour=${1:?usage: run.sh <phpunit|pest|composer|jest|pytest>}
+flavour=${1:?usage: run.sh <phpunit|pest|composer|php|jest|pytest>}
 root=$(cd "$(dirname "$0")/../.." && pwd)
 sooth=${SOOTH:-$root/target/debug/sooth}
 [ -x "$sooth" ] || { echo "no sooth binary at $sooth — run cargo build first" >&2; exit 2; }
@@ -27,6 +27,10 @@ case "$flavour" in
   phpunit)  runner=(vendor/bin/phpunit);       broken='ShopTest::test_broken';  wobbly='ShopTest::test_wobbly' ;;
   pest)     runner=(vendor/bin/pest);          broken='ShopTest::broken';       wobbly='ShopTest::wobbly' ;;
   composer) runner=(composer test); project=phpunit; preset=(--preset phpunit)
+                                               broken='ShopTest::test_broken';  wobbly='ShopTest::test_wobbly' ;;
+  # PHPUnit as the script a PHP binary runs, behind an option of PHP's own:
+  # how a suite that needs more memory is started.
+  php)      runner=(php -d memory_limit=1G vendor/bin/phpunit); project=phpunit
                                                broken='ShopTest::test_broken';  wobbly='ShopTest::test_wobbly' ;;
   jest)     runner=(node_modules/.bin/jest); preset=(--preset jest)
                                                broken='shop.test.js::broken';   wobbly='shop.test.js::wobbly' ;;
@@ -160,6 +164,23 @@ case "$flavour" in
     output=$(cat "$work/identities.json")
     expect "shop.test.js::steady"
     expect "cart.test.js::steady"
+    ;;
+  php)
+    # Handed two files, the gate first asks PHPUnit for its version: through
+    # PHP as well, or the script alone would have to be executable.
+    chmod -x vendor/bin/phpunit
+    second=tests/SecondNewTest.php
+    printf '<?php\nuse PHPUnit\\Framework\\TestCase;\nfinal class SecondNewTest extends TestCase\n{\n    public function test_new(): void\n    {\n        $this->assertTrue(true);\n    }\n}\n' > "$second"
+    run "--changed, two files" --no-history --changed=HEAD --runs 2 -- "${runner[@]}"
+    expect_exit 0
+    expect "gate: 2 changed test files against HEAD"
+    refuse "could not read a PHPUnit version"
+    rm "$second"
+    # A script named with -f is not a shape sooth places its flags in: the
+    # run is made as typed, and only its exit code is read.
+    run "php -f, left as typed" --no-history -- php -f vendor/bin/phpunit tests/NewTest.php
+    expect_exit 0
+    expect "only the exit code was read"
     ;;
   phpunit)
     # The gate must not run in parallel, and says so before anything runs.

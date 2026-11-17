@@ -40,8 +40,8 @@ Presets: `pytest`, `phpunit` (also PHPUnit's relatives Pest and paratest;
 `--preset pest` is accepted), `jest` (needs the
 [`jest-junit`](https://github.com/jest-community/jest-junit) package) and
 `go` (gotestsum). When the command names its runner — `pytest`,
-`vendor/bin/pest`, `php artisan test`, `gotestsum` — sooth reads the preset
-from it and says so in one line; pass `--preset` yourself to choose, or to
+`vendor/bin/pest`, `php vendor/bin/phpunit`, `php artisan test`,
+`gotestsum` — sooth reads the preset from it and says so in one line; pass `--preset` yourself to choose, or to
 drop that line in a hook. Two things are never assumed: `jest`, because its
 preset needs a package your project may not have, and a script such as
 `composer test` or `npm test`, which can run anything. A run that ends up
@@ -54,15 +54,17 @@ instead: `sooth run --junit build/junit.xml -- vendor/bin/phpunit`.
 
 A preset needs the command after `--` to be the test runner itself — not a
 wrapper like `python -m pytest`, `npm test` or `npx jest` (the wrapper would
-get the flags). Laravel is the exception: the
-phpunit preset knows `php artisan test` and Composer scripts, and puts its
-flags where each of them forwards arguments, so Pest, PHPUnit and
-`--parallel` all work the way you run them every day:
+get the flags). PHP is the exception: the
+phpunit preset knows `php artisan test`, Composer scripts and a runner
+started through `php`, and puts its flags where each of them hands
+arguments on, so Pest, PHPUnit and `--parallel` all work the way you run
+them every day:
 
 ```
 sooth run -- php artisan test
 sooth run -- php artisan test --parallel
 sooth run -- vendor/bin/pest
+sooth run -- php -d memory_limit=1G vendor/bin/phpunit
 sooth run --preset phpunit -- composer test
 ```
 

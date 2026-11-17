@@ -2136,3 +2136,59 @@ test created). So every test the order pass finds runs by itself, twice:
 - **Not which test is responsible.** The direction is a fact about one
   test. The predecessor that leaks, or the one that sets up, takes a
   search through orders — `ROADMAP.md` keeps that out.
+
+## Behind a PHP binary, the runner is the script
+
+`sooth run --preset phpunit -- php vendor/bin/phpunit` could not run:
+sooth put `--log-junit` right behind the program, and `php` reads what
+stands in front of its script as its own options (#294, found by the
+review of the order pass and present since the preset existed). Without
+`--preset` the command was not recognised, and sooth read the exit code
+only. `php -d memory_limit=1G vendor/bin/phpunit` is how a suite that
+needs more memory is started, so this is an everyday command.
+
+- **The runner has an index.** `Shape::Runner` carries where the runner
+  stands: the program, or under the phpunit preset the script a PHP binary
+  runs. Injection, the runner's arguments (the order pass's refusals, the
+  gate's "already selects" check), the paratest refusals and the hint for
+  a missing report all read that index. Before, the gate took
+  `vendor/bin/phpunit` in `php vendor/bin/phpunit` for a selection of the
+  command's own, because it exists.
+- **The script is found behind the options that only set PHP up**, and
+  behind no other: no `php.ini` (`-n`), `-q`, `-C`, `-e`, `-H`, and the
+  ones with a value — `-d`, `-c` and, up to PHP 8.4, `-z` — in every
+  spelling PHP reads: letters in one word (`-nd memory_limit=1G`), the
+  value attached or in the next word, the long forms with and without
+  `=`. One function (`php_script`) for `artisan`, `composer.phar` and the
+  runners, so `php -d memory_limit=1G artisan test` works the same way.
+- **Any other option, and the command is left as typed.** The first
+  version skipped every option it did not know, and an independent review
+  found what that breaks. Behind `php -f <script>` PHP goes on reading
+  options of its own, so `--log-junit` there is PHP's again (PHP 8.5:
+  `Error in argument 3`); `-nf` is the same thing in one word; `php -l
+  vendor/bin/phpunit` lints the runner; behind `php --` the script comes
+  from stdin. A list of what to refuse would always miss one. So the list
+  is of what is known to be harmless, and anything else means sooth does
+  not read the command: it runs as it did before this change — exit code
+  only, or with `--preset phpunit` the flags behind `php`. Placing the
+  flags right behind `-f` would mean adding a `--` to the user's command
+  and knowing which words behind the script are still PHP's; nobody has
+  asked for that shape. One message is lost with it: `--preset phpunit --
+  php -f vendor/bin/paratest` was refused as paratest before anything ran,
+  and now stops on PHP's own error. Exit 2 either way, and no report in
+  either.
+- **Named, not guessed.** Without `--preset`, a script is taken for the
+  runner only by its name: `phpunit`, `pest`, `paratest`. `php
+  bin/run-tests.php` can be anything. With `--preset phpunit` the user has
+  said what the script is, and the flags go behind it whatever it is
+  called (`php tools/phpunit.phar`).
+- **The version is asked the same way.** The gate asks PHPUnit for its
+  version before it hands it several files. A script that is run through
+  `php` need not be executable, so the probe is the command up to the
+  runner, `php` and its options included. Under `--preset phpunit` that
+  runs whatever script the command names once more, with `--version`: the
+  same trust the gate already put in a runner that is the program.
+- **Only for PHP.** `python -m pytest` and `npx jest` are wrappers of
+  another kind — a module flag and a package runner, each with its own
+  rules for what follows. They are left as they were: the README asks for
+  the runner itself there.

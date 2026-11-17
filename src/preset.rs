@@ -86,10 +86,13 @@ pub struct Plan {
 /// The command shapes the presets know.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Shape {
-    /// The program is the runner itself: the arguments go right after it.
-    /// They must precede any `--` the runner understands (gotestsum splits
+    /// The command is the runner itself, with its index: the program, or
+    /// under the phpunit preset the script a PHP binary runs (`php -d
+    /// memory_limit=1G vendor/bin/phpunit`), which `php` would otherwise
+    /// read `--log-junit` in front of. The arguments go right after it:
+    /// they must precede any `--` the runner understands (gotestsum splits
     /// its own flags from `go test`'s there).
-    Runner,
+    Runner(usize),
     /// Laravel's `php artisan test` or `./artisan test`, with the index of
     /// `artisan`: Laravel forwards what follows the subcommand to Pest or
     /// `PHPUnit`, while `php` would parse `--log-junit` as its own option.
@@ -106,7 +109,7 @@ impl Plan {
         let mut command = command.to_vec();
         let shape = shape_of(&command, preset);
         let point = match shape {
-            Shape::Runner => 1,
+            Shape::Runner(runner) => runner + 1,
             Shape::Artisan(artisan) => artisan + 2,
             // Behind a `--`, wherever the user put theirs: `composer -- test`
             // is as valid as `composer test --`, and the end of the command
@@ -189,7 +192,7 @@ impl Plan {
         }
         let arguments = self.runner_arguments();
         let parallel = if self.preset == Preset::Phpunit {
-            if self.shape == Shape::Runner && self.is_paratest() {
+            if self.is_paratest() {
                 Some("paratest")
             } else {
                 arguments
@@ -251,10 +254,10 @@ impl Plan {
     }
 
     /// The part of the user's command that reaches the runner: what
-    /// follows the program, the `artisan test` subcommand, or Composer's `--`.
+    /// follows the runner, the `artisan test` subcommand, or Composer's `--`.
     fn runner_arguments(&self) -> &[String] {
         let from = match self.shape {
-            Shape::Runner => 1,
+            Shape::Runner(runner) => runner + 1,
             Shape::Artisan(artisan) => artisan + 2,
             Shape::Composer => self
                 .command
@@ -270,9 +273,7 @@ impl Plan {
     /// memory_limit=1G vendor/bin/paratest`). Not as an argument further
     /// on: `php vendor/bin/phpunit tests/paratest` names a directory.
     fn is_paratest(&self) -> bool {
-        is_named(&self.command, 0, &["paratest"])
-            || php_script(&self.command)
-                .is_some_and(|script| is_named(&self.command, script, &["paratest"]))
+        matches!(self.shape, Shape::Runner(runner) if is_named(&self.command, runner, &["paratest"]))
     }
 
     /// The command with `extra` at the injection point.
@@ -286,29 +287,30 @@ impl Plan {
     }
 
     /// `PHPUnit`'s major version, probed from `<version_probe> --version`.
-    /// Pest prints its own banner, so for a program named `pest` the
+    /// Pest prints its own banner, so for a runner named `pest` the
     /// `phpunit` next to it — the one Pest runs on — is asked instead.
     /// `None` when the probe fails or no `PHPUnit` banner comes back — the
     /// caller decides how loud to be about not knowing.
     pub fn phpunit_major(&self) -> Option<u32> {
-        let program = self.version_probe();
-        probe_phpunit_major(&program).or_else(|| {
-            let phpunit = pest_sibling(&program)?;
-            probe_phpunit_major(&phpunit)
-        })
+        let probe = self.version_probe();
+        probe_phpunit_major(&probe).or_else(|| probe_phpunit_major(&pest_sibling(&probe)?))
     }
 
-    /// The program whose `--version` names the `PHPUnit` that will run: the
-    /// command's own program, or behind a wrapper the project's
-    /// `vendor/bin/phpunit` — `artisan test --version` prints Laravel's
-    /// version and `composer --version` Composer's.
-    pub fn version_probe(&self) -> PathBuf {
+    /// The words whose `--version` names the `PHPUnit` that will run: the
+    /// command up to its runner — a PHP binary in front of it included,
+    /// since a script PHP is asked to run need not be executable — or
+    /// behind a wrapper the project's `vendor/bin/phpunit`: `artisan test
+    /// --version` prints Laravel's version and `composer --version`
+    /// Composer's.
+    pub fn version_probe(&self) -> Vec<String> {
         match self.shape {
-            Shape::Runner => PathBuf::from(&self.command[0]),
+            Shape::Runner(runner) => self.command[..=runner].to_vec(),
             Shape::Artisan(artisan) => {
-                Path::new(&self.command[artisan]).with_file_name("vendor/bin/phpunit")
+                let phpunit =
+                    Path::new(&self.command[artisan]).with_file_name("vendor/bin/phpunit");
+                vec![phpunit.display().to_string()]
             }
-            Shape::Composer => PathBuf::from("vendor/bin/phpunit"),
+            Shape::Composer => vec!["vendor/bin/phpunit".to_owned()],
         }
     }
 
@@ -322,7 +324,7 @@ impl Plan {
         if self.preset != Preset::Phpunit {
             return None;
         }
-        if self.shape == Shape::Runner && self.is_paratest() {
+        if self.is_paratest() {
             return Some(format!(
                 "{WHY}. Gate with the runner it drives (`vendor/bin/phpunit`) instead: a \
                  handful of files gains nothing from running in parallel"
@@ -384,10 +386,10 @@ impl Plan {
     /// command's own terms.
     pub fn no_report_hint(&self) -> String {
         match self.shape {
-            Shape::Runner => format!(
+            Shape::Runner(runner) => format!(
                 "is the reporter available, and is `{}` the test runner itself rather \
                  than a wrapper like `python -m` or `npm`?",
-                self.command[0]
+                self.command[runner]
             ),
             Shape::Artisan(_) => "`artisan test` hands `--log-junit` to PHPUnit or Pest, \
                                   so their output above should say why none was written"
@@ -403,9 +405,12 @@ impl Plan {
 
 /// Which shape `command` has. Only the phpunit preset knows wrappers: both
 /// are PHP's, and each is one fixed, documented way of forwarding arguments.
+/// It is also the only one whose runner is a script another program runs:
+/// behind a PHP binary the runner is that script, whatever it is called —
+/// naming the preset is what says it is one.
 fn shape_of(command: &[String], preset: Preset) -> Shape {
     if preset != Preset::Phpunit {
-        return Shape::Runner;
+        return Shape::Runner(0);
     }
     if let Some(artisan) = artisan_test(command) {
         return Shape::Artisan(artisan);
@@ -413,7 +418,7 @@ fn shape_of(command: &[String], preset: Preset) -> Shape {
     if is_composer(command) {
         return Shape::Composer;
     }
-    Shape::Runner
+    Shape::Runner(php_script(command).unwrap_or(0))
 }
 
 /// Whether the argument at `index` is a path to a file called one of `names`.
@@ -441,22 +446,20 @@ fn is_composer(command: &[String]) -> bool {
 }
 
 /// Where a script called one of `names` sits when it is what the command
-/// runs: the program itself, or the first argument of a PHP binary.
+/// runs: the program itself, or the script a PHP binary runs.
 fn script_position(command: &[String], names: &[&str]) -> Option<usize> {
     if is_named(command, 0, names) {
-        Some(0)
-    } else if command.first().is_some_and(|program| is_php(program)) && is_named(command, 1, names)
-    {
-        Some(1)
-    } else {
-        None
+        return Some(0);
     }
+    php_script(command).filter(|&script| is_named(command, script, names))
 }
 
 /// Where the script stands that a PHP binary runs: the first word behind
-/// PHP's own options, of which `-d`, `-c` and `-z` and their long forms
-/// take the next word as their value. `None` when the program is not PHP
-/// or no script follows.
+/// the options that only set PHP up (see [`php_setting`]). `None` when the
+/// program is not PHP, when no script follows, and when any other option
+/// stands in front of it: sooth then does not know that the next word is a
+/// script PHP will run and hand the rest to, and leaves the command as it
+/// is typed.
 fn php_script(command: &[String]) -> Option<usize> {
     if !command.first().is_some_and(|program| is_php(program)) {
         return None;
@@ -466,13 +469,47 @@ fn php_script(command: &[String]) -> Option<usize> {
         if !word.starts_with('-') {
             return Some(at);
         }
-        let takes_a_value = matches!(
-            word.as_str(),
-            "-d" | "--define" | "-c" | "--php-ini" | "-z" | "--zend-extension"
-        );
-        at += if takes_a_value { 2 } else { 1 };
+        at += php_setting(word)?;
     }
     None
+}
+
+/// How many words an option of PHP's takes up, itself included, when it
+/// only sets PHP up before the script runs: no `php.ini` (`-n`), no header
+/// (`-q`), no chdir (`-C`), `-e`, `-H`, and the three that take a value —
+/// an ini entry (`-d`), an ini file (`-c`) and, up to PHP 8.4, a Zend
+/// extension (`-z`). Read the way PHP reads them: letters share one word,
+/// and a value is the rest of its word or the next one.
+///
+/// `None` for everything else, which is what keeps this honest: `-f` names
+/// the script and has PHP read on for options behind it, `-l` lints it,
+/// `-r` runs code instead, and behind a `--` PHP takes its script from
+/// stdin. None of those is a runner with a place for sooth's flags.
+fn php_setting(word: &str) -> Option<usize> {
+    if let Some(long) = word.strip_prefix("--") {
+        let (name, attached) = match long.split_once('=') {
+            Some((name, _)) => (name, true),
+            None => (long, false),
+        };
+        return match name {
+            "no-php-ini" | "no-header" | "no-chdir" | "profile-info" | "hide-args" if !attached => {
+                Some(1)
+            }
+            "define" | "php-ini" | "zend-extension" => Some(if attached { 1 } else { 2 }),
+            _ => None,
+        };
+    }
+    let mut letters = word.strip_prefix('-')?.chars();
+    let mut any = false;
+    while let Some(letter) = letters.next() {
+        any = true;
+        match letter {
+            'n' | 'q' | 'C' | 'e' | 'H' => {}
+            'd' | 'c' | 'z' => return Some(if letters.as_str().is_empty() { 2 } else { 1 }),
+            _ => return None,
+        }
+    }
+    any.then_some(1)
 }
 
 /// Whether `program` is a PHP binary: `php`, `php8.4`, `/usr/bin/php`.
@@ -505,9 +542,11 @@ fn infer_in(command: &[String], env: &dyn Fn(&str) -> Option<String>) -> Option<
     if preset == Preset::Jest || own_report(command, preset, env).is_some() {
         return None;
     }
+    // The words that name the runner: up to `artisan test`, or up to the
+    // script a PHP binary runs.
     let words = match artisan_test(command) {
         Some(artisan) => command[..artisan + 2].join(" "),
-        None => command[0].clone(),
+        None => command[..=php_script(command).unwrap_or(0)].join(" "),
     };
     Some((preset, words))
 }
@@ -537,10 +576,11 @@ fn advice_in(command: &[String], env: &dyn Fn(&str) -> Option<String>) -> String
         .to_owned()
 }
 
-/// The preset whose runner `command` is: the program's own name, or
-/// Laravel's `artisan test`.
+/// The preset whose runner `command` is: the program's own name, the name
+/// of the script a PHP binary runs, or Laravel's `artisan test`.
 fn named_runner(command: &[String]) -> Option<Preset> {
-    if artisan_test(command).is_some() || is_named(command, 0, &["phpunit", "pest", "paratest"]) {
+    let php_runner = script_position(command, &["phpunit", "pest", "paratest"]);
+    if artisan_test(command).is_some() || php_runner.is_some() {
         Some(Preset::Phpunit)
     } else if is_named(command, 0, &["pytest", "py.test"]) {
         Some(Preset::Pytest)
@@ -777,8 +817,10 @@ fn selected_paths(preset: Preset, files: &[String]) -> Vec<String> {
     clippy::disallowed_methods,
     reason = "The PHPUnit version probe runs the runner itself."
 )]
-fn probe_phpunit_major(program: &Path) -> Option<u32> {
+fn probe_phpunit_major(probe: &[String]) -> Option<u32> {
+    let (program, arguments) = probe.split_first()?;
     let output = std::process::Command::new(program)
+        .args(arguments)
         .arg("--version")
         .output()
         .ok()?;
@@ -786,9 +828,15 @@ fn probe_phpunit_major(program: &Path) -> Option<u32> {
 }
 
 /// `vendor/bin/pest` → `vendor/bin/phpunit`: Composer installs the `PHPUnit`
-/// Pest depends on into the same bin directory.
-fn pest_sibling(program: &Path) -> Option<PathBuf> {
-    (program.file_name()? == "pest").then(|| program.with_file_name("phpunit"))
+/// Pest depends on into the same bin directory. What stands in front of
+/// the runner — a PHP binary and its options — is kept.
+fn pest_sibling(probe: &[String]) -> Option<Vec<String>> {
+    let (runner, front) = probe.split_last()?;
+    let runner = Path::new(runner);
+    (runner.file_name()? == "pest").then(|| {
+        let phpunit = runner.with_file_name("phpunit").display().to_string();
+        front.iter().cloned().chain([phpunit]).collect()
+    })
 }
 
 /// The major out of a `PHPUnit 9.6.11 by Sebastian Bergmann …` banner.
@@ -1105,6 +1153,108 @@ mod tests {
     }
 
     #[test]
+    fn behind_a_php_binary_the_flags_follow_the_script_it_runs() {
+        // `php --log-junit …` is PHP's own option parser. What the runner
+        // is to read goes behind the script, wherever PHP's own options put
+        // that — whatever the script is called, once the preset is named.
+        for (given, expected) in [
+            (
+                &["php", "vendor/bin/phpunit", "--testdox"][..],
+                &[
+                    "php",
+                    "vendor/bin/phpunit",
+                    "--log-junit",
+                    "/tmp/r.xml",
+                    "--testdox",
+                ][..],
+            ),
+            (
+                &["php", "-d", "memory_limit=1G", "vendor/bin/pest"][..],
+                &[
+                    "php",
+                    "-d",
+                    "memory_limit=1G",
+                    "vendor/bin/pest",
+                    "--log-junit",
+                    "/tmp/r.xml",
+                ][..],
+            ),
+            (
+                &["php8.4", "-dmemory_limit=1G", "tools/phpunit.phar"][..],
+                &[
+                    "php8.4",
+                    "-dmemory_limit=1G",
+                    "tools/phpunit.phar",
+                    "--log-junit",
+                    "/tmp/r.xml",
+                ][..],
+            ),
+            (
+                &[
+                    "php",
+                    "-d",
+                    "memory_limit=1G",
+                    "artisan",
+                    "test",
+                    "--parallel",
+                ][..],
+                &[
+                    "php",
+                    "-d",
+                    "memory_limit=1G",
+                    "artisan",
+                    "test",
+                    "--log-junit",
+                    "/tmp/r.xml",
+                    "--parallel",
+                ][..],
+            ),
+            (
+                &["php", "-d", "memory_limit=1G", "composer.phar", "test"][..],
+                &[
+                    "php",
+                    "-d",
+                    "memory_limit=1G",
+                    "composer.phar",
+                    "test",
+                    "--",
+                    "--log-junit",
+                    "/tmp/r.xml",
+                ][..],
+            ),
+        ] {
+            let (full, _) = inject(&command(given), Preset::Phpunit, Path::new("/tmp/r.xml"));
+            assert_eq!(full, command(expected), "{given:?}");
+        }
+    }
+
+    #[test]
+    fn a_php_command_sooth_does_not_read_keeps_its_flags_behind_the_program() {
+        // As before this shape was known: for a PHP binary with nothing to
+        // run, and for a script named with `-f`. Behind that one PHP goes
+        // on reading options of its own, so the place behind the script is
+        // no place for the runner's either.
+        for given in [
+            &["php"][..],
+            &["php", "-f", "vendor/bin/phpunit", "tests"][..],
+            &["php", "--file=vendor/bin/phpunit"][..],
+            &["php", "-nf", "vendor/bin/phpunit"][..],
+        ] {
+            let (full, _) = inject(&command(given), Preset::Phpunit, Path::new("/tmp/r.xml"));
+            let mut expected = command(&["php", "--log-junit", "/tmp/r.xml"]);
+            expected.extend(command(&given[1..]));
+            assert_eq!(full, expected, "{given:?}");
+        }
+        // Only PHP's preset reads a script behind the program.
+        let (full, _) = inject(
+            &command(&["php", "run-pytest.php"]),
+            Preset::Pytest,
+            Path::new("/tmp/r.xml"),
+        );
+        assert_eq!(full[0..2], command(&["php", "--junit-xml=/tmp/r.xml"])[..]);
+    }
+
+    #[test]
     fn a_verify_re_run_under_artisan_selects_after_the_subcommand_too() {
         let (full, _) = inject_selected(
             &command(&["php", "artisan", "test"]),
@@ -1129,23 +1279,29 @@ mod tests {
 
     #[test]
     fn a_wrapper_is_asked_about_through_the_projects_phpunit() {
-        let probe =
-            |parts: &[&str]| Plan::resolve(&command(parts), Preset::Phpunit).version_probe();
-        assert_eq!(
-            probe(&["php", "artisan", "test"]),
-            Path::new("vendor/bin/phpunit")
-        );
+        let probe = |parts: &[&str]| {
+            Plan::resolve(&command(parts), Preset::Phpunit)
+                .version_probe()
+                .join(" ")
+        };
+        assert_eq!(probe(&["php", "artisan", "test"]), "vendor/bin/phpunit");
         assert_eq!(
             probe(&["php", "app/artisan", "test"]),
-            Path::new("app/vendor/bin/phpunit")
+            "app/vendor/bin/phpunit"
         );
+        assert_eq!(probe(&["composer", "test"]), "vendor/bin/phpunit");
+        assert_eq!(probe(&["vendor/bin/phpunit"]), "vendor/bin/phpunit");
+        // A runner PHP is asked to run is asked for its version the same
+        // way: the script alone may not be executable.
         assert_eq!(
-            probe(&["composer", "test"]),
-            Path::new("vendor/bin/phpunit")
-        );
-        assert_eq!(
-            probe(&["vendor/bin/phpunit"]),
-            Path::new("vendor/bin/phpunit")
+            probe(&[
+                "php",
+                "-d",
+                "memory_limit=1G",
+                "vendor/bin/phpunit",
+                "tests"
+            ]),
+            "php -d memory_limit=1G vendor/bin/phpunit"
         );
     }
 
@@ -1377,6 +1533,47 @@ mod tests {
                 Preset::Phpunit,
                 "./artisan test",
             ),
+            // The runner as the script a PHP binary runs, behind PHP's own
+            // options.
+            (
+                &["php", "vendor/bin/phpunit", "--testdox"][..],
+                Preset::Phpunit,
+                "php vendor/bin/phpunit",
+            ),
+            (
+                &["php", "-d", "memory_limit=1G", "vendor/bin/pest"][..],
+                Preset::Phpunit,
+                "php -d memory_limit=1G vendor/bin/pest",
+            ),
+            (
+                &["php", "-d", "memory_limit=1G", "artisan", "test"][..],
+                Preset::Phpunit,
+                "php -d memory_limit=1G artisan test",
+            ),
+            // PHP's settings in every spelling PHP reads: letters in one
+            // word, a value attached or in the next word, long forms.
+            (
+                &["php", "-nd", "memory_limit=1G", "vendor/bin/phpunit"][..],
+                Preset::Phpunit,
+                "php -nd memory_limit=1G vendor/bin/phpunit",
+            ),
+            (
+                &["php", "-nqdmemory_limit=1G", "vendor/bin/phpunit"][..],
+                Preset::Phpunit,
+                "php -nqdmemory_limit=1G vendor/bin/phpunit",
+            ),
+            (
+                &[
+                    "php",
+                    "--no-php-ini",
+                    "--define=memory_limit=1G",
+                    "--php-ini",
+                    "ci.ini",
+                    "vendor/bin/pest",
+                ][..],
+                Preset::Phpunit,
+                "php --no-php-ini --define=memory_limit=1G --php-ini ci.ini vendor/bin/pest",
+            ),
             (&["gotestsum", "--", "./..."][..], Preset::Go, "gotestsum"),
         ] {
             assert_eq!(
@@ -1400,6 +1597,25 @@ mod tests {
             // runner's name further down the line is an argument.
             &["php", "artisan", "migrate"][..],
             &["sh", "-c", "pytest"][..],
+            // PHP runs the first script; a runner's name behind it is that
+            // script's argument, and a script of another name can be anything.
+            &["php", "deploy.php", "vendor/bin/phpunit"][..],
+            &["php", "bin/run-tests.php"][..],
+            // Behind `-f` PHP reads on for options of its own: a command
+            // sooth has no place in for its flags is not one to name.
+            &["php", "-f", "vendor/bin/phpunit"][..],
+            &["php", "-fvendor/bin/phpunit"][..],
+            &["php", "-nf", "vendor/bin/phpunit"][..],
+            &["php", "--file", "vendor/bin/pest"][..],
+            &["php", "-f", "artisan", "test"][..],
+            // Nor is any other option sooth does not know to be a mere
+            // setting: these lint the runner, run code instead of it, or
+            // end the options where PHP then reads its script from stdin.
+            &["php", "-l", "vendor/bin/phpunit"][..],
+            &["php", "-r", "echo 1;", "vendor/bin/phpunit"][..],
+            &["php", "-F", "vendor/bin/phpunit"][..],
+            &["php", "--", "vendor/bin/phpunit"][..],
+            &["php", "--repeat", "2", "vendor/bin/phpunit"][..],
             // Sail, DDEV and Lando run `artisan test` in a container: a
             // report path on this machine means nothing there.
             &["vendor/bin/sail", "artisan", "test"][..],
@@ -1543,6 +1759,8 @@ mod tests {
         let report = report_path().unwrap();
         let dir = report.parent().expect("a private scratch dir");
         std::fs::create_dir_all(dir.join("tests/Unit")).unwrap();
+        std::fs::create_dir_all(dir.join("vendor/bin")).unwrap();
+        std::fs::write(dir.join("vendor/bin/phpunit"), "").unwrap();
         std::fs::write(dir.join("phpunit.xml"), "").unwrap();
         let own = |parts: &[&str], preset| {
             Plan::resolve(&command(parts), preset)
@@ -1558,6 +1776,11 @@ mod tests {
             ),
             (
                 &["php", "artisan", "test", "tests/Unit"][..],
+                Preset::Phpunit,
+                "tests/Unit",
+            ),
+            (
+                &["php", "vendor/bin/phpunit", "tests/Unit"][..],
                 Preset::Phpunit,
                 "tests/Unit",
             ),
@@ -1578,6 +1801,12 @@ mod tests {
         }
         for (parts, preset) in [
             (&["vendor/bin/phpunit"][..], Preset::Phpunit),
+            // The script PHP runs is the runner, not a path it was given.
+            (&["php", "vendor/bin/phpunit"][..], Preset::Phpunit),
+            (
+                &["php", "-d", "memory_limit=1G", "vendor/bin/phpunit"][..],
+                Preset::Phpunit,
+            ),
             // An option's value, even when it exists.
             (
                 &["vendor/bin/phpunit", "-c", "phpunit.xml"][..],
@@ -1837,16 +2066,18 @@ mod tests {
     #[test]
     fn pest_is_asked_about_through_the_phpunit_next_to_it() {
         use super::pest_sibling;
+        let sibling = |parts: &[&str]| pest_sibling(&command(parts)).map(|probe| probe.join(" "));
         assert_eq!(
-            pest_sibling(Path::new("vendor/bin/pest")),
-            Some(Path::new("vendor/bin/phpunit").to_path_buf())
+            sibling(&["vendor/bin/pest"]).as_deref(),
+            Some("vendor/bin/phpunit")
         );
+        assert_eq!(sibling(&["pest"]).as_deref(), Some("phpunit"));
         assert_eq!(
-            pest_sibling(Path::new("pest")),
-            Some(Path::new("phpunit").to_path_buf())
+            sibling(&["php", "-d", "memory_limit=1G", "vendor/bin/pest"]).as_deref(),
+            Some("php -d memory_limit=1G vendor/bin/phpunit")
         );
-        assert_eq!(pest_sibling(Path::new("vendor/bin/phpunit")), None);
-        assert_eq!(pest_sibling(Path::new("vendor/bin/pest-like")), None);
+        assert_eq!(sibling(&["vendor/bin/phpunit"]), None);
+        assert_eq!(sibling(&["vendor/bin/pest-like"]), None);
     }
 
     #[test]

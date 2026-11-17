@@ -13,7 +13,7 @@ check: ## Run the full local quality gate: fmt, clippy, tests
 
 smoke: ## Drive sooth against real runners (needs composer, npm; pytest if installed). Usage: make smoke [runners="phpunit jest"]
 	cargo build
-	@for runner in $(or $(runners),phpunit pest composer jest pytest); do \
+	@for runner in $(or $(runners),phpunit pest composer php jest pytest); do \
 		if [ "$$runner" = pytest ] && ! command -v pytest >/dev/null; then \
 			echo "── pytest: skipped (not installed)"; continue; \
 		fi; \
