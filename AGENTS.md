@@ -11,7 +11,7 @@ per version, and `DECISIONS.md` for the reasoning behind non-obvious choices.
 
 ## `src/` module structure
 
-Everything below exists except `analyzers/slow.rs`; one module per concern:
+Everything below exists; one module per concern:
 
 ```
 src/
@@ -32,7 +32,7 @@ src/
 ├── quarantine.rs  # EXISTS — committed .sooth-quarantine list, and the all-or-nothing pardon --fail-on-flaky grants from it
 ├── report.rs      # EXISTS — presentation: what both renderers read (the color style, the view of a run and its passes) and the plain lines on stderr
 ├── report/        # EXISTS — human.rs (the printed report), json.rs (the versioned machine JSON; a document is a `String`, nothing is printed there)
-└── analyzers/     # EXISTS — flaky.rs (mixed outcomes over runs), history.rs (classify the accumulated history), explain.rs (label a red run's failures against that evidence), order.rs (what differs between the suite's own order and a shuffled one); slow.rs to come (strictly separate passes)
+└── analyzers/     # EXISTS — flaky.rs (mixed outcomes over runs), history.rs (classify the accumulated history), explain.rs (label a red run's failures against that evidence), order.rs (what differs between the suite's own order and a shuffled one), slow.rs (which tests take longer since a commit, read from the history's durations) — strictly separate passes
 ```
 
 Flags sooth cannot honor are rejected loudly, never silently ignored: `--json`/`--slowest`

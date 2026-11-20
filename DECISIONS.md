@@ -2192,3 +2192,201 @@ needs more memory is started, so this is an everyday command.
   another kind — a module flag and a package runner, each with its own
   rules for what follows. They are left as they were: the README asks for
   the runner itself there.
+
+## Slower since a commit: what a clock is allowed to say
+
+The slow half of v0.4 reads the durations the history carries since v0.3.4
+(#296, #13). Its first finding is the timing twin of "failing since": a
+test that takes longer since a commit than before it.
+
+**Measured first.** "The history carries durations" asked for this pass to
+be designed against real data. No project history with durations exists
+yet, so the data was made: a PHPUnit suite of 233 tests doing real work
+(SQLite, files, bcrypt, waits), run 69 times through sooth over four
+commits on one machine — idle, with every core busy, with Xdebug tracing
+on, locally and as CI — and again on efficiency cores. What it showed:
+
+- 190 of the 233 tests are timed at 0 ms, and the slowest ten carry 86% of
+  the suite. Most tests have no duration to speak of.
+- One run of a 2 ms test was timed at 11 ms. Tests of 20 ms and more stay
+  within about a fifth of their median on an idle machine.
+- A machine does not slow every test alike. With every core busy the
+  tests that compute took up to 1.6 times as long and the ones that wait
+  not at all; under Xdebug tracing a test that hashes in PHP took 73
+  times as long and one that calls bcrypt 1.02 times; on efficiency cores
+  a 20 ms sleep took 120 ms. No factor takes a machine out of a
+  measurement.
+
+**Eight versions, seven reviews.** An independent reviewer went over each
+version on the real suite and on histories written to break it.
+
+- The first compared a test's medians on both sides of any change of
+  commit. Three runs of one test with `--filter` after a commit that
+  changed nothing named that test — alone, it paid for a fixture another
+  test builds first — and three runs on efficiency cores named seventeen.
+- The second divided a test's time by how much longer the rest of the
+  suite took, as a ratio of sums. One heavy test that got slower passed
+  for the machine and hid every other finding.
+- The third read the machine from the median of the other tests' ratios:
+  at 1.5 or more it named "the suite as a whole", under that it divided.
+  On a busy CI runner the tests split into two groups, ten at 1.0 and
+  eleven at 1.6 to 2.3, and whether one test was in the set decided
+  between "the suite" and a test named for the load: 5% of the subsets
+  of those runs named one. And the machine was asked after a test's
+  commit had been chosen, so a slower machine at a later commit erased an
+  earlier finding without a word.
+- The fourth divided nothing: a test was named only when a quarter of the
+  other tests kept their time over the runs since its commit. Two more.
+  Those runs began at the test's own first pass, so a test that failed
+  the first runs on a slower machine and passed later was read against
+  runs of its own commit, already slow, and named. And the reading was
+  made again for every test at every commit: 3 to 8 seconds on a history
+  of 5,000 tests.
+- The fifth read each commit once, from its first run by any test, over
+  its own runs. One more, narrower: a machine that changed partway
+  through a commit's runs, under a test that was not timed before the
+  change, was averaged away by the runs before it, and the test named.
+- The sixth read a commit from its first run and again from the test's
+  own, and withheld when either moved. One minor: a machine slower only
+  in the commit's first runs, before the test's own, withheld a test
+  whose own runs were all on a steady clock.
+- The seventh read once: from the test's first run on the commit to the
+  next commit's, against the runs before the commit. One more, the mirror
+  of the fifth's: a machine that came back after the test's own runs, in
+  runs of the commit the test was not timed in, averaged away the runs it
+  was in.
+- The eighth, below, reads over the invocations the test was timed in,
+  and over no others.
+
+**The rule for a test, and where each part comes from.**
+
+- *Runs of the whole suite.* An invocation is a measurement of a test only
+  when it ran at least nine tenths of the tests of the largest invocation
+  that timed that test. `--filter`, a single file and the gate's selection
+  are runs too, and say nothing here.
+- *Passes on a clean, known commit, in one environment.* A failure is not
+  the test doing its work, a dirty tree is not the commit, and a CI runner
+  and a laptop are different clocks.
+- *Three invocations on each side* (`RUNS_EACH_SIDE`), the number a red
+  streak needs too. An invocation is one measurement, the median of its
+  runs: twenty runs in a row share one machine in one state.
+- *Twice as long* (`SLOWER_FACTOR`) *and 20 ms more* (`SLOWER_BY_MS`): the
+  median of every invocation since against the median of the last five
+  before (`RUNS_BEFORE`). Twice is above the 1.6 a busy machine did to a
+  test; 20 ms about twice what a single run was off by. A test that goes
+  from 2 ms to 15 ms was built into the data and is not named.
+- *No invocation since as fast as one of the five before.* Medians alone
+  would name a test that has got fast again while its slow runs still
+  outnumber the fast ones.
+- *A commit seen for the first time, and no earlier commit among the runs
+  since.* Code that ran on both sides did not change the clock.
+- *The clock held* (`Readings::moved`). The other tests are read over the
+  invocations the test itself was timed in on the commit — and when those
+  are fewer than three, its first three from there on — against their
+  runs before the commit's first run on this clock, by any test. The
+  before keeps a test that only passed late from being read against runs
+  of its own commit on a machine already slower; the during keeps a
+  machine that changed partway through the commit from being averaged
+  away by runs the test was not in, whether they came before its runs or
+  after them, and keeps a machine that was slower only while the test sat
+  out from being held against it. Over those, the other
+  tests that took 20 ms or more *before* it — which a slower machine
+  cannot fail to slow, and which did not merely enter the set by getting
+  slower — timed in three invocations on each side, are laid out by how
+  many times as long they take. The one a quarter from the top is read:
+  at 1.25 or more (`CLOCK_MOVED_PER_MILLE`) the clock moved, and the test
+  is withheld. From five such tests on (`TESTS_TO_READ_A_CLOCK`); under
+  that, nothing is read. A reading is worked out once per set of
+  invocations and sorted, and a test only steps past its own place in it.
+  Most tests of a commit are timed in the same invocations and share one
+  reading: 0.4 to 0.6 seconds on histories of 5,000 tests. Its cost grows
+  with the number of different sets: 5.5 seconds when all 5,000 got
+  slower at once and each failed in different runs since — a suite that
+  flaky on a machine that slow.
+
+  Its own runs and not every run since: what changes at a later commit, a
+  machine or other tests' code, is that commit's reading, and takes back
+  no test named before it. The test's own time since stays every run
+  since, the later ones included.
+
+A quarter and not the typical test, because a busy machine slows what
+computes and spares what waits, and half a suite may wait. The quartile,
+measured: 1.04 between two stretches of idle runs, 1.01 across the commit
+that slowed one test by twenty times, 1.13 with six cores busy — and 1.30
+under Xdebug tracing, 1.41 with every core busy, 1.74 as CI with every
+core busy, 2.6 and 2.8 on efficiency cores. The mark sits in the gap.
+
+The rule, the clock included, is asked of every commit a test could be
+named with. When it holds for more than one, the test got slower in steps,
+and the commit of its largest step is named — the earliest when two are as
+large. A commit's step is what its own runs, those up to the next commit,
+took more than the five in front of it: a test that went 4, 15, 284 ms is
+named for the last commit however few runs the middle one had. When the
+rule holds for none only because the clock moved, the test is withheld,
+for the commit of its largest step.
+
+**Withheld is said.** Per commit and clock, one line: how many tests got
+slower by their own clock, that they are not named, and what the other
+tests did — as a lower bound that holds for each of them: the least
+factor any of them was read at, cut and not rounded, and the fewest
+tests any was read from. A withheld test is never silent and never a
+name.
+
+**Every commit says how many.** A heading reads "1 test of the 19 that
+take 20ms or more": the tests a clock could have named since that commit.
+Three or more that are over a fifth of those (`MANY_AT_ONCE`) are said to
+be many at once, which may be something they share, and three are shown.
+That is the only answer there is to a setting that slows a minority of
+the tests: from an idle before, Xdebug's quartile is 1.30 and its runs are
+withheld; from a before that was busy itself, it was 1.2 and 29 tests were
+named under that heading.
+
+**Replayed and resampled.** One invocation at a time over the 69: nothing
+in the first 42, through the idle runs, the busy ones, a commit that
+slowed two tests by 11 and 13 ms, and one that made a third slow in CI
+only, where it had no before. The slowdown built in at the last commit (14
+ms to 284 ms) is named with its third local run, one test of nineteen,
+and stays. As CI, where every run on that commit had every core busy, it
+is withheld with the tests the load slowed: four at its third run, one
+from its fourth on. Resampled:
+
+- every pseudo-commit inside every stretch of the 69 (39) and 1,500
+  random permutations of the 48 local runs without the slowed test: no
+  finding;
+- three sets of 400 random subsets of the 69: the slowed test named
+  locally, for its commit, in 398, 400 and 400; in the other two it is
+  withheld, the Xdebug runs being most of the runs of its commit that
+  were kept, and never named for another commit;
+- all 1,764 combinations of 3 to 6 CI runs on each side of the loaded
+  stretch: no test named, with the slowed test or without; one to six
+  withheld;
+- efficiency cores, on two histories: seventeen withheld, none named.
+
+**What it cannot know**, and the README says: the cause; a test that got
+slower on a clock that moved at its commit — withheld; a clock that moved
+after it, which is in the test's time since; a test with fewer than
+three runs on its commit, read over its first runs on the next commit
+too, and withheld while the clock moved there; something that slows a
+minority of the tests; a suite that got slower as a whole, which is not a
+finding here; the shape of the branches, of which the order of the runs
+is all sooth has; a suite that changes size by more than a tenth, or CI
+shards cut differently; suites with fewer than five other tests of 20 ms
+that passed in the runs the test was timed in; what
+has left the window. "Nothing stands out" therefore speaks of pointers,
+not tests.
+
+**A finding, not a failure.** No exit code changes, and nothing is red. A
+gate on slowness would need a budget somebody chose; nobody has.
+
+**In the history's analysis, not a command of its own.** The order pass got
+a command because it needs runs of its own. This one needs none: it is one
+more reading of the file every run already writes, and it appears where
+the other readings do — after a run, in `sooth history`, after an import.
+It reads every test's window at once, because of the clock.
+`Observation::is_evidence` moved to the type it is about, so the two
+analyzers that use it read it from the domain and not from each other.
+
+**To be checked against a real history.** The thresholds are constants
+with their measurements beside them. They come from one machine and one
+made-up suite; a project history with a few weeks of durations is the
+test they have not had.

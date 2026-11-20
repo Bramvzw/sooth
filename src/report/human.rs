@@ -13,7 +13,7 @@ use super::{
     RunReport, Style,
 };
 use crate::analyzers::history::PriorEvidence;
-use crate::analyzers::{explain, flaky, history, order};
+use crate::analyzers::{explain, flaky, history, order, slow};
 use crate::gate;
 use crate::runner::RunOutcome;
 
@@ -462,7 +462,9 @@ fn verdict_line(ended: &RunReport<'_>, style: Style) -> String {
 
 /// What the history knows about tests that did *not* fail this run. The ones
 /// that did carry their history verdict on their own line above; repeating
-/// them here would print the same counts twice.
+/// them here would print the same counts twice. The slow pass's findings
+/// are the exception: a clock is no verdict on a failure, so a test may
+/// stand above as failing and here as slower on the runs it passed.
 pub fn print_history(analyses: &Analyses<'_>, style: Style) {
     let Some(pass) = analyses.history else { return };
     if pass.is_empty() {
@@ -548,6 +550,133 @@ pub fn print_history(analyses: &Analyses<'_>, style: Style) {
                 ))
             );
         }
+    }
+    print_slower_since(&pass.slower_since, style);
+    print_slower_withheld(&pass.slower_withheld, style);
+}
+
+/// The tests that got slower since a commit and are not named. One line
+/// per commit and clock: how many, and what the other tests did over the
+/// same runs, which is why. Against a clock that moved for a quarter of
+/// the suite no test can be named.
+fn print_slower_withheld(withheld: &[slow::Withheld], style: Style) {
+    for commit in withheld {
+        let place = commit
+            .environment
+            .as_deref()
+            .map_or_else(String::new, |environment| {
+                format!(" ({})", printable(environment))
+            });
+        // "Or more": a lower bound, so it is cut and not rounded up.
+        let tenths = commit.times_per_mille / 100;
+        println!(
+            "{}",
+            style.yellow(&format!(
+                "slower since {}{place} — {} by {} own clock, not named: over the same runs, a \
+                 quarter of the other tests that took {} or more before took {}.{} times as \
+                 long or more, read from at least {} of them. The machine, a setting or \
+                 something the tests share.",
+                short_commit(&commit.commit),
+                count(commit.tests, "test"),
+                if commit.tests == 1 { "its" } else { "their" },
+                whole_millis(slow::SLOWER_BY_MS),
+                tenths / 10,
+                tenths % 10,
+                commit.tests_read
+            ))
+        );
+    }
+}
+
+/// How many tests of one commit are listed: the ones that gained most.
+const SLOWER_SHOWN: usize = 10;
+
+/// And how many when they are many at once: enough to see what kind of
+/// test it is, and not a list of findings, which they are not.
+const MANY_SHOWN: usize = 3;
+
+/// The tests that take longer since a commit, commit by commit and clock
+/// by clock, the one that gained most first. Each commit's heading says how
+/// many tests got slower at it and of how many that could have: the reader
+/// is owed the difference between one test of forty and seventeen. A
+/// line has the median of the invocations in front of the commit, the
+/// median of those since, and how many stand on each side. A finding, not
+/// a failure: nothing here is red.
+fn print_slower_since(slower: &[slow::SlowerSince], style: Style) {
+    let mut commits: Vec<Vec<&slow::SlowerSince>> = Vec::new();
+    for test in slower {
+        let same = |others: &&mut Vec<&slow::SlowerSince>| {
+            others[0].commit == test.commit && others[0].environment == test.environment
+        };
+        match commits.iter_mut().find(same) {
+            Some(others) => others.push(test),
+            None => commits.push(vec![test]),
+        }
+    }
+    for tests in commits {
+        let first = tests[0];
+        let place = first
+            .environment
+            .as_deref()
+            .map_or_else(String::new, |environment| {
+                format!(" ({})", printable(environment))
+            });
+        let floor = whole_millis(slow::SLOWER_BY_MS);
+        let share = if first.tests_timed == 1 {
+            format!("the only test that takes {floor} or more")
+        } else {
+            format!(
+                "{} of the {} that take {floor} or more",
+                count(first.tests_slower, "test"),
+                first.tests_timed
+            )
+        };
+        let many = first.many_at_once();
+        let shown = if many { MANY_SHOWN } else { SLOWER_SHOWN };
+        let what_follows = if many {
+            format!(
+                " — that many at once can as well be the machine, a setting or something \
+                 the tests share: sooth reads the clock, not the cause. The {} that gained \
+                 most:",
+                shown.min(tests.len())
+            )
+        } else {
+            ":".to_owned()
+        };
+        println!(
+            "{}",
+            style.yellow(&format!(
+                "slower since {}{place} — {share}{what_follows}",
+                short_commit(&first.commit)
+            ))
+        );
+        for test in tests.iter().take(shown) {
+            println!(
+                "  {} {} {} → {} {}",
+                style.yellow("▲"),
+                identity(&test.id, style),
+                whole_millis(test.before_ms),
+                whole_millis(test.since_ms),
+                style.dim(&format!(
+                    "({} before, {} since)",
+                    count(test.runs_before, "run"),
+                    test.runs_since
+                ))
+            );
+        }
+        if tests.len() > shown {
+            println!("  … and {} more", tests.len() - shown);
+        }
+    }
+}
+
+/// A duration the history stores, for a line: `284ms`, and from a second
+/// on `1.2s` — the history has no more than whole milliseconds to show.
+fn whole_millis(ms: u64) -> String {
+    if ms < 1000 {
+        format!("{ms}ms")
+    } else {
+        format!("{}.{}s", ms / 1000, ms % 1000 / 100)
     }
 }
 
@@ -866,7 +995,10 @@ pub fn print_empty_history() {
 
 /// `sooth history` over evidence that proves nothing yet.
 pub fn print_nothing_stands_out() {
-    println!("nothing stands out: no proven flakes, no failing-since pointers");
+    println!(
+        "nothing stands out: no proven flakes, no failing-since pointers, no slower-since \
+         pointers"
+    );
 }
 
 /// What became of one imported file, in one line.

@@ -8,6 +8,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::analyzers::flaky::TestOutcomes;
+use crate::analyzers::slow::{self, SlowerSince, Withheld};
 use crate::history::{Observation, WINDOW_PER_TEST};
 use crate::junit::TestStatus;
 
@@ -70,11 +71,21 @@ pub struct Analysis {
     pub failing_since: Vec<FailingSince>,
     /// Never seen passing, sorted like `failing_since`.
     pub never_passed: Vec<NeverPassed>,
+    /// Taking longer since a commit, on the runs they passed (see
+    /// [`slow`]). Sorted by what a run gained, the most first, then id.
+    pub slower_since: Vec<SlowerSince>,
+    /// Tests that got slower since a commit and are not named, because
+    /// the clock moved with them. Sorted by how many, the most first.
+    pub slower_withheld: Vec<Withheld>,
 }
 
 impl Analysis {
     pub fn is_empty(&self) -> bool {
-        self.flaky.is_empty() && self.failing_since.is_empty() && self.never_passed.is_empty()
+        self.flaky.is_empty()
+            && self.failing_since.is_empty()
+            && self.never_passed.is_empty()
+            && self.slower_since.is_empty()
+            && self.slower_withheld.is_empty()
     }
 }
 
@@ -141,6 +152,19 @@ fn failures_confined_to(signal: &[&Observation]) -> Option<String> {
 /// test's last [`WINDOW_PER_TEST`] invocations, signal-carrying
 /// observations only (skips carry none).
 pub fn analyze(observations: &[Observation]) -> Analysis {
+    // How many tests each invocation ran, skips included: the slow pass
+    // tells a run of the suite from a run of a part of it by this.
+    let mut ran: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
+    for observation in observations {
+        if let Some(invocation) = observation.invocation.as_deref() {
+            ran.entry(invocation).or_default().insert(&observation.id);
+        }
+    }
+    let sizes: BTreeMap<&str, usize> = ran
+        .into_iter()
+        .map(|(invocation, ids)| (invocation, ids.len()))
+        .collect();
+
     let mut in_time_order: Vec<&Observation> = observations
         .iter()
         .filter(|observation| observation.status != TestStatus::Skipped)
@@ -156,10 +180,13 @@ pub fn analyze(observations: &[Observation]) -> Analysis {
     }
 
     let mut analysis = Analysis::default();
-    for (id, mut signal) in by_test {
-        keep_last_invocations(&mut signal);
-        classify(id, &signal, &mut analysis);
+    for (id, signal) in &mut by_test {
+        keep_last_invocations(signal);
+        classify(id, signal, &mut analysis);
     }
+    let slower = slow::slower_since(&by_test, &sizes);
+    analysis.slower_since = slower.tests;
+    analysis.slower_withheld = slower.withheld;
 
     analysis.flaky.sort_by(|a, b| {
         b.outcomes
@@ -173,6 +200,18 @@ pub fn analyze(observations: &[Observation]) -> Analysis {
     analysis
         .never_passed
         .sort_by(|a, b| b.failed_runs.cmp(&a.failed_runs).then(a.id.cmp(&b.id)));
+    analysis.slower_since.sort_by(|a, b| {
+        b.gained_ms()
+            .cmp(&a.gained_ms())
+            .then(a.id.cmp(&b.id))
+            .then(a.environment.cmp(&b.environment))
+    });
+    analysis.slower_withheld.sort_by(|a, b| {
+        b.tests
+            .cmp(&a.tests)
+            .then(a.commit.cmp(&b.commit))
+            .then(a.environment.cmp(&b.environment))
+    });
     analysis
 }
 
@@ -211,7 +250,7 @@ fn classify(id: &str, signal: &[&Observation], analysis: &mut Analysis) {
     // outcomes inside one invocation are the active pass's to judge.
     let mut per_clean_commit: BTreeMap<&str, Outcomes> = BTreeMap::new();
     for (line, observation) in signal.iter().enumerate() {
-        if !is_evidence(observation) {
+        if !observation.is_evidence() {
             continue;
         }
         if let Some(commit) = &observation.commit {
@@ -303,20 +342,10 @@ fn classify(id: &str, signal: &[&Observation], analysis: &mut Analysis) {
 
 /// The commit an observation can testify about: known, and clean.
 fn clean_commit(observation: &Observation) -> Option<&str> {
-    if !is_evidence(observation) {
+    if !observation.is_evidence() {
         return None;
     }
     observation.commit.as_deref()
-}
-
-/// Whether an observation can ever be evidence: it was made on a tree known
-/// to be clean. A dirty tree, or one whose state is unknown (no git, a HEAD
-/// that moved during the run, an import without `--commit`), is code sooth
-/// cannot name — such an observation counts in the totals and proves
-/// nothing. The one definition: the analysis and the "all N earlier
-/// observations were made on a dirty tree" note must mean the same thing.
-pub fn is_evidence(observation: &Observation) -> bool {
-    observation.dirty == Some(false)
 }
 
 /// What earlier runs left behind: how many observations, and how many of
@@ -334,7 +363,7 @@ impl PriorEvidence {
             observations: observations.len(),
             unusable: observations
                 .iter()
-                .filter(|observation| !is_evidence(observation))
+                .filter(|observation| !observation.is_evidence())
                 .count(),
         }
     }
@@ -364,6 +393,49 @@ mod tests {
             invocation: Some(run.to_owned()),
             ..clean(id, status, commit)
         }
+    }
+
+    /// Three invocations of `id` on `before` at `fast` ms, then three on
+    /// `since` at `slow` ms: all passes, all clean, all local.
+    fn slowed(
+        id: &str,
+        (before, fast): (&str, u64),
+        (since, slow): (&str, u64),
+    ) -> Vec<Observation> {
+        (0..6_u64)
+            .map(|run| {
+                let (commit, ms) = if run < 3 {
+                    (before, fast)
+                } else {
+                    (since, slow)
+                };
+                Observation {
+                    environment: Some("local".to_owned()),
+                    invocation: Some(format!("{id}-{run}")),
+                    duration_ms: Some(ms),
+                    at_epoch_secs: run,
+                    ..clean(id, TestStatus::Passed, commit)
+                }
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_test_that_never_failed_can_be_slower_since_a_commit() {
+        // Nothing here ever failed: the slow pass reads the clock, not the
+        // outcome. The test that gained most comes first.
+        let mut history = slowed("c::a", ("aaa", 100), ("bbb", 300));
+        history.extend(slowed("c::b", ("aaa", 10), ("ccc", 900)));
+        history.extend(slowed("c::steady", ("aaa", 50), ("bbb", 55)));
+        let analysis = analyze(&history);
+        let named: Vec<(&str, &str, u64)> = analysis
+            .slower_since
+            .iter()
+            .map(|test| (test.id.as_str(), test.commit.as_str(), test.gained_ms()))
+            .collect();
+        assert_eq!(named, [("c::b", "ccc", 890), ("c::a", "bbb", 200)]);
+        assert!(!analysis.is_empty(), "a slower test is a finding");
+        assert!(analysis.flaky.is_empty() && analysis.failing_since.is_empty());
     }
 
     #[test]
@@ -612,13 +684,13 @@ mod tests {
 
     #[test]
     fn only_a_tree_known_to_be_clean_is_evidence() {
-        use super::{is_evidence, PriorEvidence};
+        use super::PriorEvidence;
         let clean_one = obs("c::t", TestStatus::Passed, Some("aaa"), Some(false));
         let dirty = obs("c::t", TestStatus::Passed, Some("aaa"), Some(true));
         let unknown = obs("c::t", TestStatus::Passed, None, None);
-        assert!(is_evidence(&clean_one));
-        assert!(!is_evidence(&dirty));
-        assert!(!is_evidence(&unknown), "unknowable is not clean");
+        assert!(clean_one.is_evidence());
+        assert!(!dirty.is_evidence());
+        assert!(!unknown.is_evidence(), "unknowable is not clean");
         assert_eq!(
             PriorEvidence::of(&[clean_one, dirty, unknown]),
             PriorEvidence {

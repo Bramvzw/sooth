@@ -105,6 +105,8 @@ then accumulates from runs you make anyway:
   <commit>`.
 - **never seen passing** — red in every observed run. No commit is blamed:
   sooth only knows where it first looked.
+- **slower since `<commit>`** — taking longer since a commit than before
+  it, on the runs it passed. See "Which tests got slower?" below.
 
 A proven flake that has failed every run since a commit, in three
 invocations or more, says so on its line (`…, and every run since <commit>
@@ -132,6 +134,92 @@ variable is set, `local` otherwise.
 
 Look at the evidence any time with `sooth history` — the same analysis every
 run ends with, without running or recording anything.
+
+### Which tests got slower?
+
+A list of the slowest tests tells you where the time goes. It does not tell
+you what changed. The history does, because it has a before:
+
+```
+slower since 1019f96 (local) — 1 test of the 19 that take 20ms or more:
+  ▲ ExportTest::test_exports_orders 14ms → 284ms (5 runs before, 3 since)
+```
+
+A test is named with a commit when all of this holds:
+
+- **Three sooth runs on each side** of the commit. A run counts when the
+  test passed in it, on a clean tree, and it **ran the whole suite**: what
+  a test costs depends on what ran before it, so a run of one file or one
+  `--filter` is no measurement of the tests in it. A `--runs 20` is one run
+  here, with the median of its twenty — evidence is counted the way it is
+  for flakiness.
+- **Twice as long, and 20 ms more**: the median of every run since the
+  commit against the median of the last five before it.
+- **No run since as fast as one of those five**, and no commit among the
+  runs since that also ran before it. A test that got fast again is not
+  named, and neither is code that was fast once and is slow now.
+- **On one clock.** Local runs are compared with local runs, CI with CI.
+- **The other tests kept their time.** A clock cannot tell a slower test
+  from a slower machine. So sooth looks at the other tests that took 20 ms
+  or more before the commit, over the commit's own runs: when a quarter of
+  them take a quarter longer or more, the clock moved, and no test is
+  named against it. One line says how many got slower and why they are
+  not named:
+
+```
+slower since 95330b3 (local) — 17 tests by their own clock, not named: over the same runs, a quarter of the other tests that took 20ms or more before took 2.6 times as long or more, read from at least 18 of them. The machine, a setting or something the tests share.
+```
+
+That is real output: three runs on efficiency cores after a commit that
+changed no test. A laptop on battery, a busy CI runner, a fixture every
+test uses that got slower — the line is the same, and finding which is
+yours.
+
+A test that got slower in steps is named for the commit of its largest.
+Every heading says how many tests got slower at the commit and of how many
+could have; when that is three or more and over a fifth of them, the
+heading says so many at once may be something they share, and shows three.
+
+What it cannot know:
+
+- **The cause.** The commit is where the clock changed. That is where to
+  start looking, not a verdict.
+- **A test that got slower on a clock that moved.** It is withheld with the
+  rest: on a busy CI runner the test that really got slower is withheld
+  along with the ones the load slowed. The other tests are read over the
+  runs the test itself was timed in on its commit, against their runs
+  before the commit; so what changes at a later commit — a machine, other
+  tests — is that commit's reading and does not take back a test named
+  before it, and runs the test sat out are not its clock. Two things
+  follow. The test's time since is every run since, so a machine that
+  changed later shows in it. And a test with fewer than three runs on its
+  commit is read over its first runs on the next commit as well: when the
+  clock moved there, it is withheld for as long as the runs before its
+  commit are in its window.
+- **Something that slows a minority of the tests.** A debugger or coverage
+  that slows the tests which compute and leaves the ones which wait reads
+  as those tests getting slower; the heading says many at once.
+- **A suite that got slower as a whole.** Only tests are findings here.
+- **Your branches.** Sooth knows the order of your runs, not the shape of
+  your history: a slowdown that began on a branch, with runs elsewhere in
+  between, is named for the first commit of the current run of slow runs.
+- **A suite that changes size.** "The whole suite" is nine tenths of the
+  largest run among a test's last 50. Grow or shrink the suite by more
+  than a tenth, or reshuffle CI shards, and the runs on one side are parts
+  until the window has moved on. A run that leaves out the one test which
+  builds a fixture is still the whole suite, and the next test pays.
+- **Small suites.** With fewer than five other tests that took 20 ms
+  before and passed in the runs the test was timed in, there is nothing to
+  read a clock from, and a slow machine can name a test.
+- **What is behind it.** A finding lasts as long as the runs before its
+  commit are among the test's last 50; after that the test is no longer
+  named, though it is no faster.
+
+Nothing here changes the exit code: slower is a finding, not a failure.
+Ten tests are listed per commit, and `--json` has all of them under
+`history.slower_since`, the withheld under `history.slower_withheld`.
+
+Durations are in the history since v0.3.4, so the before starts there.
 
 The history only grows: a 5,000-test suite adds about a megabyte per run.
 Every analysis looks at each test's last 50 invocations in which it ran, so

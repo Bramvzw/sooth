@@ -127,6 +127,40 @@ expect_on_line "$wobbly" "known flake"
 expect_on_line "$broken" "never seen passing"
 [ -z "$(git status --porcelain)" ] || { label="history"; output=$(git status --porcelain); fail "sooth left the tree dirty"; }
 
+# 3b. The same history, read for time: a test that takes longer since a
+#     commit is named with that commit, at its third run there and not
+#     before. Every run here is of the whole suite, which is what counts.
+case "$project" in
+  phpunit) pace=tests/PaceTest.php; paced='PaceTest::test_pace'
+    write_pace() { printf '<?php\nuse PHPUnit\\Framework\\TestCase;\nfinal class PaceTest extends TestCase\n{\n    public function test_pace(): void\n    {\n        usleep(%s);\n        $this->assertTrue(true);\n    }\n}\n' "$1" > "$pace"; } ;;
+  pest)    pace=tests/PaceTest.php; paced='PaceTest::pace'
+    write_pace() { printf "<?php\ntest('pace', function () {\n    usleep(%s);\n    expect(true)->toBeTrue();\n});\n" "$1" > "$pace"; } ;;
+  jest)    pace=pace.test.js; paced='pace.test.js::pace'
+    write_pace() { printf "test('pace', async () => {\n  await new Promise((done) => setTimeout(done, %s / 1000));\n  expect(true).toBe(true);\n});\n" "$1" > "$pace"; } ;;
+  pytest)  pace=test_pace.py; paced='test_pace::test_pace'
+    write_pace() { printf 'import time\n\n\ndef test_pace():\n    time.sleep(%s / 1000000)\n    assert True\n' "$1" > "$pace"; } ;;
+esac
+commit() {
+  git add -A
+  git -c user.name=smoke -c user.email=smoke@example.invalid commit -q -m "$1"
+}
+write_pace 0
+commit "pace: as fast as it gets"
+for nth in 1 2 3; do
+  run "slower since, run $nth before" ${preset[@]+"${preset[@]}"} -- "${runner[@]}"
+done
+write_pace 80000
+commit "pace: 80 ms"
+for nth in 1 2 3; do
+  run "slower since, run $nth since" ${preset[@]+"${preset[@]}"} -- "${runner[@]}"
+  # Two slow runs are two slow runs: the third is what names it.
+  [ "$nth" -eq 3 ] || refuse "slower since "
+done
+expect "slower since $(git rev-parse --short=7 HEAD) "
+expect_on_line "$paced" "▲"
+expect_on_line "$paced" "3 runs before, 3 since"
+[ -z "$(git status --porcelain)" ] || { label="slower since"; output=$(git status --porcelain); fail "sooth left the tree dirty"; }
+
 # 4. The gate: a new test file, and only that, repeated.
 case "$project" in
   phpunit) new=tests/NewTest.php

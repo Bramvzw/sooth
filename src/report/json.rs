@@ -363,11 +363,55 @@ fn history_object(pass: &history::Analysis) -> String {
             )
         })
         .collect();
+    let slower_entries: Vec<String> = pass
+        .slower_since
+        .iter()
+        .map(|test| {
+            let environment = test.environment.as_deref().map_or_else(
+                || "null".to_owned(),
+                |environment| format!(r#""{}""#, escape(environment)),
+            );
+            format!(
+                r#"{{"name":"{}","commit":"{}","environment":{environment},"before_ms":{},"since_ms":{},"runs_before":{},"runs_since":{},"tests_slower":{},"tests_timed":{}}}"#,
+                escape(&test.id),
+                escape(&test.commit),
+                test.before_ms,
+                test.since_ms,
+                test.runs_before,
+                test.runs_since,
+                test.tests_slower,
+                test.tests_timed
+            )
+        })
+        .collect();
+    let withheld_entries: Vec<String> = pass
+        .slower_withheld
+        .iter()
+        .map(|withheld| {
+            let environment = withheld.environment.as_deref().map_or_else(
+                || "null".to_owned(),
+                |environment| format!(r#""{}""#, escape(environment)),
+            );
+            // Thousandths as a number with two decimals, cut: the factor is
+            // a lower bound, so 2687 is 2.68.
+            let hundredths = withheld.times_per_mille / 10;
+            format!(
+                r#"{{"commit":"{}","environment":{environment},"tests":{},"times_as_long":{}.{:02},"tests_read":{}}}"#,
+                escape(&withheld.commit),
+                withheld.tests,
+                hundredths / 100,
+                hundredths % 100,
+                withheld.tests_read
+            )
+        })
+        .collect();
     format!(
-        r#","history":{{"flaky":[{}],"failing_since":[{}],"never_passed":[{}]}}"#,
+        r#","history":{{"flaky":[{}],"failing_since":[{}],"never_passed":[{}],"slower_since":[{}],"slower_withheld":[{}]}}"#,
         flaky_entries.join(","),
         since_entries.join(","),
-        never_entries.join(",")
+        never_entries.join(","),
+        slower_entries.join(","),
+        withheld_entries.join(",")
     )
 }
 
@@ -706,6 +750,24 @@ mod tests {
                 failed_runs: 3,
             }],
             never_passed: Vec::new(),
+            slower_since: vec![crate::analyzers::slow::SlowerSince {
+                id: "c::\"slow\"".to_owned(),
+                commit: "abc1234def".to_owned(),
+                environment: Some("ci".to_owned()),
+                before_ms: 15,
+                since_ms: 284,
+                runs_before: 5,
+                runs_since: 8,
+                tests_slower: 1,
+                tests_timed: 41,
+            }],
+            slower_withheld: vec![crate::analyzers::slow::Withheld {
+                commit: "fff9999abc".to_owned(),
+                environment: None,
+                tests: 17,
+                times_per_mille: 2687,
+                tests_read: 18,
+            }],
         };
         let json = to_json(
             &[outcome(false)],
@@ -717,7 +779,7 @@ mod tests {
         );
         assert!(
             json.contains(
-                r#""history":{"flaky":[{"name":"c::wob","failed_runs":1,"observed_runs":4,"failures_confined_to":"ci","red_since":null}],"failing_since":[{"name":"c::reg","commit":"abc1234def","failed_runs":3}],"never_passed":[]}"#
+                r#""history":{"flaky":[{"name":"c::wob","failed_runs":1,"observed_runs":4,"failures_confined_to":"ci","red_since":null}],"failing_since":[{"name":"c::reg","commit":"abc1234def","failed_runs":3}],"never_passed":[],"slower_since":[{"name":"c::\"slow\"","commit":"abc1234def","environment":"ci","before_ms":15,"since_ms":284,"runs_before":5,"runs_since":8,"tests_slower":1,"tests_timed":41}],"slower_withheld":[{"commit":"fff9999abc","environment":null,"tests":17,"times_as_long":2.68,"tests_read":18}]}"#
             ),
             "got: {json}"
         );

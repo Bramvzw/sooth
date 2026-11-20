@@ -26,6 +26,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   called order-dependent, and a run in which the runner ran other tests
   along is not taken for a run alone.
 
+- **`slower since <commit>`: the history says which tests take longer than
+  they did.** After a run, in `sooth history` and after an import, a test
+  is named with the commit since which it takes at least twice as long and
+  20 ms more. The evidence is passes on a clean tree in runs of the whole
+  suite: three sooth runs on each side, none since as fast as the last
+  five before, in one environment — and the other tests kept their time
+  over the commit's own runs. When a quarter of them did not, the clock
+  moved: no test is named, and one line says how many got slower and why. Every
+  commit says how many tests got slower at it, and of how many. In
+  `--json` under `history.slower_since` and `history.slower_withheld`. A
+  finding, not a failure: no exit code changes.
+
 ### Fixed
 
 - **A runner started through PHP is the runner.** `sooth run -- php
