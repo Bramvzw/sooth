@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **A Composer script that runs several runners is refused, not half
+  read.** Composer hands the arguments after `--` to every command of a
+  script and of every script it calls, so each runner wrote the report over
+  the one before and sooth took the last one's tests for the whole run: a
+  green run said `1 total` where three tests ran, and the history never saw
+  the others. sooth now reads the script in `composer.json` first and, when
+  more than one command would get its report flag, says which and runs
+  nothing (#303).
+
+### Changed
+
+- **A Composer script whose second command ignored the flag now stops
+  before it runs.** sooth counts every command of the script that gets the
+  arguments, not only those that look like test runners: a wrapper runs
+  tests under any name. A script such as `["echo starting", "phpunit"]`
+  ran before and is refused now, as is a `--changed` gate of such a script
+  with no changed test files, which passed; mark the command that runs no
+  tests with `@no_additional_args`.
+
 ## [0.4.0] - 2026-11-21
 
 ### Added

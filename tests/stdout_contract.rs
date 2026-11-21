@@ -5542,6 +5542,99 @@ fn a_composer_script_that_cannot_take_the_flags_is_told_what_composer_does() {
 }
 
 #[test]
+fn a_composer_script_that_hands_the_flags_to_two_runners_is_refused_before_it_runs() {
+    // Composer hands the arguments to every command a script runs, through
+    // its references too: both runners would write the one report, and only
+    // the second one's tests would be read (#303).
+    let Some(dir) = scratch_repo("composer-two-runners") else {
+        return;
+    };
+    write_fake_composer(&dir, "true ||");
+    std::fs::write(
+        dir.join("composer.json"),
+        r#"{"scripts": {
+            "test": ["@test-unit", "@test-feature"],
+            "test-unit": "phpunit tests/Unit",
+            "test-feature": "phpunit tests/Feature"
+        }}"#,
+    )
+    .expect("write composer.json");
+    // `COMPOSER` as Composer reads it: trimmed, and unset when empty.
+    let passes = [
+        (&["run", "--no-history"][..], None),
+        (&["order", "--no-history"][..], None),
+        (&["run", "--no-history"][..], Some("")),
+        (&["run", "--no-history"][..], Some(" composer.json ")),
+    ];
+    for (pass, manifest) in passes {
+        let mut sooth = Command::new(env!("CARGO_BIN_EXE_sooth"));
+        sooth.current_dir(&dir);
+        match manifest {
+            Some(name) => sooth.env("COMPOSER", name),
+            None => sooth.env_remove("COMPOSER"),
+        };
+        let output = sooth
+            .args(pass)
+            .args([
+                "--preset",
+                "phpunit",
+                "--color",
+                "never",
+                "--",
+                "./composer",
+                "test",
+            ])
+            .output()
+            .expect("sooth should run");
+        let stderr = String::from_utf8(output.stderr).expect("stderr should be UTF-8");
+        assert_eq!(output.status.code(), Some(2), "{pass:?}: {stderr:?}");
+        assert!(
+            stderr.contains(
+                "`composer test` hands the arguments after `--`, and sooth's report flag \
+                 with them, to 2 commands: `phpunit tests/Unit` (in `test-unit`), \
+                 `phpunit tests/Feature` (in `test-feature`)."
+            ),
+            "{pass:?}: {stderr:?}"
+        );
+        assert!(
+            stderr.contains("a script that runs only it (`composer test-unit`)"),
+            "{pass:?}: {stderr:?}"
+        );
+        assert!(
+            !dir.join("runner-args").exists(),
+            "{pass:?}: nothing runs before the refusal"
+        );
+    }
+
+    // One runner, the other command marked: it runs.
+    std::fs::write(
+        dir.join("composer.json"),
+        r#"{"scripts": {"test": ["@php artisan config:clear @no_additional_args", "phpunit"]}}"#,
+    )
+    .expect("write composer.json");
+    let output = Command::new(env!("CARGO_BIN_EXE_sooth"))
+        .current_dir(&dir)
+        .env_remove("COMPOSER")
+        .args([
+            "run",
+            "--no-history",
+            "--preset",
+            "phpunit",
+            "--color",
+            "never",
+        ])
+        .args(["--", "./composer", "test"])
+        .output()
+        .expect("sooth should run");
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "{:?}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
 fn a_gate_of_several_files_that_got_no_report_is_pointed_at_paratest() {
     // A `--parallel` inside a script cannot be seen up front; when such a
     // gate comes back empty-handed, sooth names the one thing it knows.

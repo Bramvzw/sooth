@@ -218,7 +218,10 @@ pub fn run(args: &cli::OrderArgs) -> Outcome {
             )
         })?;
     let plan = Plan::resolve(&args.command, preset);
-    if let Some(reason) = plan.order_refusal() {
+    if let Some(reason) = plan
+        .order_refusal()
+        .or_else(|| plan.composer_refusal(std::path::Path::new(".")))
+    {
         return Err(SoothError::new(reason));
     }
     // Read before the first run, as for `sooth run`: what a run writes is

@@ -25,6 +25,7 @@ src/
 ├── junit.rs       # EXISTS — tolerant JUnit-XML union schema (parse_str/parse_file)
 ├── phpunit_log.rs # EXISTS — failures from a PHPUnit console log, for `import --log phpunit`
 ├── preset.rs      # EXISTS — presets inject reporter flags/env, manage the temp report, and own per-runner selection knowledge (is_test_file, selected_paths)
+├── composer.rs    # EXISTS — which commands of a Composer script get the arguments after `--`, read from composer.json with Composer's own rules (serde_json)
 ├── gate.rs        # EXISTS — pre-push gate selection: which test files changed against a base (--changed)
 ├── history.rs     # EXISTS — local run history (.sooth/history.jsonl) + git code identity
 ├── json.rs        # EXISTS — JSON string escaping shared by the history file and the --json report

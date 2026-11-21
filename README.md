@@ -72,9 +72,17 @@ sooth run --preset phpunit -- composer test
 
 A Composer script works when it passes its arguments on to the runner, the
 way `composer test -- --filter=X` does. Composer appends them to *every*
-command of a script, so the skeleton Laravel 12 shipped needs
-`@no_additional_args` on its `config:clear` line, as Laravel 13's has;
-until then sooth says so and you can wrap `php artisan test` instead.
+command of a script, and of every script it calls (`@test-unit`), so sooth
+reads the script in `composer.json` before it runs anything. When more than
+one command would get its report flag, each would write the report over the
+one before, and sooth refuses and names them: a `test` script that runs
+several suites in turn, or the skeleton Laravel 12 shipped, whose
+`config:clear` line lacks the `@no_additional_args` Laravel 13's has. Give
+sooth one runner at a time — a script that runs only it, or the runner
+itself — and mark a command that runs no tests with `@no_additional_args`.
+One command that chains runners itself (`phpunit tests/Unit && phpunit
+tests/Feature`) is not seen: only the last runner gets the flag, so sooth
+reads its tests alone. Give each runner a script of its own.
 
 Exit codes: `0` — the runner and its report agree everything passed; `1` —
 the suite failed; `2` — sooth itself failed, or was stopped before it had

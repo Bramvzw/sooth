@@ -314,6 +314,30 @@ impl Plan {
         }
     }
 
+    /// Why sooth cannot run this command at all, if it cannot: a Composer
+    /// script that hands the arguments after `--`, sooth's report flag with
+    /// them, to more than one command (see [`crate::composer`]). Read from
+    /// the `composer.json` Composer would read: in `dir`, or in the
+    /// directory `-d` names, under the name `COMPOSER` gives — trimmed, and
+    /// unset when empty, as Composer reads it. One that Composer finds in a
+    /// parent directory is not read.
+    pub fn composer_refusal(&self, dir: &Path) -> Option<String> {
+        if self.shape != Shape::Composer {
+            return None;
+        }
+        let at = script_position(&self.command, &["composer", "composer.phar"])?;
+        let call = crate::composer::called(&self.command, at)?;
+        let manifest = std::env::var("COMPOSER")
+            .ok()
+            .map(|name| name.trim().to_owned())
+            .filter(|name| !name.is_empty())
+            .map_or_else(|| PathBuf::from("composer.json"), PathBuf::from);
+        let dir = call
+            .dir
+            .map_or_else(|| dir.to_path_buf(), |project| dir.join(project));
+        crate::composer::refusal(&dir, &manifest, &call)
+    }
+
     /// Why the gate cannot run this command, if it cannot. The gate hands
     /// the runner one path per changed test file; paratest — what
     /// `--parallel` runs under `artisan test` and Pest — accepts exactly one
