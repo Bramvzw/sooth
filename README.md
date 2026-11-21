@@ -617,6 +617,10 @@ every [GitHub release](https://github.com/Bramvzw/sooth/releases). With a Rust t
 cargo install sooth
 ```
 
+## Author
+
+Built by [Bram van Zwolle](https://bramvzw.nl).
+
 ## License
 
 Licensed under either of [MIT](LICENSE-MIT) or [Apache-2.0](LICENSE-APACHE) at your option.
