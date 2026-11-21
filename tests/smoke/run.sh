@@ -127,6 +127,19 @@ expect_on_line "$wobbly" "known flake"
 expect_on_line "$broken" "never seen passing"
 [ -z "$(git status --porcelain)" ] || { label="history"; output=$(git status --porcelain); fail "sooth left the tree dirty"; }
 
+# 3a. The same proof on uncommitted work: two runs on one unchanged dirty
+#     tree ran the same code. A history of its own, so nothing clean helps.
+[ ! -d .sooth ] || mv .sooth "$work/sooth-clean"
+echo "work in progress" > wip.txt
+echo 0 > "$SMOKE_COUNTER"
+run "dirty history, run 1 (wobbly passes)" ${preset[@]+"${preset[@]}"} -- "${runner[@]}"
+run "dirty history, run 2 (wobbly fails)" ${preset[@]+"${preset[@]}"} -- "${runner[@]}"
+expect_exit 1
+expect_on_line "$wobbly" "known flake"
+grep -qF '"tree":"' .sooth/history.jsonl || fail "no content recorded for a dirty tree"
+rm -rf .sooth wip.txt
+[ ! -d "$work/sooth-clean" ] || mv "$work/sooth-clean" .sooth
+
 # 3b. The same history, read for time: a test that takes longer since a
 #     commit is named with that commit, at its third run there and not
 #     before. Every run here is of the whole suite, which is what counts.

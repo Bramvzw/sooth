@@ -102,8 +102,9 @@ pub struct ImportArgs {
     /// The commit the reports were produced on, from a clean checkout.
     ///
     /// Without it the observations count in the totals but can never be
-    /// evidence: proving a flake needs a known clean commit. An abbreviated
-    /// sha is fine; one your clone does not know is refused.
+    /// evidence: proving a flake needs to know which code ran, and for a
+    /// report that is its commit. An abbreviated sha is fine; one your clone
+    /// does not know is refused.
     #[arg(long, value_name = "SHA")]
     pub commit: Option<String>,
 

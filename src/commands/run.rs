@@ -80,11 +80,12 @@ fn run_as_asked(args: &cli::RunArgs) -> Outcome {
     let files = selection.as_ref().map_or(&[][..], |gated| &gated.files);
     let ((command, envs), report_source) = prepared_command(args, plan.as_ref(), files)?;
 
-    let identity = identity_before_run(args, report_source.as_ref());
-
     // From here a Ctrl-C or a SIGTERM is a request, not the end: the runs
-    // that finished are still reported, and nothing is left behind.
+    // that finished are still reported, and nothing is left behind — the
+    // copy of uncommitted work the identity is read through included.
     let interrupt = interrupt::Interrupt::listen();
+
+    let identity = identity_before_run(args, report_source.as_ref());
     let session = Session {
         spawn: &(command, envs),
         report_source: report_source.as_ref(),
@@ -620,6 +621,7 @@ pub(super) fn record_history(
                 status,
                 commit: identity.commit.clone(),
                 dirty: identity.dirty,
+                tree: identity.tree.clone(),
                 environment: Some(environment.clone()),
                 invocation: Some(invocation.clone()),
                 at_epoch_secs,

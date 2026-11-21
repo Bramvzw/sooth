@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **A test is proven flaky on uncommitted work too.** Most runs are made
+  before a commit, on a dirty tree, and none of them could ever be evidence.
+  sooth now names a dirty tree by its content — the tree git would write
+  with every change and untracked file, read through a copy of the index,
+  so the repository is left untouched — and two runs on unchanged content
+  ran the same code: a pass in one and a failure in the other prove a
+  flake. An edit between the runs, or during one, makes them two pieces of
+  code. Work inside a submodule or a repository within this one, or more
+  than 5,000 changed files or 64 MB of them, leaves the content unread.
+  "Failing since" and "slower since" still name clean commits only. The
+  history records the content as `"tree"` on dirty runs; older lines stay
+  as they were (#119).
+
+### Fixed
+
+- **A run from a directory the repository ignores has no code identity.**
+  The code under test there is in no commit, yet the run was recorded on
+  the commit of the repository around it, clean or dirty, and could prove
+  a flake on code that had changed.
+
 ## [0.4.1] - 2026-11-21
 
 ### Fixed

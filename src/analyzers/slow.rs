@@ -693,7 +693,7 @@ fn timings<'a>(
     // from before durations were recorded, or not sooth's own.
     let mut made: BTreeMap<Option<&str>, Vec<Invocation>> = BTreeMap::new();
     for observation in window {
-        if observation.status != TestStatus::Passed || !observation.is_evidence() {
+        if observation.status != TestStatus::Passed || observation.clean_commit().is_none() {
             continue;
         }
         let (Some(commit), Some(ms), Some(name)) = (
@@ -856,6 +856,7 @@ mod tests {
             status: TestStatus::Passed,
             commit: Some(commit.to_owned()),
             dirty: Some(false),
+            tree: None,
             environment: Some("local".to_owned()),
             invocation: Some(format!("r{run}")),
             duration_ms: Some(ms),
@@ -1250,6 +1251,13 @@ mod tests {
         // its work, a report without a duration timed nothing, and a line
         // without an invocation cannot be laid beside the rest of its run.
         assert_eq!(slow(|o| o.dirty = Some(true)), Vec::new());
+        assert_eq!(
+            slow(|o| {
+                o.dirty = Some(true);
+                o.tree = Some("t1".to_owned());
+            }),
+            Vec::new()
+        );
         assert_eq!(slow(|o| o.dirty = None), Vec::new());
         assert_eq!(slow(|o| o.status = TestStatus::Failed), Vec::new());
         assert_eq!(slow(|o| o.duration_ms = None), Vec::new());
