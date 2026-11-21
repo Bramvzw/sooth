@@ -72,6 +72,10 @@ pub struct Observation {
     /// recorded this); `Some(0)` is a test the runner timed at under one.
     pub duration_ms: Option<u64>,
     pub at_epoch_secs: u64,
+    /// A pass nobody saw: a CI job that failed and passed on its rerun, the
+    /// pass read from the green attempt's counts, not from a name (see
+    /// `DECISIONS.md`). It proves a flake, and is never counted as a run.
+    pub inferred: bool,
 }
 
 /// The code an observation was made on, when sooth can name it.
@@ -1147,8 +1151,14 @@ fn to_line(observation: &Observation) -> String {
         .map_or_else(String::new, |tree| {
             format!(r#""tree":"{}","#, json::escape(tree))
         });
+    // Left out on every pass that was seen: only an inferred one says so.
+    let inferred = if observation.inferred {
+        r#""inferred":true,"#
+    } else {
+        ""
+    };
     format!(
-        r#"{{"at":{},"commit":{commit},"dirty":{dirty},"env":{environment},"run":{invocation},{duration}{tree}"status":"{}","id":"{}"}}"#,
+        r#"{{"at":{},"commit":{commit},"dirty":{dirty},"env":{environment},"run":{invocation},{duration}{tree}{inferred}"status":"{}","id":"{}"}}"#,
         observation.at_epoch_secs,
         status_str(observation.status),
         json::escape(&observation.id)
@@ -1276,6 +1286,10 @@ fn parse_line(line: &str) -> Option<Observation> {
     let duration_ms = extract_u64(line, "ms");
     // Absent on a clean tree, and on lines from before sooth recorded it.
     let tree = extract_string_or_null(line, "tree").flatten();
+    // Absent on everything seen; an older sooth reads an inferred pass as a
+    // pass, which is why only a rerun pair — red and green on one commit,
+    // already a proof — ever writes one.
+    let inferred = extract_bool_or_null(line, "inferred").flatten() == Some(true);
     Some(Observation {
         id,
         status,
@@ -1286,6 +1300,7 @@ fn parse_line(line: &str) -> Option<Observation> {
         invocation,
         duration_ms,
         at_epoch_secs,
+        inferred,
     })
 }
 
@@ -1386,6 +1401,7 @@ mod tests {
             invocation: Some("run-1700000000-1".to_owned()),
             duration_ms: None,
             at_epoch_secs: 1_700_000_000,
+            inferred: false,
         }
     }
 
@@ -2073,6 +2089,7 @@ mod tests {
                         _ => Some(format!("run-{}-1", next(90))),
                     },
                     at_epoch_secs: next(70),
+                    inferred: next(9) == 0,
                 })
                 .collect();
             super::append(&path, &written).expect("append");

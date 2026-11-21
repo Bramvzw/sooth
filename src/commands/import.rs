@@ -219,6 +219,7 @@ fn read_imports<'args>(
                 environment: Some(args.env.clone()),
                 invocation: Some(history::import_invocation(hash)),
                 at_epoch_secs,
+                inferred: false,
             })
             .collect();
         files.push(ImportedFile {

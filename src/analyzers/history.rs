@@ -54,6 +54,10 @@ pub struct HistoricFlake {
     /// Set when the flake has failed every run since a commit, across at
     /// least [`RED_STREAK_INVOCATIONS`] invocations (see `DECISIONS.md`).
     pub red_since: Option<RedStreak>,
+    /// Proven only by a CI job that failed and passed on its rerun: the
+    /// pass was read from the green attempt's counts, so there is no rate
+    /// to give — the outcomes count only what was seen.
+    pub per_rerun: bool,
 }
 
 /// How many invocations in a row a proven flake must fail, on commits it
@@ -106,6 +110,8 @@ enum Invocation<'a> {
 struct Outcomes<'a> {
     passed_in: BTreeSet<Invocation<'a>>,
     failed_in: BTreeSet<Invocation<'a>>,
+    /// Passes read from a green CI rerun's counts (see `Observation::inferred`).
+    inferred_in: BTreeSet<Invocation<'a>>,
 }
 
 impl Outcomes<'_> {
@@ -114,6 +120,12 @@ impl Outcomes<'_> {
         !self.passed_in.is_empty()
             && !self.failed_in.is_empty()
             && self.passed_in.union(&self.failed_in).nth(1).is_some()
+    }
+
+    /// A failure, and a rerun of the same CI job on the same code that
+    /// passed: a proof whose pass nobody saw by name.
+    fn prove_flaky_by_rerun(&self) -> bool {
+        !self.inferred_in.is_empty() && !self.failed_in.is_empty()
     }
 }
 
@@ -270,11 +282,14 @@ fn classify(id: &str, signal: &[&Observation], analysis: &mut Analysis) {
         let outcomes = per_identity.entry(identity).or_default();
         if failed(observation) {
             outcomes.failed_in.insert(invocation);
+        } else if observation.inferred {
+            outcomes.inferred_in.insert(invocation);
         } else {
             outcomes.passed_in.insert(invocation);
         }
     }
-    let proven_flaky = per_identity.values().any(Outcomes::prove_flaky);
+    let witnessed = per_identity.values().any(Outcomes::prove_flaky);
+    let proven_flaky = witnessed || per_identity.values().any(Outcomes::prove_flaky_by_rerun);
 
     // The failures that close the window, newest first. Reds on code sooth
     // cannot name as a commit count in the streak; they just cannot carry
@@ -282,7 +297,9 @@ fn classify(id: &str, signal: &[&Observation], analysis: &mut Analysis) {
     // seen passing on: there a failure is the flake being a flake.
     let passed_on: BTreeSet<Identity> = per_identity
         .iter()
-        .filter(|(_, outcomes)| !outcomes.passed_in.is_empty())
+        .filter(|(_, outcomes)| {
+            !outcomes.passed_in.is_empty() || !outcomes.inferred_in.is_empty()
+        })
         .map(|(identity, _)| *identity)
         .collect();
     let streak: Vec<&Observation> = signal
@@ -314,14 +331,18 @@ fn classify(id: &str, signal: &[&Observation], analysis: &mut Analysis) {
                 commit: commit.to_owned(),
                 failed_runs: streak.len(),
             });
+        // A pass nobody saw is no run: the counts are of what was seen.
+        // Only a pass can be inferred: a failure is always seen by name.
+        let inferred = signal.iter().filter(|o| o.inferred && !failed(o)).count();
         analysis.flaky.push(HistoricFlake {
             outcomes: TestOutcomes {
                 id: id.to_owned(),
-                passed: signal.len() - failed_count,
+                passed: signal.len() - failed_count - inferred,
                 failed: failed_count,
             },
             failures_confined_to: failures_confined_to(signal),
             red_since,
+            per_rerun: !witnessed,
         });
         return;
     }
@@ -388,6 +409,7 @@ mod tests {
             invocation: None,
             duration_ms: None,
             at_epoch_secs: 0,
+            inferred: false,
         }
     }
 

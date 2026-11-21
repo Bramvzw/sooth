@@ -6,6 +6,7 @@
 //! `2` — sooth itself failed (spawn error, unparsable report, bad flags).
 
 mod analyzers;
+mod ci_log;
 mod cli;
 mod collision_log;
 mod commands;

@@ -861,6 +861,7 @@ mod tests {
             invocation: Some(format!("r{run}")),
             duration_ms: Some(ms),
             at_epoch_secs: run as u64,
+            inferred: false,
         }
     }
 

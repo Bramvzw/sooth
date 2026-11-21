@@ -285,6 +285,7 @@ mod tests {
                 },
                 failures_confined_to: None,
                 red_since: None,
+                per_rerun: false,
             }],
             failing_since: vec![FailingSince {
                 id: "c::regressed".to_owned(),

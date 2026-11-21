@@ -775,6 +775,7 @@ mod tests {
                 },
                 failures_confined_to: Some("ci".to_owned()),
                 red_since: None,
+                per_rerun: false,
             }],
             failing_since: vec![crate::analyzers::history::FailingSince {
                 id: "c::reg".to_owned(),

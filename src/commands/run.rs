@@ -625,6 +625,7 @@ pub(super) fn record_history(
                 environment: Some(environment.clone()),
                 invocation: Some(invocation.clone()),
                 at_epoch_secs,
+                inferred: false,
             });
         }
     }
