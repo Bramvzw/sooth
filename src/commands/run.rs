@@ -544,23 +544,81 @@ fn disagreement(runs_failed: bool, report_failures: usize, has_reports: bool) ->
     }
 }
 
-/// Re-run only the failed tests and classify them, when `--verify` asked
-/// for it. A verification that cannot be made degrades to a warning and
-/// `None`, and the exit code is not changed. `Err` is the one exception:
-/// sooth was asked to stop before the re-runs were done.
+/// Whether a red run re-runs its failures, and on whose word.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Verification {
+    /// `--no-verify`, or a run sooth cannot verify unasked: no preset, a
+    /// preset that cannot select tests, `--runs N`, whose runs already
+    /// re-ran everything, or a Composer script whose arguments reach only
+    /// the last command of a shell line, so the others would run whole.
+    Off,
+    /// Nobody asked, and it can be done: up to [`verify::DEFAULT_MOST`]
+    /// tests are re-run, an interrupt drops the verdict and leaves the exit
+    /// code to the suite (see `DECISIONS.md`).
+    Unasked,
+    /// `--verify`: every failure is re-run.
+    Asked,
+}
+
+/// What the flags and the command make of re-running a red run's failures.
+fn verification(args: &cli::RunArgs, plan: Option<&preset::Plan>) -> Verification {
+    if args.verify {
+        return Verification::Asked;
+    }
+    let can_select = args.preset.is_some_and(preset::supports_selection)
+        && plan.is_some_and(|plan| !plan.chained_script(std::path::Path::new(".")));
+    if args.no_verify || args.runs > 1 || !can_select {
+        Verification::Off
+    } else {
+        Verification::Unasked
+    }
+}
+
+/// Re-run only the failed tests and classify them: always when `--verify`
+/// asked for it, and on a red single run by default (see [`verification`]).
+/// A verification that cannot be made degrades to a warning and `None`, and
+/// the exit code is not changed. `Err` is the one exception: sooth was asked
+/// to stop before the re-runs `--verify` asked for were done. Re-runs nobody
+/// asked for are only dropped: the suite has its answer already.
 fn verify_failures(
     args: &cli::RunArgs,
     plan: Option<&preset::Plan>,
     final_report: Option<&junit::JunitReport>,
     interrupt: &interrupt::Interrupt,
 ) -> Result<Option<verify::Verdict>, report::Interrupted> {
-    let (true, Some(plan), Some(final_report)) = (args.verify, plan, final_report) else {
+    let verification = verification(args, plan);
+    let most = match verification {
+        Verification::Off => return Ok(None),
+        Verification::Unasked => Some(verify::DEFAULT_MOST),
+        Verification::Asked => None,
+    };
+    let (Some(plan), Some(final_report)) = (plan, final_report) else {
         return Ok(None);
     };
-    match verify::run(plan, final_report, interrupt) {
+    match verify::run(plan, final_report, most, interrupt) {
         Ok(verdict) => Ok(verdict),
         Err(verify::Unverified::Skipped(why)) => {
             report::warn(&why);
+            Ok(None)
+        }
+        Err(verify::Unverified::TooMany(failed)) => {
+            report::note(&format!(
+                "{failed} tests failed — more than the {} a red run re-runs by default, and \
+                 that many at once are rarely flakes; `--verify` re-runs them anyway",
+                verify::DEFAULT_MOST
+            ));
+            Ok(None)
+        }
+        Err(verify::Unverified::TooWide(ran)) => {
+            report::note(&format!(
+                "the re-run of the failures ran {ran} tests — the runner could not be held to \
+                 the ones that failed, so a red run stops re-running there by default; \
+                 `--verify` re-runs them anyway"
+            ));
+            Ok(None)
+        }
+        Err(verify::Unverified::Interrupted) if verification == Verification::Unasked => {
+            report::note("stopped before the failures were re-run — the suite's own result stands");
             Ok(None)
         }
         Err(verify::Unverified::Interrupted) => Err(report::Interrupted::Verification),

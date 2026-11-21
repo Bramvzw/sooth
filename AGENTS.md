@@ -38,7 +38,9 @@ src/
 
 Flags sooth cannot honor are rejected loudly, never silently ignored: `--json`/`--slowest`
 require a report source (`--junit` or `--preset`), `--preset` conflicts with `--junit`,
-`--verify` needs `--preset` and a single run, and `--fail-on-flaky` requires a report source. Exit
+`--verify` needs `--preset` and a single run (unasked, a red single run with a preset that can
+select tests re-runs up to 50 failures; `--no-verify` turns that off), and `--fail-on-flaky`
+requires a report source. Exit
 codes are a contract: `0` every run passed, `1` at least one run failed, `2` sooth itself failed
 (see `DECISIONS.md`). `sooth explain` is diagnosis only: it runs nothing, records nothing, and
 uses just `0` and `2`. `sooth order` is the order pass, never mixed into `run`: it makes its own

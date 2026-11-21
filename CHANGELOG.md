@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **A red run says on its own which failures are flakes.** A single run
+  that fails, with a preset that can select tests, now re-runs only the
+  failed tests twice and labels each one `real` or `flaky or
+  order-dependent`, as `--verify` did; behind a flag, a new project's first
+  red run said only "new (nothing in history)". Up to 50 failures are
+  re-run unasked; above that sooth says how many failed and leaves them.
+  `--verify` still re-runs every failure and still refuses where it cannot;
+  `--no-verify` turns the re-runs off. The exit code does not change, and a
+  Ctrl-C or a CI timeout during re-runs nobody asked for drops them and
+  leaves the suite's exit code (#307).
+- **A re-run reaches only the failed tests.** The selection holds each
+  failure to its class and its whole name: a PHPUnit failure called `test`
+  re-ran every `test*` method, and `test_index` the `test_index` of every
+  class. Jest gets the failed tests' files, so it no longer loads the whole
+  suite to find one title. This applies to `--verify` too.
+
 ## [0.4.1] - 2026-11-21
 
 ### Fixed

@@ -121,6 +121,9 @@ refuse "unverified"
 echo 0 > "$SMOKE_COUNTER"
 run "history, run 1 (wobbly passes)" ${preset[@]+"${preset[@]}"} -- "${runner[@]}"
 expect_exit 1
+# Unasked, a red single run re-runs its failures; only the failed test is
+# selected, so the wobbly test's count is left alone.
+expect_on_line "$broken" "real (reproduced on re-run)"
 run "history, run 2 (wobbly fails)" ${preset[@]+"${preset[@]}"} -- "${runner[@]}"
 expect_exit 1
 expect_on_line "$wobbly" "known flake"

@@ -1,7 +1,7 @@
 #!/bin/sh
 # A fake phpunit for the --verify contract tests: the initial run fails
 # c::wob and exits 1; a --filter invocation (verify's selection re-run)
-# writes $SOOTH_TEST_VERIFY_CASE instead and exits 0.
+# writes $SOOTH_TEST_VERIFY_CASE instead, leaves a `re-ran` file and exits 0.
 report=""; prev=""; verify=0
 for a in "$@"; do
   if [ "$prev" = "--log-junit" ]; then report="$a"; fi
@@ -9,6 +9,7 @@ for a in "$@"; do
   prev="$a"
 done
 if [ "$verify" = "1" ]; then
+  : > re-ran   # left in the working directory: the tests ask whether a re-run happened
   printf '<testsuite>%s</testsuite>' "$SOOTH_TEST_VERIFY_CASE" > "$report"
   exit 0
 fi

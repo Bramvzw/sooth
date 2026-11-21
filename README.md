@@ -96,7 +96,8 @@ what that command started in turn — a Ctrl-C at a terminal reaches those
 too, a lone `SIGTERM` does not — and a signal that arrives when the last
 run is over changes nothing: the report follows and the exit is the suite's.
 The one exception is `--verify` with failures still to re-run: that
-verification is then cut short, and the exit is 2.
+verification is then cut short, and the exit is 2. The re-runs a red run
+makes unasked are dropped instead, and the exit is the suite's.
 
 ## Run history
 
@@ -391,7 +392,7 @@ already knows:
 ```
 
 Every failing test gets one line with two answers. **What this run saw** —
-`flaky`, `broken`, or, after `--verify`, `real` / `flaky or order-dependent` /
+`flaky`, `broken`, or, after its re-run, `real` / `flaky or order-dependent` /
 `unverified`. (With `--runs N`, `flaky` weakens to `flaky or order-dependent`
 when the runs did not share one order — `--order-by=defects` and
 `--random-order` do that, and then order-dependence looks exactly like a flake.) And **whether sooth knew it already** — `known flake` (proven by
@@ -417,9 +418,10 @@ whenever it could read the report (2 when it could not).
 
 ## Verify failures
 
-`--verify` removes the `--runs N` cost from daily use. When a run fails,
-sooth re-runs *only the failed tests* twice — seconds instead of N× the
-suite — and each failure's line above says what came of it:
+A red run answers the question it raises — your change, or a flake? — on
+its own. When a single run fails, sooth re-runs *only the failed tests*
+twice — seconds instead of N× the suite — and each failure's line above
+says what came of it:
 
 - **real** — failed on every re-run, at least once with the same failure
   the suite saw: fix the test or the code.
@@ -430,12 +432,25 @@ suite — and each failure's line above says what came of it:
 - **unverified** — the re-run did not cover it; sooth does not guess.
 
 The suite verdict and exit code are unchanged: sooth classifies failures, it
-never absorbs them the way retry plugins do. Requires `--preset` (sooth must
-re-invoke your runner on a subset) and a single run; not supported for the
-go preset yet.
+never absorbs them the way retry plugins do. It needs a preset, given or
+inferred (sooth must re-invoke your runner on a subset), and happens on a
+single run only: `--runs N` re-ran everything already. Not for the go
+preset yet.
+
+Unasked, sooth re-runs up to 50 failures. More than that at once is rarely
+a set of flakes — a database that is down, a migration that broke — and
+re-running them costs close to a second suite, so sooth says how many failed
+and leaves them. A re-run is held to the failed tests (their class and whole
+name; for jest, their files); one that still ran more than 50 tests is not
+repeated, and a Composer script whose arguments land on a line of several
+commands (`phpunit a && phpunit b`) is not re-run unasked at all.
+`--verify` re-runs every failure, and refuses where it cannot (no preset,
+the go preset, `--runs N`); `--no-verify` turns the re-runs off.
 
 ```bash
-sooth run --verify --preset phpunit -- vendor/bin/phpunit
+sooth run --preset phpunit -- vendor/bin/phpunit              # re-runs up to 50 failures
+sooth run --verify --preset phpunit -- vendor/bin/phpunit     # every failure
+sooth run --no-verify --preset phpunit -- vendor/bin/phpunit  # none
 ```
 
 ## Does the order matter?

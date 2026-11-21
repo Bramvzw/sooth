@@ -449,6 +449,30 @@ pub fn refusal(dir: &Path, manifest: &Path, call: &Call<'_>) -> Option<String> {
     refusal_of(&manifest, &typed, script)
 }
 
+/// Whether the script the Composer command line `call` runs, from
+/// `manifest` in `dir`, hands the arguments after `--` to a command that is
+/// a shell line of more than one command — an `&&`, `||`, `;`, `|`, `&` or
+/// line break in it, quoted or not, so a doubt counts as a chain. Composer
+/// appends the arguments to the end of that line: only its last command gets
+/// them. `false` when the manifest cannot be read or the line runs no script.
+pub fn chained(dir: &Path, manifest: &Path, call: &Call<'_>) -> bool {
+    let Ok(text) = std::fs::read_to_string(dir.join(manifest)) else {
+        return false;
+    };
+    let Ok(json) = serde_json::from_str::<Value>(&text) else {
+        return false;
+    };
+    let Some(manifest) = Manifest::of(&json) else {
+        return false;
+    };
+    manifest.script(call).is_some_and(|script| {
+        manifest
+            .receivers(script)
+            .iter()
+            .any(|receiver| receiver.command.contains(['&', '|', ';', '\n']))
+    })
+}
+
 /// The refusal for `script`, typed as `composer {typed}`: none when its
 /// commands get the arguments once in all, or never.
 fn refusal_of(manifest: &Manifest<'_>, typed: &str, script: &str) -> Option<String> {
@@ -902,6 +926,45 @@ mod tests {
         let found = refusal(&dir, Path::new("composer.json"), &call);
         std::fs::remove_dir_all(&dir).expect("rm");
         found
+    }
+
+    /// Whether `command` runs a chained line, against a `composer.json` of
+    /// `json` in a scratch directory of its own.
+    fn chain_in(json: &Value, command: &str) -> bool {
+        let dir = std::env::temp_dir().join(format!(
+            "sooth-composer-{}-{}",
+            std::process::id(),
+            SCRATCH.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        std::fs::write(dir.join("composer.json"), json.to_string()).expect("write");
+        let words = words(command);
+        let call = called(&words, 0).expect("a word");
+        let found = super::chained(&dir, Path::new("composer.json"), &call);
+        std::fs::remove_dir_all(&dir).expect("rm");
+        found
+    }
+
+    #[test]
+    fn a_shell_line_of_several_commands_is_a_chain_wherever_the_script_calls_it() {
+        let json = json!({ "scripts": {
+            "test": "phpunit tests/Unit && phpunit tests/Feature",
+            "either": "phpunit || true",
+            "seq": "phpunit tests/Unit; phpunit tests/Feature",
+            "piped": "phpunit | tee out.txt",
+            "via": "@test",
+            "plain": "@php artisan test --parallel --exclude-group=central",
+            "quiet": ["phpunit tests/Unit && echo done @no_additional_args", "phpunit"]
+        }});
+        for script in ["test", "either", "seq", "piped", "via"] {
+            assert!(chain_in(&json, &format!("composer {script}")), "{script}");
+        }
+        assert!(!chain_in(&json, "composer plain"));
+        // A chain that gets no arguments is not where they land.
+        assert!(!chain_in(&json, "composer quiet"));
+        // No manifest, or no script of it: nothing is known, nothing assumed.
+        assert!(!chain_in(&json, "composer install"));
+        assert!(!chain_in(&json!({}), "composer test"));
     }
 
     #[test]
