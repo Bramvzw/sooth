@@ -8,6 +8,7 @@
 mod analyzers;
 mod cli;
 mod commands;
+mod composer;
 mod gate;
 mod history;
 mod interrupt;

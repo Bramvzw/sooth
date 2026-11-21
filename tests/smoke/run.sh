@@ -255,6 +255,22 @@ case "$flavour" in
     expect_exit 0
     expect "only the exit code was read"
     ;;
+  composer)
+    # Composer hands the arguments to every command a script runs: a script
+    # of two runners would have each write the report over the other's, so
+    # sooth names them and runs nothing. One of them alone runs.
+    cp composer.json "$work/composer.json"
+    unset COMPOSER
+    php -r '$f = "composer.json"; $j = json_decode(file_get_contents($f), true); $j["scripts"] += ["both" => ["@one", "@two"], "one" => "phpunit tests/NewTest.php", "two" => "phpunit tests/NewTest.php"]; file_put_contents($f, json_encode($j, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));'
+    run "a script of two runners" --no-history ${preset[@]+"${preset[@]}"} -- composer both
+    expect_exit 2
+    expect 'to 2 commands: `phpunit tests/NewTest.php` (in `one`)'
+    expect 'a script that runs only it (`composer one`)'
+    run "one runner of them" --no-history ${preset[@]+"${preset[@]}"} -- composer one
+    expect_exit 0
+    expect "tests: 1 total"
+    cp "$work/composer.json" composer.json
+    ;;
   phpunit)
     # The gate must not run in parallel, and says so before anything runs.
     run "--changed with --parallel" --no-history --changed=HEAD --runs 3 -- vendor/bin/phpunit --parallel

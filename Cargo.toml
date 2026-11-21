@@ -18,6 +18,10 @@ quick-xml = "0.41.0"
 # forbids. Only the flag API is used, so the iterator and channel features
 # stay off (see DECISIONS.md, "A signal is a request to stop").
 signal-hook = { version = "0.4", default-features = false }
+# Reads a project's `composer.json`: someone else's free-form JSON, unlike the
+# fixed shapes sooth writes and reads by hand (see DECISIONS.md, "A Composer
+# script that hands the report flag to more than one command").
+serde_json = "1"
 
 [[bin]]
 name = "sooth"

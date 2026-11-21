@@ -66,6 +66,12 @@ fn run_as_asked(args: &cli::RunArgs) -> Outcome {
     let plan = args
         .preset
         .map(|preset| preset::Plan::resolve(&args.command, preset));
+    if let Some(reason) = plan
+        .as_ref()
+        .and_then(|plan| plan.composer_refusal(std::path::Path::new(".")))
+    {
+        return Err(SoothError::new(reason));
+    }
     let selection = match gate_selection(args, plan.as_ref(), style)? {
         Gate::Off => None,
         Gate::Files(selection) => Some(selection),

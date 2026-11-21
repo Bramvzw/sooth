@@ -2497,3 +2497,90 @@ when CI is twice as slow for every test and every test failed in six
 different runs — every test a candidate, each with a reading of its own.
 
 **To be checked against a real history** with CI imports, as step one is.
+
+## A Composer script that hands the report flag to more than one command
+
+Found dogfooding v0.4.0 on a production Laravel suite (#303), whose
+`composer test` runs several scripts in turn, each with its own runner.
+Composer hands the arguments after `--` to every command of a script and,
+through a reference (`@test-unit`), to every command of the script it
+names. Under the phpunit preset sooth's `--log-junit` is one of those
+arguments: every runner wrote the one report over the one before, and
+sooth took the last one's tests for the whole run. A green run said
+`1 total` where three tests ran, and the history never saw the others —
+the kind of thing sooth exists not to say.
+
+**Refused, not repaired.** Composer gives every command the same
+arguments, so there is no flag that gives each runner a report of its
+own; running the script's commands one by one would mean doing Composer's
+work (`@php`, `@putenv`, callbacks, `@additional_args`, the arguments a
+reference adds) and getting it subtly wrong. sooth reads the script before
+it runs anything and refuses when more than one command would get the
+arguments, naming them, and a script to run instead when one of them runs
+a single runner (`phpunit`, `pest`, `paratest`, `artisan test`) and
+nothing else that gets the arguments. It is the same rule that already
+caught Laravel 12's skeleton, whose `config:clear` line lacks
+`@no_additional_args`: that one used to fail after the run, with no
+report; now it is named before.
+
+**Composer's rules, read from its source** (`EventDispatcher` and the
+console `Application` in Composer 2.10) and compared, over two review
+rounds, with what real Composer runs:
+
+- A command with `@no_additional_args` gets nothing, and a reference
+  marked so hands nothing on.
+- `@<name>` calls a script with them — except a reference that writes
+  `@additional_args`, which Composer hands nothing (it keeps what
+  `array_splice` removed, which is nothing); `@composer …` too.
+- `@composer …`, or a command that starts `composer`, `composer.phar` or
+  `php composer.phar`, starts Composer again; behind a `--` of its own the
+  arguments reach the script it names in the same manifest, and sooth
+  follows it there. Without one, the new Composer reads them as its own
+  options and stops: one command.
+- `@putenv` and a PHP callback get no command line. A command class does:
+  Composer runs it with them as its input.
+- Anything else, `@php` included, gets them — at the end, or wherever it
+  writes `@additional_args`, once for each time it writes it.
+- A reference to a script that does not exist runs nothing; a script that
+  calls itself is stopped.
+- Which script a command line runs: Composer's own commands and their
+  aliases first; a script named like one of them, or like a script event
+  (in any case, `-` or `_`), is no command. An alias from
+  `scripts-aliases` takes its name from whatever had it — a script's own
+  name, an alias of Composer's (`u`), and for an abbreviation even one of
+  Composer's own names (`inst` for an alias `install`); typed in full,
+  Composer's own name runs its own command, since Composer then registers
+  no scripts. An alias is a command only, not a name `run-script` takes,
+  and `run-script` refuses an event spelled otherwise (`post_install_cmd`). A name that is none of these is looked up as
+  Symfony Console does: a unique abbreviation per `:`-separated part,
+  ignoring case when nothing matches as typed, an alias counting apart
+  only when its script does not match too. The first version gave an
+  alias the lowest place, and its own test said so; the second review
+  round ran real Composer next to it and found the opposite.
+
+Every command that gets the arguments counts, not only those that look
+like runners: a wrapper script runs tests under any name, while a command
+that runs none and is refused has a one-word fix that Composer's own
+documentation describes. Not modelled: a command class reached from a
+script typed as a command gets the arguments even when marked
+`@no_additional_args` (Composer hands it the raw input then); one command
+line that chains runners itself (`phpunit a && phpunit b`), where only the
+last runner gets the flag — the README says to give each its own script;
+an alias two scripts claim, which Composer gives to the later in the file,
+an order `serde_json` does not keep, so sooth assumes neither; plugin
+commands; and `--no-scripts`.
+
+**Only what is certain is refused.** A `composer.json` that cannot be read
+or parsed, a script it does not have, a command line that runs no script:
+no refusal, and the run goes ahead as before. The manifest is the one in
+the working directory or the one `-d`/`--working-dir` names, under the
+name `COMPOSER` gives (trimmed, and unset when empty, as Composer reads
+it). One that Composer finds in a parent directory — with `use-parent-dir`,
+or when a person at a terminal says yes — is not read.
+
+**`serde_json`, a fourth dependency.** Earlier entries keep sooth's JSON
+hand-rolled: the `--json` output and the history are shapes sooth writes
+itself, fixed and flat. `composer.json` is someone else's free-form JSON —
+nesting, escapes, `\u` sequences — and parsing that by hand is where bugs
+hide. Bram chose `serde_json` over a reader of our own (2026-11-21). It
+reads into `serde_json::Value`, with no derive.
