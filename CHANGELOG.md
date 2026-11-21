@@ -26,6 +26,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   called order-dependent, and a run in which the runner ran other tests
   along is not taken for a run alone.
 
+- **`slow in ci`: the history says which tests are slow in one environment
+  and not in another.** On the commits both ran, in runs of the whole
+  suite, a test that takes at least twice as long in one place as what
+  the other tests show the machine does there, and 20 ms more than it
+  explains, is named with its time in both places. Under five other tests
+  to read the machines from, nothing is named. In `--json` under
+  `history.slow_in`. A finding, not a failure.
 - **`slower since <commit>`: the history says which tests take longer than
   they did.** After a run, in `sooth history` and after an import, a test
   is named with the commit since which it takes at least twice as long and

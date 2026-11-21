@@ -553,6 +553,86 @@ pub fn print_history(analyses: &Analyses<'_>, style: Style) {
     }
     print_slower_since(&pass.slower_since, style);
     print_slower_withheld(&pass.slower_withheld, style);
+    print_slow_in(&pass.slow_in, style);
+}
+
+/// The tests slow in one environment and not in another, place by place,
+/// the one that costs most there first. The heading says against what, how
+/// many and of how many, and what the machine there does to the other
+/// tests — the least of it, cut, which holds for each test under it; a
+/// line has the test's medians in both places and how many runs stand on
+/// each side.
+fn print_slow_in(slow_in: &[slow::SlowIn], style: Style) {
+    let mut places: Vec<Vec<&slow::SlowIn>> = Vec::new();
+    for test in slow_in {
+        let same = |others: &&mut Vec<&slow::SlowIn>| {
+            others[0].environment == test.environment && others[0].against == test.against
+        };
+        match places.iter_mut().find(same) {
+            Some(others) => others.push(test),
+            None => places.push(vec![test]),
+        }
+    }
+    for tests in places {
+        let first = tests[0];
+        let machine = tests
+            .iter()
+            .map(|test| test.others_per_mille)
+            .min()
+            .unwrap_or(0)
+            / 100;
+        let floor = whole_millis(slow::SLOWER_BY_MS);
+        let share = if first.tests_timed == 1 {
+            format!("the only test that takes {floor} or more there")
+        } else {
+            format!(
+                "{} of the {} that take {floor} or more there",
+                count(first.tests_slower, "test"),
+                first.tests_timed
+            )
+        };
+        let many = first.many_at_once();
+        let shown = if many { MANY_SHOWN } else { SLOWER_SHOWN };
+        let what_follows = if many {
+            format!(
+                " — that many at once can as well be the machine, a setting or something \
+                 the tests share. The {} that cost most:",
+                shown.min(tests.len())
+            )
+        } else {
+            ":".to_owned()
+        };
+        println!(
+            "{}",
+            style.yellow(&format!(
+                "slow in {}, against {} on the same commits — {share}, where a quarter of the \
+                 other tests took {}.{} times as long or more{what_follows}",
+                printable(&first.environment),
+                printable(&first.against),
+                machine / 10,
+                machine % 10
+            ))
+        );
+        for test in tests.iter().take(shown) {
+            println!(
+                "  {} {} {} → {} {}",
+                style.yellow("▲"),
+                identity(&test.id, style),
+                whole_millis(test.against_ms),
+                whole_millis(test.slow_ms),
+                style.dim(&format!(
+                    "({} in {}, {} in {})",
+                    count(test.runs_against, "run"),
+                    printable(&test.against),
+                    test.runs,
+                    printable(&test.environment)
+                ))
+            );
+        }
+        if tests.len() > shown {
+            println!("  … and {} more", tests.len() - shown);
+        }
+    }
 }
 
 /// The tests that got slower since a commit and are not named. One line
@@ -996,7 +1076,7 @@ pub fn print_empty_history() {
 /// `sooth history` over evidence that proves nothing yet.
 pub fn print_nothing_stands_out() {
     println!(
-        "nothing stands out: no proven flakes, no failing-since pointers, no slower-since \
+        "nothing stands out: no proven flakes, and no failing-since, slower-since or slow-in \
          pointers"
     );
 }

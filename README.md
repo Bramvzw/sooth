@@ -107,6 +107,8 @@ then accumulates from runs you make anyway:
   sooth only knows where it first looked.
 - **slower since `<commit>`** — taking longer since a commit than before
   it, on the runs it passed. See "Which tests got slower?" below.
+- **slow in `ci`** — taking longer in one environment than in another, on
+  the same code. See "Slow in one place" below.
 
 A proven flake that has failed every run since a commit, in three
 invocations or more, says so on its line (`…, and every run since <commit>
@@ -220,6 +222,73 @@ Ten tests are listed per commit, and `--json` has all of them under
 `history.slower_since`, the withheld under `history.slower_withheld`.
 
 Durations are in the history since v0.3.4, so the before starts there.
+
+### Slow in one place
+
+A test that waits for a server only CI can reach, or for a cache only your
+laptop has, is slow in one environment and fast in the other. The history
+knows where every run was made (`ci` when the `CI` variable is set,
+`local` otherwise, or what an import says), so it can say so:
+
+```
+slow in ci, against local on the same commits — 1 test of the 21 that take 20ms or more there, where a quarter of the other tests took 1.2 times as long or more:
+  ▲ MailTest::test_sends_mail 0ms → 303ms (29 runs in local, 12 in ci)
+```
+
+A test is named when all of this holds:
+
+- **The same code on both sides.** Only commits both environments ran,
+  on a clean tree, passes only.
+- **The same suite on both sides.** On each commit, the tests both
+  places ran there, and only the runs that ran nine tenths of them: a CI
+  job that runs a shard is not held against a laptop that runs
+  everything, and a CI that also runs tests the laptop leaves out still
+  is.
+- **Three sooth runs in each place.**
+- **Twice as long as the other tests show the machine does, and 20 ms
+  more.** Two environments are two machines, and a CI runner is commonly
+  slower than a laptop for everything — by no one factor. So sooth reads
+  what the machine does from the other tests that take 20 ms or more in
+  the faster place, over the same runs: the ratio a quarter from the top,
+  which the heading shows. The test has to take twice that, and 20 ms
+  more than it accounts for.
+- **No run there as fast as a run here.**
+
+What it cannot know:
+
+- **What a machine does to only some tests.** The reading is what the
+  machine does to most of them. A debugger or coverage in one place, or a
+  coarse timer that stretches short waits (on efficiency cores, a 2 ms
+  sleep took 66 ms), reads as those tests being slow there. That is true
+  of the place, and the test is worth a look, but the cause can be the
+  machine. Three or more that are over a fifth of the tests, and the
+  heading says many at once; fewer, and it does not.
+- **How the suite was run.** A shard is seen: it ran a part of what the
+  other place ran. A run that leaves out a tenth of that or less is not,
+  nor is a parallel run. Leave out the test that builds a fixture, and the
+  next one pays. Run in parallel in one place and not in the other, and
+  the first test of each process pays for what the suite sets up once
+  (migrations, a fixture) and reads as slow there. Tests only one place
+  runs are not compared, but they ran: CI runs Feature and Unit, the
+  laptop only Unit, and the first Unit test to refresh the database pays
+  for the migrations locally and reads as slow there. Run it the same way
+  in both.
+- **A suite that changes size.** As for "slower since": grow or shrink
+  the suite by more than a tenth, and the runs of the old size are parts
+  until the window has moved on.
+- **Commits CI ran and you did not.** On a pull request, GitHub's CI
+  tests a merge commit nobody ran locally, so its runs meet none of
+  yours. Have the job check out the branch's own commit, with
+  `ref: ${{ github.event.pull_request.head.sha }}` for
+  `actions/checkout` (it then tests the branch, not its merge with the
+  base), or compare the runs on pushed commits.
+- **Two machines nobody measured.** With fewer than five other tests to
+  read the machines from, nothing is named.
+- **Lines from before sooth recorded environments**, which are in no
+  place.
+
+Ten tests are listed per place, and `--json` has all of them under
+`history.slow_in`. A finding, not a failure.
 
 The history only grows: a 5,000-test suite adds about a megabyte per run.
 Every analysis looks at each test's last 50 invocations in which it ran, so

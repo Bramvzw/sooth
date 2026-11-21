@@ -161,6 +161,45 @@ expect_on_line "$paced" "▲"
 expect_on_line "$paced" "3 runs before, 3 since"
 [ -z "$(git status --porcelain)" ] || { label="slower since"; output=$(git status --porcelain); fail "sooth left the tree dirty"; }
 
+# 3c. And read across environments: a test that waits only where CI is set
+#     is named as slow in ci against local, on the one commit both ran.
+#     Five tests that take 25 ms everywhere are what the two machines are
+#     read from; with fewer, nothing is named.
+case "$project" in
+  phpunit) place=tests/PlaceTest.php; mailed='PlaceTest::test_mail'
+    printf '<?php\nuse PHPUnit\\Framework\\TestCase;\nfinal class PlaceTest extends TestCase\n{\n' > "$place"
+    for n in 1 2 3 4 5; do printf '    public function test_steady_%s(): void { usleep(25000); $this->assertTrue(true); }\n' "$n" >> "$place"; done
+    printf '    public function test_mail(): void { if (getenv("CI")) { usleep(80000); } $this->assertTrue(true); }\n}\n' >> "$place" ;;
+  pest)    place=tests/PlaceTest.php; mailed='PlaceTest::mail'
+    printf '<?php\n' > "$place"
+    for n in 1 2 3 4 5; do printf "test('steady %s', function () { usleep(25000); expect(true)->toBeTrue(); });\n" "$n" >> "$place"; done
+    printf "test('mail', function () { if (getenv('CI')) { usleep(80000); } expect(true)->toBeTrue(); });\n" >> "$place" ;;
+  jest)    place=place.test.js; mailed='place.test.js::mail'
+    printf 'const wait = (ms) => new Promise((done) => setTimeout(done, ms));\n' > "$place"
+    for n in 1 2 3 4 5; do printf "test('steady %s', async () => { await wait(25); });\n" "$n" >> "$place"; done
+    printf "test('mail', async () => { if (process.env.CI) { await wait(80); } });\n" >> "$place" ;;
+  pytest)  place=test_place.py; mailed='test_place::test_mail'
+    printf 'import os\nimport time\n' > "$place"
+    for n in 1 2 3 4 5; do printf '\n\ndef test_steady_%s():\n    time.sleep(0.025)\n' "$n" >> "$place"; done
+    printf '\n\ndef test_mail():\n    if os.environ.get("CI"):\n        time.sleep(0.08)\n' >> "$place" ;;
+esac
+commit "place: a test that waits in CI only"
+for nth in 1 2 3; do
+  CI= run "slow in ci, run $nth locally" ${preset[@]+"${preset[@]}"} -- "${runner[@]}"
+done
+for nth in 1 2 3; do
+  CI=true run "slow in ci, run $nth in ci" ${preset[@]+"${preset[@]}"} -- "${runner[@]}"
+  # Two runs in CI are two runs: the third is what names it.
+  [ "$nth" -eq 3 ] || refuse "slow in ci"
+done
+expect "slow in ci, against local on the same commits"
+expect_on_line "$mailed" "▲"
+expect_on_line "$mailed" "3 runs in local, 3 in ci"
+[ -z "$(git status --porcelain)" ] || { label="slow in ci"; output=$(git status --porcelain); fail "sooth left the tree dirty"; }
+# They have said what they are for; the steps below count the suite's tests.
+rm "$place"
+commit "place: done"
+
 # 4. The gate: a new test file, and only that, repeated.
 case "$project" in
   phpunit) new=tests/NewTest.php

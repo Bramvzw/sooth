@@ -2302,7 +2302,8 @@ version on the real suite and on histories written to break it.
   reading: 0.4 to 0.6 seconds on histories of 5,000 tests. Its cost grows
   with the number of different sets: 5.5 seconds when all 5,000 got
   slower at once and each failed in different runs since — a suite that
-  flaky on a machine that slow.
+  flaky on a machine that slow. Its readings are kept for the whole pass,
+  so that case also holds about half a gigabyte.
 
   Its own runs and not every run since: what changes at a later commit, a
   machine or other tests' code, is that commit's reading, and takes back
@@ -2390,3 +2391,109 @@ analyzers that use it read it from the domain and not from each other.
 with their measurements beside them. They come from one machine and one
 made-up suite; a project history with a few weeks of durations is the
 test they have not had.
+
+## Slow in one place: two machines, read from the same runs
+
+The second half of the slow pass (#299): a test that takes longer in one
+environment than in another — the timing twin of a flake whose every
+failure was in CI, and the "slow in ci, fast locally" `ROADMAP.md` names.
+
+**Two environments are two machines.** "Slower since" could assume one
+clock and withhold when it moved. Here a different clock is the normal
+case: a CI runner is commonly slower or faster than a laptop for
+everything, and not by one factor — measured on the suite of step one, a
+CI runner with every core busy made the tests that compute 1.5 to 2.2
+times as slow and left the tests that wait alone. So no environment
+comparison means anything without a reading of the two machines, and
+there is no withholding to fall back on: the reading is part of the rule.
+
+**The rule.**
+
+- *The same code on both sides.* Only commits both environments ran the
+  test on, clean, passes only. A code change between commits is then on
+  both sides, and the overlap rule below keeps it from reading as a
+  place: each side has a run of each commit.
+- *The same suite on both sides* (`the_same_suite`): on each commit both
+  places ran, the tests both ran there, and the runs that ran nine tenths
+  of those. Judged per place, as "slower since" does, a CI that always
+  shards has a shard for its whole suite, and a test that pays for a
+  fixture in its own job, which a laptop running everything pays once
+  elsewhere, read as slow in CI (found in review, with a fixture of 300
+  ms: `0ms → 300ms`). Judged by size against the larger place — the first
+  fix — a CI that also runs a group the laptop leaves out, a tenth more
+  tests or over, made every laptop run a part, and nothing was ever
+  compared (found in the second review). What both places ran tells a
+  shard, which ran half of it, from extra tests, which leave all of it
+  run.
+- *Three invocations in each place* (`RUNS_EACH_SIDE`).
+- *What the machine does* (`machines`, `quarter_from_top`): the other
+  tests that take 20 ms or more in the faster place — which a slower
+  machine cannot fail to slow — timed in three of the same invocations on
+  each side, by how many times as long they take in the slower place;
+  the ratio a quarter from the top, as for the clock of step one. From
+  five such tests on; under that, nothing is named. A quarter, because
+  a slower machine slows what computes and spares what waits.
+- *Twice as long as the reading accounts for, and 20 ms more than it
+  accounts for* (`slower_than_the_machine`): the median there at least twice
+  the median here times the reading, and 20 ms over the median here times
+  the reading. A reading under 1 — a runner faster than the laptop —
+  counts as 1: it makes no test slow on it.
+- *No run there as fast as one here.*
+
+**Measured.** The 69 invocations of step one hold two commits both
+environments ran. On `35a8b25`, six runs in each place, both machines
+idle, every test of 20 ms or more locally is within 0.98 and 1.09 of the
+other place; one just under, at 19.5 ms, took 1.67 times as long (13 ms
+more); and the test built to wait 300 ms in CI only takes 0 ms locally
+and 302 ms there. On `1019f96`, over all its runs — 23 locally (idle,
+under load, with Xdebug), six as CI with every core busy — the reading
+is 1.65, and a test that hashes takes 1.94 times as long (26 ms to 50
+ms), which the reading accounts for.
+Replayed one invocation at a time, the waiting test is named from the
+first point at which three runs stand in each place, on the commit that
+ran both, and nothing else is named, to the end. Shuffling the
+environment of every run on those two commits, 300 times, with that test
+and without it: nothing named.
+
+**The heading carries the reading.** "Where a quarter of the other tests
+took 1.2 times as long or more": the least reading of the tests under the
+heading, cut and not rounded, which holds for each of them. A reader can
+see from it whether the place is a slower machine, and by how much.
+
+**What a machine does to some tests only is the test's.** Review put the
+measured suite's three runs on efficiency cores against its five idle
+ones, as CI against local: a test that sleeps 2 ms took 66 ms there, and
+is named, under a reading of 2.6. The machine stretched a short wait;
+the tests the reading comes from, of 20 ms or more, do not show that.
+It stays named: it is true that the test is slow in that place, nothing
+else is, and what it does there is what to look at. The README says the reading is what the machine does
+to most tests, not to each, and lists a coarse timer beside a debugger
+and coverage; three or more over a fifth and the heading says many at
+once, fewer and it does not. Reading the short tests too would not have
+taken it back: on those runs the other tests under 20 ms gained 14 ms at
+most, but for a fixture test at 19 ms that gained 46 (and is not named,
+under the reading), while this one gained 64.
+
+**What it cannot know**, and the README says: what a machine does to some
+tests only (above); a run that leaves out a tenth of the suite or less,
+and a parallel run in one place against a serial one in the other, where
+the first test of each process pays for what the suite sets up once; a
+suite that changed size by more than a tenth, as for "slower since";
+commits CI ran and nobody ran locally, such as GitHub's merge commit of a
+pull request; two machines with fewer than five other tests of 20 ms to
+read them from; lines from before sooth recorded environments, which are
+in no place. And like everything the slow pass says, it reads the clock
+and not the cause.
+
+**Cost.** Which runs were of the suite both places run is worked out
+once per pair of places. A reading is made per pair of sets of
+invocations a slow test was timed in, as in step one, but the candidates
+are grouped by their set first, and each reading is let go when its
+tests are done: one reading held at a time, not one per set (review
+found 520 MB in the case below while every reading was kept). A history
+of 5,000 tests and 50 runs in two places takes 0.4 seconds, in four
+places 0.6; 6 seconds and 140 MB, as much memory as without the pass,
+when CI is twice as slow for every test and every test failed in six
+different runs — every test a candidate, each with a reading of its own.
+
+**To be checked against a real history** with CI imports, as step one is.

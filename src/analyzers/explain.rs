@@ -294,6 +294,7 @@ mod tests {
             never_passed: Vec::new(),
             slower_since: Vec::new(),
             slower_withheld: Vec::new(),
+            slow_in: Vec::new(),
         }
     }
 
