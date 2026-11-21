@@ -4615,6 +4615,49 @@ fn tests_that_got_slower_with_the_rest_of_the_suite_are_one_line_and_no_name() {
 }
 
 #[test]
+fn a_test_slow_in_ci_and_not_locally_is_named_with_both_times() {
+    let (cwd, mut command) = sooth_in("history-slow-in");
+    std::fs::create_dir_all(cwd.join(".sooth")).expect("mkdir");
+    // One commit, three runs on the laptop and three as CI. The mail test
+    // waits for a server only CI reaches; six others take what they take
+    // everywhere.
+    let mut history = String::new();
+    for run in 1..=6_u64 {
+        let env = if run <= 3 { "local" } else { "ci" };
+        let mail = if run <= 3 { 0 } else { 302 };
+        let mut line = |id: &str, ms: u64| {
+            use std::fmt::Write as _;
+            let _ = writeln!(
+                history,
+                r#"{{"at":{run},"commit":"aaa1234def","dirty":false,"env":"{env}","run":"r{run}","ms":{ms},"status":"passed","id":"{id}"}}"#
+            );
+        };
+        line("c::mail", mail);
+        for other in ["c::1", "c::2", "c::3", "c::4", "c::5", "c::6"] {
+            line(other, 40);
+        }
+    }
+    std::fs::write(cwd.join(".sooth/history.jsonl"), history).expect("write");
+
+    let output = command
+        .args(["history", "--color", "never"])
+        .output()
+        .expect("sooth should run");
+    let stdout = String::from_utf8(output.stdout).expect("stdout should be UTF-8");
+
+    assert_eq!(output.status.code(), Some(0), "slow is no failure");
+    assert!(
+        stdout.contains(
+            "slow in ci, against local on the same commits — 1 test of the 7 that take 20ms \
+             or more there, where a quarter of the other tests took 1.0 times as long or \
+             more:\n  ▲ c::mail 0ms → 302ms (3 runs in local, 3 in ci)\n"
+        ),
+        "got: {stdout:?}"
+    );
+    assert!(!stdout.contains("nothing stands out"), "got: {stdout:?}");
+}
+
+#[test]
 fn a_history_in_which_nothing_got_slower_says_so_among_the_rest() {
     let (cwd, mut command) = sooth_in("history-nothing-slower");
     std::fs::create_dir_all(cwd.join(".sooth")).expect("mkdir");
@@ -4631,8 +4674,8 @@ fn a_history_in_which_nothing_got_slower_says_so_among_the_rest() {
     let stdout = String::from_utf8(output.stdout).expect("stdout should be UTF-8");
     assert!(
         stdout.contains(
-            "nothing stands out: no proven flakes, no failing-since pointers, no \
-             slower-since pointers"
+            "nothing stands out: no proven flakes, and no failing-since, slower-since or \
+             slow-in pointers"
         ),
         "got: {stdout:?}"
     );

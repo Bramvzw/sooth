@@ -8,7 +8,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::analyzers::flaky::TestOutcomes;
-use crate::analyzers::slow::{self, SlowerSince, Withheld};
+use crate::analyzers::slow::{self, SlowIn, SlowerSince, Withheld};
 use crate::history::{Observation, WINDOW_PER_TEST};
 use crate::junit::TestStatus;
 
@@ -77,6 +77,9 @@ pub struct Analysis {
     /// Tests that got slower since a commit and are not named, because
     /// the clock moved with them. Sorted by how many, the most first.
     pub slower_withheld: Vec<Withheld>,
+    /// Slow in one environment and not in another, on the same code (see
+    /// [`slow`]). Sorted by what a run costs more there, the most first.
+    pub slow_in: Vec<SlowIn>,
 }
 
 impl Analysis {
@@ -86,6 +89,7 @@ impl Analysis {
             && self.never_passed.is_empty()
             && self.slower_since.is_empty()
             && self.slower_withheld.is_empty()
+            && self.slow_in.is_empty()
     }
 }
 
@@ -152,18 +156,14 @@ fn failures_confined_to(signal: &[&Observation]) -> Option<String> {
 /// test's last [`WINDOW_PER_TEST`] invocations, signal-carrying
 /// observations only (skips carry none).
 pub fn analyze(observations: &[Observation]) -> Analysis {
-    // How many tests each invocation ran, skips included: the slow pass
-    // tells a run of the suite from a run of a part of it by this.
-    let mut ran: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
+    // The tests each invocation ran, skips included: the slow pass tells a
+    // run of the suite from a run of a part of it by this.
+    let mut ran: slow::Ran = BTreeMap::new();
     for observation in observations {
         if let Some(invocation) = observation.invocation.as_deref() {
             ran.entry(invocation).or_default().insert(&observation.id);
         }
     }
-    let sizes: BTreeMap<&str, usize> = ran
-        .into_iter()
-        .map(|(invocation, ids)| (invocation, ids.len()))
-        .collect();
 
     let mut in_time_order: Vec<&Observation> = observations
         .iter()
@@ -184,9 +184,10 @@ pub fn analyze(observations: &[Observation]) -> Analysis {
         keep_last_invocations(signal);
         classify(id, signal, &mut analysis);
     }
-    let slower = slow::slower_since(&by_test, &sizes);
+    let slower = slow::slower_since(&by_test, &ran);
     analysis.slower_since = slower.tests;
     analysis.slower_withheld = slower.withheld;
+    analysis.slow_in = slower.slow_in;
 
     analysis.flaky.sort_by(|a, b| {
         b.outcomes
@@ -205,6 +206,13 @@ pub fn analyze(observations: &[Observation]) -> Analysis {
             .cmp(&a.gained_ms())
             .then(a.id.cmp(&b.id))
             .then(a.environment.cmp(&b.environment))
+    });
+    analysis.slow_in.sort_by(|a, b| {
+        b.gained_ms()
+            .cmp(&a.gained_ms())
+            .then(a.id.cmp(&b.id))
+            .then(a.environment.cmp(&b.environment))
+            .then(a.against.cmp(&b.against))
     });
     analysis.slower_withheld.sort_by(|a, b| {
         b.tests
@@ -436,6 +444,48 @@ mod tests {
         assert_eq!(named, [("c::b", "ccc", 890), ("c::a", "bbb", 200)]);
         assert!(!analysis.is_empty(), "a slower test is a finding");
         assert!(analysis.flaky.is_empty() && analysis.failing_since.is_empty());
+    }
+
+    #[test]
+    fn the_test_slow_in_one_place_that_costs_most_comes_first() {
+        // Seven tests that take 30 ms everywhere and two that wait only as
+        // CI, on one commit: the one that waits longest leads, whatever its
+        // name.
+        let tests = [
+            ("c::a", 0, 100),
+            ("c::b", 0, 400),
+            ("c::1", 30, 30),
+            ("c::2", 30, 30),
+            ("c::3", 30, 30),
+            ("c::4", 30, 30),
+            ("c::5", 30, 30),
+            ("c::6", 30, 30),
+            ("c::7", 30, 30),
+        ];
+        let mut history = Vec::new();
+        for run in 0..6_u64 {
+            let local = run < 3;
+            for (id, here, there) in tests {
+                history.push(Observation {
+                    environment: Some(if local { "local" } else { "ci" }.to_owned()),
+                    invocation: Some(format!("r{run}")),
+                    duration_ms: Some(if local { here } else { there }),
+                    at_epoch_secs: run,
+                    ..clean(id, TestStatus::Passed, "aaa")
+                });
+            }
+        }
+        let analysis = analyze(&history);
+        let named: Vec<(&str, u64)> = analysis
+            .slow_in
+            .iter()
+            .map(|test| (test.id.as_str(), test.gained_ms()))
+            .collect();
+        assert_eq!(named, [("c::b", 400), ("c::a", 100)]);
+        assert!(
+            !analysis.is_empty(),
+            "a test slow in one place is a finding"
+        );
     }
 
     #[test]
