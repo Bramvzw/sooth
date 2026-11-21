@@ -6,7 +6,7 @@ use std::process::ExitCode;
 use super::{append_history, load_history, Outcome, SoothError};
 use crate::report::{Analyses, ImportFate, ImportedFile};
 use crate::reported::file_state;
-use crate::{analyzers, cli, history, interrupt, junit, phpunit_log, report};
+use crate::{analyzers, cli, collision_log, history, interrupt, junit, phpunit_log, report};
 
 /// One report file accepted for import, waiting for the all-or-nothing write.
 struct Incoming {
@@ -27,12 +27,35 @@ type FileYield = Option<(
 
 /// The outcomes one import file yields — `Ok(None)` is a green console log,
 /// which names no tests. A file that does not parse is sooth's error.
+/// `known` is what the history knows by name, which a Collision log needs
+/// to name its failures.
 fn file_outcomes(
     content: &str,
     log: Option<cli::LogFormat>,
     path: &std::path::Path,
+    known: &std::collections::BTreeSet<String>,
 ) -> Result<FileYield, SoothError> {
     match log {
+        Some(cli::LogFormat::Collision) => {
+            let parsed = collision_log::parse_str(content)
+                .and_then(|parsed| Ok((collision_log::name(&parsed.failures, known)?, parsed.at)))
+                .map_err(|err| {
+                    SoothError::new(format!(
+                        "failed to read Collision log `{}`: {err}",
+                        path.display()
+                    ))
+                })?;
+            let (failures, at) = parsed;
+            Ok((!failures.is_empty()).then(|| {
+                (
+                    failures
+                        .into_iter()
+                        .map(|(id, status)| (id, (status, None)))
+                        .collect(),
+                    at,
+                )
+            }))
+        }
         Some(cli::LogFormat::Phpunit) => match phpunit_log::parse_str(content) {
             Ok(parsed) if parsed.failures.is_empty() => Ok(None),
             // A console log names its failures and no durations.
@@ -43,6 +66,11 @@ fn file_outcomes(
                     .map(|(id, status)| (id, (status, None)))
                     .collect(),
                 parsed.at,
+            ))),
+            Err(_) if collision_log::looks_like(content) => Err(SoothError::new(format!(
+                "`{}` is Collision's output (`php artisan test`, Pest), not PHPUnit's — \
+                 import it with `--log collision`",
+                path.display()
             ))),
             Err(err) => Err(SoothError::new(format!(
                 "failed to parse PHPUnit log `{}`: {err}",
@@ -133,6 +161,16 @@ fn read_imports<'args>(
     let mut incoming: Vec<Incoming> = Vec::new();
     let mut files = Vec::new();
     let mut named_before = std::collections::BTreeSet::new();
+    // What the history knows by name: only a Collision log needs it.
+    let known: std::collections::BTreeSet<String> = if args.log == Some(cli::LogFormat::Collision) {
+        history::load(std::path::Path::new(history::HISTORY_PATH))
+            .observations
+            .into_iter()
+            .map(|observation| observation.id)
+            .collect()
+    } else {
+        std::collections::BTreeSet::new()
+    };
     for path in &args.reports {
         let content = std::fs::read_to_string(path).map_err(|err| {
             SoothError::new(format!("could not read `{}`: {err}", path.display()))
@@ -154,7 +192,7 @@ fn read_imports<'args>(
             });
             continue;
         }
-        let parsed = file_outcomes(&content, args.log, path)?;
+        let parsed = file_outcomes(&content, args.log, path, &known)?;
         let Some((outcomes, content_stamp)) = parsed else {
             // Said with the rest, once the import as a whole went through.
             files.push(ImportedFile {

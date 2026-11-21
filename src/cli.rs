@@ -137,10 +137,15 @@ pub struct ImportArgs {
 /// Console-log formats `import --log` can read.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum LogFormat {
-    /// `PHPUnit`'s own console output (`vendor/bin/phpunit`, paratest). Not
-    /// `php artisan test`: Laravel prints its results through Collision, in a
-    /// different format.
+    /// `PHPUnit`'s own console output (`vendor/bin/phpunit`, paratest, and
+    /// `php artisan test --parallel` in a `PHPUnit` project, which runs
+    /// paratest).
     Phpunit,
+    /// Collision's console output: `php artisan test`, and Pest with or
+    /// without `--parallel`. Collision prints a test's description, not its
+    /// name, so a failure is named only when the history already knows
+    /// exactly one test it describes.
+    Collision,
 }
 
 /// Arguments for `sooth history`.

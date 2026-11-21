@@ -4048,6 +4048,64 @@ fn a_history_of_code_sooth_cannot_name_says_why_it_proves_nothing() {
 }
 
 #[test]
+fn a_collision_log_is_named_by_the_tests_the_history_knows() {
+    let Some(dir) = scratch_repo("collision-log") else {
+        return;
+    };
+    let commit = "a".repeat(40);
+    // A local run named the tests the way a JUnit report does.
+    std::fs::create_dir_all(dir.join(".sooth")).expect("mkdir");
+    std::fs::write(
+        dir.join(".sooth/history.jsonl"),
+        format!(
+            concat!(
+                r#"{{"at":1,"commit":"{0}","dirty":false,"env":"local","run":"run-1-1","status":"passed","id":"Tests.Feature.ShopTest::test_it_adds_a_line"}}"#,
+                "\n",
+                r#"{{"at":1,"commit":"{0}","dirty":false,"env":"local","run":"run-1-1","status":"passed","id":"Tests.Feature.ShopTest::test_it_removes_a_line"}}"#,
+                "\n",
+            ),
+            commit
+        ),
+    )
+    .expect("write the history");
+    // CI's `php artisan test` printed one of them failing, by description.
+    let log = dir.parent().expect("a parent").join("ci.log");
+    std::fs::write(
+        &log,
+        "  ..⨯\n\n  FAILED  Tests\\Feature\\ShopTest > it adds a line\n  Failed asserting that false is true.\n\n  Tests:    1 failed, 1 passed (2 assertions)\n",
+    )
+    .expect("write the log");
+    let import = |format: &str| {
+        Command::new(env!("CARGO_BIN_EXE_sooth"))
+            .current_dir(&dir)
+            .args([
+                "import", "--log", format, "--env", "ci", "--commit", &commit,
+            ])
+            .arg(&log)
+            .args(["--color", "never"])
+            .output()
+            .expect("sooth should run")
+    };
+
+    let wrong = import("phpunit");
+    let stderr = String::from_utf8(wrong.stderr).expect("stderr should be UTF-8");
+    assert_eq!(wrong.status.code(), Some(2), "{stderr}");
+    assert!(
+        stderr.contains("import it with `--log collision`"),
+        "{stderr}"
+    );
+
+    let output = import("collision");
+    let stdout = String::from_utf8(output.stdout).expect("stdout should be UTF-8");
+    let stderr = String::from_utf8(output.stderr).expect("stderr should be UTF-8");
+    assert_eq!(output.status.code(), Some(0), "{stdout} {stderr}");
+    assert!(
+        stdout.contains("Tests.Feature.ShopTest::test_it_adds_a_line failed 1 of 2"),
+        "a pass here and a failure in CI on one commit: {stdout}"
+    );
+}
+
+#[test]
 fn imported_ci_evidence_completes_the_local_green_ci_red_proof() {
     let Some(dir) = scratch_repo("import") else {
         return; // no git: identity degrades to unknown, covered by unit tests
