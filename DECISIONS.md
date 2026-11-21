@@ -444,22 +444,30 @@ carry no signal, here as everywhere. Selection receives the raw `name`
 attribute carried separately from the report, never re-split from the joined
 `classname::name` identity — a name may itself contain `::` (a jest title,
 say), so the join is one-way and any re-split is lossy (#91). Concretely:
-phpunit selects on that name half — PHPUnit writes its JUnit `classname`
-dotted while `--filter` matches the backslashed FQCN (observed live on a
-production suite: a full-identity filter matched zero tests), and the name
-is the only half that survives both formats; data-provider rows still match
-because `with data set …` follows the method name; pytest selects by method
+phpunit selected on the name half alone at first — PHPUnit writes its JUnit
+`classname` dotted while `--filter` matches the backslashed FQCN (observed
+live on a production suite: a full-identity filter matched zero tests). Since
+#307 each failure is its own branch of the filter, held to its class with
+either separator (`Tests[\\.]Feature[\\.]PostTest`, behind an optional `P\\`
+for Pest) and ending where its name ends — the pattern the order pass already
+used for a test alone (#111). The name half alone had reached every `test*`
+method for a failure named `test`, and `test_index` in every class for one:
+harmless while a re-run was asked for, not once a red run re-runs unasked.
+Data-provider rows still match because `with data set …` is part of the
+name; pytest selects by method
 name with any `[parameter]` suffix stripped
 (brackets and spaces would break a `-k` expression, and the base name merely
 over-matches) because a JUnit classname is a dotted module path, not a node
-id; jest's `-t` matches test names. The go preset declines selection for now
+id; jest's `-t` matches test names, anchored at the end, and the failed tests'
+files go along as path patterns when the report names each one — `-t` alone
+still loads and transforms every file of the suite to find its titles. The go preset declines selection for now
 — `-run` must sit after gotestsum's `--` split, and deferring beats placing
 it wrong — and that refusal happens at flag validation, before any suite
 run is wasted.
 
 Verification is a diagnosis on top of the verdict, never part of it: every
 failure mode degrades to a stderr warning and no classification, and the exit
-code is untouched. It needs `--preset` (only then does sooth control the
+code is untouched. It needs a preset (only then does sooth control the
 command shape) and conflicts with `--runs N` (the flaky pass already answers
 that question). Verification never shuffles — order-dependence stays a
 separate pass. Verification runs do not feed the history file either: they
@@ -2584,3 +2592,56 @@ itself, fixed and flat. `composer.json` is someone else's free-form JSON —
 nesting, escapes, `\u` sequences — and parsing that by hand is where bugs
 hide. Bram chose `serde_json` over a reader of our own (2026-11-21). It
 reads into `serde_json::Value`, with no derive.
+
+## A red run re-runs its failures unasked (#307)
+
+`--verify` was the one place where sooth answered on a project with no
+history: a red run, the failed tests re-run twice, and per failure
+**real** or **flaky or order-dependent**. Behind a flag, a new user never
+met it. Their first red run said "new (nothing in history)" for every
+failure — at the moment "my change, or a flake?" is asked, the answer
+sooth could give was not given.
+
+**So a red single run verifies by default**, when it can without being
+told how: a preset, given or inferred, that can select tests (not go), and
+one run (`--runs N` re-ran everything already, and refusing it there would
+break every repeated run). Where the default cannot verify it stays
+silent; `--verify` keeps refusing loudly in the same places, because there
+it was asked for. `--no-verify` turns the default off — for a suite whose
+re-runs are expensive, or a CI job that should spend no extra minute on red.
+The exit code does not change: a verdict explains a failure, it never
+absorbs one.
+
+**Unasked, at most 50 tests.** Re-running costs a start of the runner plus
+what the selection reaches, twice. A handful of failures is seconds; a red
+suite everywhere — the database is down, a migration broke — re-runs close
+to the whole suite twice, to learn that every test is `real`. That many
+failures at once are rarely flakes, so above 50 sooth says how many failed
+and that `--verify` re-runs them anyway, and starts nothing. 50 is not
+derived: it is far above the few failures a day of work produces and well
+inside the argv a selection can carry (#90). `--verify` lifts it, as asked.
+
+**And the selection must reach only those.** Review found one failure
+re-running much of a suite: a PHPUnit method called `test` selected every
+`test*` method, `test_index` the `test_index` of every class, jest's `-t`
+loaded every file to find one title, and a Composer script of
+`phpunit tests/Unit && phpunit tests/Feature` got the filter on its last
+command only, so the first re-ran whole. Asked for, that is the user's
+choice; unasked, it is a cost nobody agreed to. So the selection holds each
+failure to its class and its whole name, jest gets the failed files as paths
+when the report names each, and a Composer script whose arguments land on a
+shell line of more commands (`&&`, `||`, `;`, `|`, `&` — quoted or not, a
+doubt counts) is not re-run unasked. What is left — pytest's `-k`, which
+matches names in every module — is bounded by what a re-run actually ran:
+a re-run that ran more than 50 tests is not repeated, and decides nothing.
+
+**An interrupt does not outrank the suite.** A Ctrl-C or a CI timeout during
+re-runs `--verify` asked for exits 2: sooth did not do what it was asked.
+During re-runs nobody asked for, the suite had its answer already, and that
+answer is the exit code; the verdict is dropped with a note. A red suite must
+not read as a broken invocation because a timeout landed in a diagnosis.
+
+**Not recorded, still.** The re-runs feed the verdict, not the history: a
+re-run in isolation answers "flaky *or order-dependent*", and the history's
+"flaky" is a stronger claim. Whether a re-run that passed should count as
+history evidence is its own question, not decided here.

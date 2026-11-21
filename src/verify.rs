@@ -81,21 +81,38 @@ pub enum Unverified {
     /// The verification was skipped, and this is why, in words: a skipped
     /// verification changes no exit code, so the caller only says it.
     Skipped(String),
+    /// More tests failed than the verification was allowed to re-run: this
+    /// many. Nothing was started.
+    TooMany(usize),
+    /// A re-run ran more tests than the verification was allowed to: this
+    /// many — the runner could not be held to the failures. No further
+    /// re-run was started, and the one that was made decides nothing.
+    TooWide(usize),
 }
+
+/// How many failed tests a red run re-runs when nobody asked for it (see
+/// `DECISIONS.md`): so many failures at once are rarely flakes, and
+/// re-running them costs close to a second suite.
+pub const DEFAULT_MOST: usize = 50;
 
 /// Re-run only the tests that failed in `report` — [`VERIFY_RUNS`] times,
 /// each into a report of its own — and classify them. `Ok(None)` when
-/// nothing failed.
+/// nothing failed. `most` caps how many tests may be re-run — failed ones
+/// before anything starts, and the tests a re-run actually ran after each —
+/// `None` re-runs them all, and whatever the selection reaches.
 ///
 /// # Errors
 ///
 /// [`Unverified::Skipped`] when no failed test has a name the runner can be
 /// pointed at, the preset cannot select tests, or a re-run does not start
-/// or leaves no report. [`Unverified::Interrupted`] when sooth is asked to
-/// stop: no re-run is started after that, and one in progress is cut short.
+/// or leaves no report. [`Unverified::TooMany`] when more tests failed than
+/// `most`, [`Unverified::TooWide`] when a re-run ran more than `most`.
+/// [`Unverified::Interrupted`] when sooth is asked to stop: no
+/// re-run is started after that, and one in progress is cut short.
 pub fn run(
     plan: &Plan,
     report: &JunitReport,
+    most: Option<usize>,
     interrupt: &Interrupt,
 ) -> Result<Option<Verdict>, Unverified> {
     let skipped = |why: String| Unverified::Skipped(why);
@@ -103,15 +120,22 @@ pub fn run(
     if failed.is_empty() {
         return Ok(None);
     }
-    // Selection gets the raw name half; the joined id is never re-split. A
+    if most.is_some_and(|most| failed.len() > most) {
+        return Err(Unverified::TooMany(failed.len()));
+    }
+    // Selection gets the raw name, never re-split from the joined id. A
     // failure the runner cannot be pointed at stays out of the selection —
     // it would widen it to the whole suite — and reads unverified.
-    let names: Vec<String> = failed
+    let selected: Vec<preset::Selected<'_>> = failed
         .iter()
-        .map(|test| test.name.clone())
-        .filter(|name| preset::selectable(plan.preset(), name))
+        .filter(|test| preset::selectable(plan.preset(), &test.name))
+        .map(|test| preset::Selected {
+            classname: test.classname.as_deref(),
+            name: &test.name,
+            file: test.file.as_deref(),
+        })
         .collect();
-    if names.is_empty() {
+    if selected.is_empty() {
         return Err(skipped(
             "verification skipped — no failed test has a name the runner can select".to_owned(),
         ));
@@ -128,7 +152,7 @@ pub fn run(
                 "verification skipped — could not create a temp report: {err}"
             ))
         })?;
-        let spawn = plan.rerun(source.path(), &names).ok_or_else(|| {
+        let spawn = plan.rerun(source.path(), &selected).ok_or_else(|| {
             skipped(
                 "verification is not supported for this preset yet — sooth cannot restrict \
                  its runner to a subset of tests"
@@ -143,7 +167,19 @@ pub fn run(
             Run::CutShort => return Err(Unverified::Interrupted),
         };
         match ran.report {
-            Some(Ok(rerun)) => reports.push(rerun),
+            Some(Ok(rerun)) => {
+                // What the re-run ran, not what it reported: jest and PHPUnit
+                // list a test they did not select as skipped, or not at all.
+                let ran = rerun
+                    .test_cases
+                    .iter()
+                    .filter(|case| case.status != TestStatus::Skipped)
+                    .count();
+                if most.is_some_and(|most| ran > most) {
+                    return Err(Unverified::TooWide(ran));
+                }
+                reports.push(rerun);
+            }
             Some(Err(ReportError::Unreadable(err))) => {
                 return Err(skipped(format!(
                     "verification run {attempt} produced no usable report: {err}"
@@ -239,7 +275,10 @@ pub(crate) fn run_signatures(report: &JunitReport) -> BTreeMap<String, FailureSi
 #[derive(Debug, PartialEq, Eq)]
 pub struct FailedTest {
     pub id: String,
+    pub classname: Option<String>,
     pub name: String,
+    /// The file the report says the test is in.
+    pub file: Option<String>,
     /// What the suite's run saw, for the re-run to reproduce — or not.
     pub signature: FailureSignature,
 }
@@ -264,7 +303,9 @@ pub fn failed_tests(report: &JunitReport) -> Vec<FailedTest> {
                 let id = first.key().clone();
                 first.insert(FailedTest {
                     id,
+                    classname: case.classname.clone(),
                     name: case.name.clone(),
+                    file: case.file.clone(),
                     signature,
                 });
             }
@@ -302,15 +343,41 @@ mod tests {
         let plan = crate::preset::Plan::resolve(&command, crate::cli::Preset::Pytest);
         let red = report(r#"<testcase classname="c" name="t"><failure/></testcase>"#);
         assert_eq!(
-            super::run(&plan, &red, &crate::interrupt::Interrupt::already()),
+            super::run(&plan, &red, None, &crate::interrupt::Interrupt::already()),
             Err(super::Unverified::Interrupted)
         );
         // A green suite leaves nothing to verify, asked to stop or not.
         let green = report(r#"<testcase classname="c" name="t"/>"#);
         assert_eq!(
-            super::run(&plan, &green, &crate::interrupt::Interrupt::already()),
+            super::run(&plan, &green, None, &crate::interrupt::Interrupt::already()),
             Ok(None)
         );
+    }
+
+    #[test]
+    fn more_failures_than_allowed_start_no_re_run() {
+        // The runner does not exist and sooth is not asked to stop: a re-run
+        // that started would say it failed to start.
+        let command = ["sooth-no-such-runner".to_owned()];
+        let plan = crate::preset::Plan::resolve(&command, crate::cli::Preset::Pytest);
+        let red = report(
+            r#"<testcase classname="c" name="a"><failure/></testcase>
+               <testcase classname="c" name="b"><error/></testcase>
+               <testcase classname="c" name="c"><failure/></testcase>"#,
+        );
+        let listening = crate::interrupt::Interrupt::never();
+        assert_eq!(
+            super::run(&plan, &red, Some(2), &listening),
+            Err(super::Unverified::TooMany(3))
+        );
+        // As many as allowed is not too many: the re-runs are started.
+        assert!(matches!(
+            super::run(&plan, &red, Some(3), &listening),
+            Err(super::Unverified::Skipped(why)) if why.contains("failed to start")
+        ));
+        // A green suite is never too much, however small the allowance.
+        let green = report(r#"<testcase classname="c" name="t"/>"#);
+        assert_eq!(super::run(&plan, &green, Some(0), &listening), Ok(None));
     }
 
     #[test]
@@ -525,6 +592,18 @@ mod tests {
         let tests = failed_tests(&report);
         assert_eq!(tests[0].id, "a::b");
         assert_eq!(tests[0].name, "a::b");
+    }
+
+    #[test]
+    fn a_test_reported_twice_keeps_its_first_failure_at_the_same_severity() {
+        // Worst status wins; between two of the same kind, the first stands.
+        let report = report(
+            r#"<testcase classname="c" name="t"><failure type="First"/></testcase>
+               <testcase classname="c" name="t"><failure type="Second"/></testcase>"#,
+        );
+        let tests = failed_tests(&report);
+        assert_eq!(tests.len(), 1);
+        assert_eq!(tests[0].signature.failure_type.as_deref(), Some("First"));
     }
 
     #[test]

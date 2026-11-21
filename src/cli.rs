@@ -256,12 +256,20 @@ pub struct RunArgs {
     #[arg(long, value_name = "BASE", num_args = 0..=1, require_equals = true)]
     pub changed: Option<Option<String>>,
 
-    /// After a failing run, re-run only the failed tests.
+    /// After a failing run, re-run only the failed tests — however many.
     ///
-    /// Classifies each failure as real or flaky/order-dependent. Needs a
-    /// preset and a single run.
+    /// Classifies each failure as real or flaky/order-dependent. A red single
+    /// run with a preset that can select tests does this by default, for up
+    /// to 50 failures; the flag asks for it outright, refuses where it cannot
+    /// be done (no preset, the go preset, `--runs N`), and lifts that limit.
     #[arg(long)]
     pub verify: bool,
+
+    /// Do not re-run the failures of a red run.
+    ///
+    /// Turns off the verification a red single run gets by default.
+    #[arg(long, conflicts_with = "verify")]
+    pub no_verify: bool,
 
     /// Exit 0 when only tests listed in `.sooth-quarantine` failed.
     ///

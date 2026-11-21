@@ -141,13 +141,11 @@ impl Plan {
         (full, envs)
     }
 
-    /// The command to re-run only the tests named `names`. `names` are raw
-    /// `name` attributes straight from the report, never joined
-    /// `classname::name` identities — a name may itself contain `::`, so
-    /// re-splitting a joined id is lossy (#91). `None` when sooth cannot
-    /// restrict this preset (see `DECISIONS.md`).
-    pub fn rerun(&self, report: &Path, names: &[String]) -> Option<Spawn> {
-        let selection = selection_args(self.preset, names)?;
+    /// The command to re-run only the tests `tests`, as their report gave
+    /// them. `None` when sooth cannot restrict this preset (see
+    /// `DECISIONS.md`).
+    pub fn rerun(&self, report: &Path, tests: &[Selected<'_>]) -> Option<Spawn> {
+        let selection = selection_args(self.preset, tests)?;
         let Injection { mut args, envs } = injection(self.preset, report);
         args.extend(selection);
         Some((self.with(args), envs))
@@ -322,6 +320,28 @@ impl Plan {
     /// unset when empty, as Composer reads it. One that Composer finds in a
     /// parent directory is not read.
     pub fn composer_refusal(&self, dir: &Path) -> Option<String> {
+        self.with_composer_script(dir, crate::composer::refusal)
+    }
+
+    /// Whether this is a Composer script whose command that gets the
+    /// arguments is a shell line of more than one command
+    /// (`phpunit tests/Unit && phpunit tests/Feature`): the arguments land
+    /// at its end, so a selection reaches only the last command and the
+    /// others run whole. Read as [`Plan::composer_refusal`] reads it.
+    pub fn chained_script(&self, dir: &Path) -> bool {
+        self.with_composer_script(dir, |dir, manifest, call| {
+            crate::composer::chained(dir, manifest, call).then_some(())
+        })
+        .is_some()
+    }
+
+    /// `read` applied to the `composer.json` Composer would read for this
+    /// command, and the script call on its line; `None` for any other shape.
+    fn with_composer_script<T>(
+        &self,
+        dir: &Path,
+        read: impl FnOnce(&Path, &Path, &crate::composer::Call<'_>) -> Option<T>,
+    ) -> Option<T> {
         if self.shape != Shape::Composer {
             return None;
         }
@@ -335,7 +355,7 @@ impl Plan {
         let dir = call
             .dir
             .map_or_else(|| dir.to_path_buf(), |project| dir.join(project));
-        crate::composer::refusal(&dir, &manifest, &call)
+        read(&dir, &manifest, &call)
     }
 
     /// Why the gate cannot run this command, if it cannot. The gate hands
@@ -660,40 +680,82 @@ fn own_report(
     })
 }
 
-/// The selection flag(s) that restrict `preset` to the tests named `names`.
-fn selection_args(preset: Preset, names: &[String]) -> Option<Vec<String>> {
-    if names.iter().any(|name| !selectable(preset, name)) {
+/// One failed test a re-run is to select, as its report gave it: the
+/// classname, the raw `name` — never re-split from a joined id, since a name
+/// may itself contain `::` (#91) — and the file, when the report names one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Selected<'a> {
+    pub classname: Option<&'a str>,
+    pub name: &'a str,
+    pub file: Option<&'a str>,
+}
+
+/// The `PHPUnit` filter branch for one test: its class, from where the
+/// string starts — behind nothing or behind the `P\` Pest puts in front, the
+/// report's dotted classname with either separator, since the filter sees
+/// backslashes — then the name in any spelling the report may have given
+/// it (see `any_spelling`), ending where the name ends. So `Tests\UserTest`
+/// matches neither `Tests\AdminUserTest` nor `App\Tests\UserTest`, `user`
+/// does not also select `user_is_created`, nor data set `#1` the sets `#10`
+/// to `#19`. Without a classname, any class.
+fn phpunit_branch(classname: Option<&str>, name: &str) -> String {
+    let class = classname.map_or_else(String::new, |classname| {
+        let parts: Vec<String> = classname.split('.').map(regex_escape).collect();
+        format!(r"^(?:P\\)?{}", parts.join(r"[\\.]"))
+    });
+    format!("{class}::(?:test_?)?({})$", any_spelling(name))
+}
+
+/// The selection flag(s) that restrict `preset` to the tests `tests`, and
+/// to as little else as the runner allows (see `DECISIONS.md`).
+fn selection_args(preset: Preset, tests: &[Selected<'_>]) -> Option<Vec<String>> {
+    if tests.iter().any(|test| !selectable(preset, test.name)) {
         return None;
     }
     match preset {
-        // The JUnit classname is dotted but --filter wants the backslashed
-        // FQCN; only the name half survives both (#93). And that half is
-        // matched in any spelling the report may have given it: see
-        // `any_spelling`.
+        // One branch per test, each held to its class and its whole name:
+        // a failure called `test` selects that test, not every `test*`.
         Preset::Phpunit => {
-            let mut methods: Vec<String> = names.iter().map(|name| any_spelling(name)).collect();
-            methods.sort_unstable();
-            methods.dedup();
+            let mut branches: Vec<String> = tests
+                .iter()
+                .map(|test| phpunit_branch(test.classname, test.name))
+                .collect();
+            branches.sort_unstable();
+            branches.dedup();
             Some(vec![
                 "--filter".to_owned(),
-                format!("/::(?:test_?)?({})/i", methods.join("|")),
+                format!("/{}/i", branches.join("|")),
             ])
         }
         // A JUnit classname is not a pytest node id; select by test name.
         Preset::Pytest => {
-            let mut bases: Vec<&str> = names.iter().map(|name| base_name(name)).collect();
+            let mut bases: Vec<&str> = tests.iter().map(|test| base_name(test.name)).collect();
             bases.sort_unstable();
             bases.dedup();
             Some(vec!["-k".to_owned(), bases.join(" or ")])
         }
-        // jest -t matches the test name, not the classname.
+        // jest -t matches the describes and the title, never the file, and
+        // every file is still loaded to find out: the files of the failed
+        // tests, when the report names each one, keep the others unloaded.
         Preset::Jest => {
-            let pattern = names
-                .iter()
-                .map(|name| regex_escape(name))
-                .collect::<Vec<_>>()
-                .join("|");
-            Some(vec!["-t".to_owned(), format!("({pattern})")])
+            let mut titles: Vec<String> =
+                tests.iter().map(|test| regex_escape(test.name)).collect();
+            titles.sort_unstable();
+            titles.dedup();
+            let mut args = vec!["-t".to_owned(), format!("({})$", titles.join("|"))];
+            let files: Option<Vec<&str>> = tests.iter().map(|test| test.file).collect();
+            if let Some(mut files) = files.filter(|files| !files.is_empty()) {
+                files.sort_unstable();
+                files.dedup();
+                // Ending where the path ends: jest matches it against the
+                // absolute path, whether the report wrote that or a relative one.
+                args.extend(
+                    files
+                        .into_iter()
+                        .map(|file| format!("{}$", regex_escape(file))),
+                );
+            }
+            Some(args)
         }
         Preset::Go => None,
     }
@@ -709,30 +771,19 @@ pub enum Shuffles {
 }
 
 /// The selection that restricts `preset` to the one test `name` of
-/// `classname`. For `PHPUnit` the pattern names the class — the report's
-/// dotted classname, with either separator, since the filter sees
-/// backslashes; starting where the string starts, behind nothing or behind
-/// the `P\` Pest puts in front, so `Tests\UserTest` matches neither
-/// `Tests\AdminUserTest` nor `App\Tests\UserTest` — and ends where the name
-/// ends, so `user` does not also select `user_is_created`, nor data set
-/// `#1` the sets `#10` to `#19`. Jest's `-t` sees no file, only the describes and the title: it is
-/// anchored at the end and may still reach the same title elsewhere, which
-/// the caller has to notice.
+/// `classname`: for `PHPUnit` that test's [`phpunit_branch`]. Jest's `-t`
+/// sees no file, only the describes and the title: it is anchored at the end
+/// and may still reach the same title elsewhere, which the caller has to
+/// notice.
 fn alone_args(preset: Preset, classname: Option<&str>, name: &str) -> Option<Vec<String>> {
     if !selectable(preset, name) {
         return None;
     }
     match preset {
-        Preset::Phpunit => {
-            let class = classname.map_or_else(String::new, |classname| {
-                let parts: Vec<String> = classname.split('.').map(regex_escape).collect();
-                format!(r"^(?:P\\)?{}", parts.join(r"[\\.]"))
-            });
-            Some(vec![
-                "--filter".to_owned(),
-                format!("/{class}::(?:test_?)?({})$/i", any_spelling(name)),
-            ])
-        }
+        Preset::Phpunit => Some(vec![
+            "--filter".to_owned(),
+            format!("/{}/i", phpunit_branch(classname, name)),
+        ]),
         Preset::Jest => Some(vec!["-t".to_owned(), format!("({})$", regex_escape(name))]),
         Preset::Pytest | Preset::Go => None,
     }
@@ -951,7 +1002,7 @@ fn injection(preset: Preset, report: &Path) -> Injection {
 
 #[cfg(test)]
 mod tests {
-    use super::{is_test_file, report_path, selected_paths, selection_args, Plan, Spawn};
+    use super::{is_test_file, report_path, selected_paths, selection_args, Plan, Selected, Spawn};
     use crate::cli::Preset;
     use std::path::Path;
 
@@ -959,13 +1010,25 @@ mod tests {
         Plan::resolve(command, preset).run(report, &[])
     }
 
+    /// The re-run of tests known only by name: no class, no file.
     fn inject_selected(
         command: &[String],
         preset: Preset,
         report: &Path,
         names: &[String],
     ) -> Option<Spawn> {
-        Plan::resolve(command, preset).rerun(report, names)
+        Plan::resolve(command, preset).rerun(report, &by_name(names))
+    }
+
+    fn by_name(names: &[String]) -> Vec<Selected<'_>> {
+        names
+            .iter()
+            .map(|name| Selected {
+                classname: None,
+                name,
+                file: None,
+            })
+            .collect()
     }
 
     fn words(command: &[&str]) -> Vec<String> {
@@ -1296,7 +1359,7 @@ mod tests {
                 "--log-junit",
                 "/tmp/r.xml",
                 "--filter",
-                "/::(?:test_?)?(test_x)/i"
+                "/::(?:test_?)?(test_x)$/i"
             ])
         );
     }
@@ -1399,10 +1462,32 @@ mod tests {
     }
 
     #[test]
+    fn a_composer_script_on_a_chained_shell_line_is_known_as_one() {
+        let dir = std::env::temp_dir().join(format!("sooth-chained-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        std::fs::write(
+            dir.join("composer.json"),
+            r#"{"scripts": {"test": "phpunit tests/Unit && phpunit tests/Feature",
+                            "one": "@php artisan test --parallel"}}"#,
+        )
+        .expect("write");
+        let chained =
+            |words: &[&str]| Plan::resolve(&command(words), Preset::Phpunit).chained_script(&dir);
+        let found = (
+            chained(&["composer", "test"]),
+            chained(&["composer", "one"]),
+            // Not a Composer script: no shell line to chain.
+            chained(&["vendor/bin/phpunit"]),
+        );
+        std::fs::remove_dir_all(&dir).expect("rm");
+        assert_eq!(found, (true, false, false));
+    }
+
+    #[test]
     fn a_composer_script_gets_the_selection_and_the_gates_files_after_the_double_dash() {
         let plan = Plan::resolve(&command(&["composer", "test"]), Preset::Phpunit);
         let (full, _) = plan
-            .rerun(Path::new("/tmp/r.xml"), &["test_x".to_owned()])
+            .rerun(Path::new("/tmp/r.xml"), &by_name(&["test_x".to_owned()]))
             .expect("phpunit can select");
         assert_eq!(
             full,
@@ -1413,7 +1498,7 @@ mod tests {
                 "--log-junit",
                 "/tmp/r.xml",
                 "--filter",
-                "/::(?:test_?)?(test_x)/i"
+                "/::(?:test_?)?(test_x)$/i"
             ])
         );
         let (full, _) = plan.run(
@@ -1971,7 +2056,7 @@ mod tests {
                 "--log-junit",
                 "/tmp/r.xml",
                 "--filter",
-                "/::(?:test_?)?(test_b|test_it_journals_a_flag)/i",
+                "/::(?:test_?)?(test_b)$|::(?:test_?)?(test_it_journals_a_flag)$/i",
             ])
         );
     }
@@ -1992,7 +2077,7 @@ mod tests {
                 "--log-junit",
                 "/tmp/r.xml",
                 "--filter",
-                r#"/::(?:test_?)?(test_a[_ ]?with[_ ]?data[_ ]?set[_ ]?"x\.y")/i"#,
+                r#"/::(?:test_?)?(test_a[_ ]?with[_ ]?data[_ ]?set[_ ]?"x\.y")$/i"#,
             ])
         );
     }
@@ -2009,7 +2094,66 @@ mod tests {
         .expect("phpunit supports selection");
         assert_eq!(
             full.last().map(String::as_str),
-            Some("/::(?:test_?)?(Http[_ ]?2[_ ]?works|That[_ ]?true[_ ]?is[_ ]?true)/i")
+            Some(
+                "/::(?:test_?)?(Http[_ ]?2[_ ]?works)$|::(?:test_?)?(That[_ ]?true[_ ]?is[_ ]?true)$/i"
+            )
+        );
+    }
+
+    #[test]
+    fn a_phpunit_re_run_holds_each_failure_to_its_class_and_its_whole_name() {
+        // A method called `test` selects that one test, not every `test*`,
+        // and `test_index` in one class not `test_index` in all of them.
+        let tests = [
+            Selected {
+                classname: Some("Tests.Unit.BrokenTest"),
+                name: "test",
+                file: None,
+            },
+            Selected {
+                classname: Some("Tests.Feature.PostTest"),
+                name: "test_index",
+                file: Some("tests/Feature/PostTest.php"),
+            },
+        ];
+        let (full, _) = Plan::resolve(&command(&["phpunit"]), Preset::Phpunit)
+            .rerun(Path::new("/tmp/r.xml"), &tests)
+            .expect("phpunit can select");
+        assert_eq!(
+            full.last().map(String::as_str),
+            Some(
+                r"/^(?:P\\)?Tests[\\.]Feature[\\.]PostTest::(?:test_?)?(test_index)$|^(?:P\\)?Tests[\\.]Unit[\\.]BrokenTest::(?:test_?)?(test)$/i"
+            )
+        );
+    }
+
+    #[test]
+    fn a_jest_re_run_loads_only_the_files_of_its_failures_when_each_has_one() {
+        let failing = |file| Selected {
+            classname: Some("cart"),
+            name: "adds a line",
+            file,
+        };
+        let plan = Plan::resolve(&command(&["jest"]), Preset::Jest);
+        let rerun = |tests: &[Selected<'_>]| {
+            plan.rerun(Path::new("/tmp/r.xml"), tests)
+                .expect("jest can select")
+                .0
+        };
+        let both = rerun(&[
+            failing(Some("/app/src/cart.test.js")),
+            failing(Some("/app/src/cart.test.js")),
+        ]);
+        assert_eq!(
+            both[both.len() - 3..],
+            // Escaped for a JavaScript regex, where `\/` is a `/`.
+            command(&["-t", "(adds a line)$", r"\/app\/src\/cart\.test\.js$"])[..]
+        );
+        // One failure without a file: no paths, so none is left out.
+        let one_unknown = rerun(&[failing(Some("/app/src/cart.test.js")), failing(None)]);
+        assert_eq!(
+            one_unknown.last().map(String::as_str),
+            Some("(adds a line)$")
         );
     }
 
@@ -2061,14 +2205,14 @@ mod tests {
                 "--reporters=default",
                 "--reporters=jest-junit",
                 "-t",
-                "(Config::load reads the env)",
+                "(Config::load reads the env)$",
             ])
         );
     }
 
     #[test]
     fn go_selection_is_declined_so_verification_refuses_loudly() {
-        assert!(selection_args(Preset::Go, &names(&["TestX"])).is_none());
+        assert!(selection_args(Preset::Go, &by_name(&names(&["TestX"]))).is_none());
     }
 
     #[test]
@@ -2155,11 +2299,11 @@ mod tests {
         // `--filter '/::()/'`, `-t '()'` and `-k ''` all match every test.
         let named = "test_x".to_owned();
         for preset in [Preset::Phpunit, Preset::Jest, Preset::Pytest] {
-            assert!(selection_args(preset, &[named.clone(), String::new()]).is_none());
-            assert!(selection_args(preset, std::slice::from_ref(&named)).is_some());
+            assert!(selection_args(preset, &by_name(&[named.clone(), String::new()])).is_none());
+            assert!(selection_args(preset, &by_name(std::slice::from_ref(&named))).is_some());
         }
         // pytest selects by the name before its parameters.
-        assert!(selection_args(Preset::Pytest, &["[only-params]".to_owned()]).is_none());
+        assert!(selection_args(Preset::Pytest, &by_name(&["[only-params]".to_owned()])).is_none());
     }
 
     #[test]

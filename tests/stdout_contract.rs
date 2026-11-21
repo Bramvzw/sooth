@@ -1347,6 +1347,36 @@ fn a_verification_cut_short_exits_two_with_the_suites_own_report() {
 }
 
 #[test]
+fn re_runs_nobody_asked_for_cut_short_leave_the_suites_exit_code() {
+    let cwd = Scratch::new("interrupt-during-unasked-verify");
+    // The same suite as above, the same hanging re-run — but nobody asked
+    // for it: the suite's answer is the answer, and a CI timeout landing in
+    // the re-runs does not turn a red suite into a broken invocation.
+    write_executable(
+        &cwd,
+        "pytest",
+        &format!(
+            "{FAKE_PYTEST}echo $$ > \"pid-$n\"\n[ $n -lt 2 ] || exec sleep 30\n\
+             printf '%s' '{ONE_FAILING_TEST}' > \"$report\"\nexit 1\n"
+        ),
+    );
+    let child = sooth_in_its_own_group(&cwd, &["--", "./pytest"]);
+    wait_for(&cwd.join("pid-2"));
+    send_signal("-INT", &format!("-{}", child.id()));
+    let output = child.wait_with_output().expect("sooth should exit");
+    let stdout = String::from_utf8(output.stdout).expect("stdout should be UTF-8");
+    let stderr = String::from_utf8(output.stderr).expect("stderr should be UTF-8");
+
+    assert_eq!(output.status.code(), Some(1), "got: {stdout:?} {stderr:?}");
+    assert!(stdout.contains("result: ✗ FAILED"), "got: {stdout:?}");
+    assert!(
+        stderr.contains("stopped before the failures were re-run — the suite's own result stands"),
+        "got: {stderr:?}"
+    );
+    assert!(!stdout.contains("on re-run"), "no verdict: {stdout:?}");
+}
+
+#[test]
 fn a_pardon_under_a_cut_short_verification_does_not_stand_alone_on_stdout() {
     let cwd = Scratch::new("interrupt-verify-pardon");
     // The suite's one failure is on the list, so the run is pardoned; the
@@ -2647,6 +2677,256 @@ fn verify_with_an_unselectable_preset_is_rejected_up_front_with_exit_two() {
         stderr.contains("not supported for this preset"),
         "got: {stderr:?}"
     );
+}
+
+/// Run sooth with `args` in a scratch directory on the verify runner, whose
+/// re-run passes: (exit code, stdout, stderr, whether a re-run happened).
+fn run_on_the_verify_runner(tag: &str, args: &[&str]) -> (Option<i32>, String, String, bool) {
+    let (cwd, mut command) = sooth_in(tag);
+    write_verify_runner(&cwd);
+    command.env(
+        "SOOTH_TEST_VERIFY_CASE",
+        r#"<testcase classname="c" name="wob"/>"#,
+    );
+    let output = command
+        .args(["run", "--no-history", "--color", "never"])
+        .args(args)
+        .args(["--", "./runner.sh"])
+        .output()
+        .expect("sooth should run");
+    (
+        output.status.code(),
+        String::from_utf8(output.stdout).expect("stdout should be UTF-8"),
+        String::from_utf8(output.stderr).expect("stderr should be UTF-8"),
+        cwd.join("re-ran").exists(),
+    )
+}
+
+#[test]
+fn a_red_run_with_a_preset_re_runs_its_failures_unasked() {
+    let (code, stdout, _, re_ran) =
+        run_on_the_verify_runner("verify-unasked", &["--preset", "phpunit"]);
+    assert_eq!(
+        code,
+        Some(1),
+        "a verdict never absorbs the failure: {stdout:?}"
+    );
+    assert!(re_ran, "a red single run re-runs its failures unasked");
+    assert!(
+        stdout.contains("~ c::wob — flaky or order-dependent (passed on re-run in isolation)"),
+        "a red single run verifies without being asked: {stdout:?}"
+    );
+}
+
+#[test]
+fn no_verify_leaves_a_red_run_unverified() {
+    let (code, stdout, stderr, re_ran) =
+        run_on_the_verify_runner("verify-declined", &["--no-verify", "--preset", "phpunit"]);
+    assert_eq!(code, Some(1), "got: {stdout:?}");
+    assert!(!re_ran, "`--no-verify` re-ran the failures");
+    assert!(
+        !stdout.contains("re-run") && !stderr.contains("verification"),
+        "nothing was re-run, and nothing says it was: {stdout:?} {stderr:?}"
+    );
+}
+
+#[test]
+fn bare_json_keeps_its_one_line_when_a_red_run_re_runs_unasked() {
+    let (code, stdout, _, re_ran) =
+        run_on_the_verify_runner("verify-json", &["--json", "--preset", "phpunit"]);
+    assert_eq!(code, Some(1), "got: {stdout:?}");
+    assert!(re_ran, "the default re-runs happen under --json too");
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(lines.len(), 1, "one line of JSON, got: {stdout:?}");
+    assert!(
+        lines[0].starts_with(r#"{"schema_version":1,"#) && lines[0].ends_with('}'),
+        "got: {stdout:?}"
+    );
+    assert!(
+        lines[0].contains(r#""verification":"#),
+        "the verdict is in the document: {stdout:?}"
+    );
+}
+
+#[test]
+fn a_red_run_whose_preset_cannot_select_says_nothing_of_re_running() {
+    use std::os::unix::fs::PermissionsExt;
+    // gotestsum cannot be pointed at a subset: unasked, that is silence,
+    // not the warning `--verify` would give.
+    let (cwd, mut command) = sooth_in("verify-go-silent");
+    std::fs::write(
+        cwd.join("gotestsum"),
+        concat!(
+            "#!/bin/sh\n",
+            "for a in \"$@\"; do case \"$a\" in --junitfile=*) report=\"${a#--junitfile=}\" ;; esac; done\n",
+            "printf '<testsuite><testcase classname=\"pkg\" name=\"TestX\"><failure/></testcase></testsuite>' > \"$report\"\n",
+            "exit 1\n",
+        ),
+    )
+    .expect("write runner");
+    std::fs::set_permissions(
+        cwd.join("gotestsum"),
+        std::fs::Permissions::from_mode(0o755),
+    )
+    .expect("chmod");
+    let output = command
+        .args(["run", "--no-history", "--color", "never", "--preset", "go"])
+        .args(["--", "./gotestsum"])
+        .output()
+        .expect("sooth should run");
+    let stdout = String::from_utf8(output.stdout).expect("stdout should be UTF-8");
+    let stderr = String::from_utf8(output.stderr).expect("stderr should be UTF-8");
+    assert_eq!(output.status.code(), Some(1), "got: {stdout:?} {stderr:?}");
+    assert!(
+        stdout.contains("TestX"),
+        "the failure is reported: {stdout:?}"
+    );
+    assert!(
+        !stderr.contains("verif") && !stdout.contains("re-run"),
+        "got: {stdout:?} {stderr:?}"
+    );
+}
+
+#[test]
+fn a_re_run_that_reaches_more_than_fifty_tests_is_not_repeated_unasked() {
+    use std::os::unix::fs::PermissionsExt;
+    // One failure, but the runner ignores the selection and its re-run runs
+    // 51 tests: the runner could not be held to the failure. Unasked, sooth
+    // stops after that one re-run and draws no verdict from it.
+    let runner = concat!(
+        "#!/bin/sh\n",
+        "report=\"\"; prev=\"\"; re=0\n",
+        "for a in \"$@\"; do\n",
+        "  if [ \"$prev\" = \"--log-junit\" ]; then report=\"$a\"; fi\n",
+        "  case \"$a\" in --filter) re=1;; esac\n",
+        "  prev=\"$a\"\n",
+        "done\n",
+        "if [ $re = 1 ]; then echo x >> re-runs; fi\n",
+        "{ printf '<testsuite><testcase classname=\"c\" name=\"wob\"><failure/></testcase>'\n",
+        "  i=1; while [ $i -le $SOOTH_TEST_OTHERS ]; do printf '<testcase classname=\"c\" name=\"t%s\"/>' $i; i=$((i+1)); done\n",
+        "  printf '</testsuite>'; } > \"$report\"\n",
+        "exit 1\n",
+    );
+    // (re-runs made, stdout, stderr), with the failure and `others` tests.
+    let run = |tag: &str, others: &str| {
+        let (cwd, mut command) = sooth_in(tag);
+        std::fs::write(cwd.join("runner.sh"), runner).expect("write runner");
+        std::fs::set_permissions(
+            cwd.join("runner.sh"),
+            std::fs::Permissions::from_mode(0o755),
+        )
+        .expect("chmod");
+        let output = command
+            .env("SOOTH_TEST_OTHERS", others)
+            .args(["run", "--no-history", "--color", "never"])
+            .args(["--preset", "phpunit", "--", "./runner.sh"])
+            .output()
+            .expect("sooth should run");
+        assert_eq!(output.status.code(), Some(1));
+        let re_runs =
+            std::fs::read_to_string(cwd.join("re-runs")).map_or(0, |made| made.lines().count());
+        (
+            re_runs,
+            String::from_utf8(output.stdout).expect("stdout should be UTF-8"),
+            String::from_utf8(output.stderr).expect("stderr should be UTF-8"),
+        )
+    };
+
+    let (re_runs, stdout, stderr) = run("verify-too-wide", "50");
+    assert_eq!(re_runs, 1, "the second re-run was started: {stderr:?}");
+    assert!(
+        stderr.contains("the re-run of the failures ran 51 tests"),
+        "got: {stderr:?}"
+    );
+    assert!(!stdout.contains("on re-run"), "no verdict: {stdout:?}");
+
+    // Fifty is as many as allowed, not more: both re-runs, and a verdict.
+    let (re_runs, stdout, stderr) = run("verify-wide-enough", "49");
+    assert_eq!(re_runs, 2, "got: {stderr:?}");
+    assert!(
+        stdout.contains("c::wob — real (reproduced on re-run)"),
+        "got: {stdout:?}"
+    );
+}
+
+#[test]
+fn repeated_runs_are_not_verified_unasked() {
+    // `--runs N` re-ran everything already: unasked, that is not refused,
+    // only not verified — `--verify` next to it still is refused.
+    let (code, stdout, stderr, re_ran) =
+        run_on_the_verify_runner("verify-repeated", &["--runs", "2", "--preset", "phpunit"]);
+    assert_eq!(code, Some(1), "got: {stdout:?} {stderr:?}");
+    assert!(!re_ran, "repeated runs re-ran their failures unasked");
+    assert!(!stdout.contains("on re-run"), "got: {stdout:?}");
+}
+
+#[test]
+fn verify_and_no_verify_together_are_a_usage_error() {
+    let (code, _, stderr, _) = run_on_the_verify_runner(
+        "verify-both",
+        &["--verify", "--no-verify", "--preset", "phpunit"],
+    );
+    assert_eq!(code, Some(2), "got: {stderr:?}");
+    assert!(stderr.contains("cannot be used with"), "got: {stderr:?}");
+}
+
+#[test]
+fn more_failures_than_the_default_re_runs_wait_for_verify() {
+    use std::os::unix::fs::PermissionsExt;
+    // 51 failures, one more than a red run re-runs unasked. The runner
+    // notes whether it was asked to select; its re-run fails them again.
+    let runner = concat!(
+        "#!/bin/sh\n",
+        "report=\"\"; prev=\"\"\n",
+        "for a in \"$@\"; do\n",
+        "  if [ \"$prev\" = \"--log-junit\" ]; then report=\"$a\"; fi\n",
+        "  case \"$a\" in --filter) touch re-ran;; esac\n",
+        "  prev=\"$a\"\n",
+        "done\n",
+        "{ printf '<testsuite>'; i=1; while [ $i -le 51 ]; do\n",
+        "  printf '<testcase classname=\"c\" name=\"t%s\"><failure/></testcase>' $i; i=$((i+1)); done\n",
+        "  printf '</testsuite>'; } > \"$report\"\n",
+        "exit 1\n",
+    );
+    let run = |tag: &str, extra: &[&str]| {
+        let (cwd, mut command) = sooth_in(tag);
+        std::fs::write(cwd.join("runner.sh"), runner).expect("write runner");
+        std::fs::set_permissions(
+            cwd.join("runner.sh"),
+            std::fs::Permissions::from_mode(0o755),
+        )
+        .expect("chmod");
+        let output = command
+            .args([
+                "run",
+                "--no-history",
+                "--color",
+                "never",
+                "--preset",
+                "phpunit",
+            ])
+            .args(extra)
+            .args(["--", "./runner.sh"])
+            .output()
+            .expect("sooth should run");
+        let stderr = String::from_utf8(output.stderr).expect("stderr should be UTF-8");
+        (output.status.code(), cwd.join("re-ran").exists(), stderr)
+    };
+
+    let (code, re_ran, stderr) = run("verify-too-many", &[]);
+    assert_eq!(code, Some(1), "got: {stderr:?}");
+    assert!(!re_ran, "51 failures were re-run unasked");
+    assert!(
+        stderr.contains(
+            "51 tests failed — more than the 50 a red run re-runs by default, and that many \
+             at once are rarely flakes; `--verify` re-runs them anyway"
+        ),
+        "what was not done must be said: {stderr:?}"
+    );
+
+    let (code, re_ran, stderr) = run("verify-too-many-asked", &["--verify"]);
+    assert_eq!(code, Some(1), "got: {stderr:?}");
+    assert!(re_ran, "`--verify` lifts the limit: {stderr:?}");
 }
 
 #[test]
