@@ -239,6 +239,20 @@ case "$flavour" in
     echo 0 > "$SMOKE_COUNTER"
     run "--verify, class-based test under Pest" --no-history --verify -- "${runner[@]}"
     expect_on_line "ClassicTest::Totals add up" "real (reproduced on re-run)"
+    # Pest prints through Collision, as `php artisan test` does: its console
+    # log names each failure by description, which the history's names
+    # (Pest's JUnit reports, from the runs above) turn back into a test.
+    echo 0 > "$SMOKE_COUNTER"
+    "${runner[@]}" > "$work/collision.log" 2>&1 || true
+    label="import a Collision log"
+    echo "── $flavour: $label"
+    set +e
+    output=$("$sooth" import --log collision --env ci --commit "$(git rev-parse HEAD)" "$work/collision.log" 2>&1)
+    status=$?
+    set -e
+    expect_exit 0
+    expect "ClassicTest::Totals add up"
+    refuse "failed to read Collision log"
     ;;
   jest)
     # The same title in two files is two tests. The JSON names every test;

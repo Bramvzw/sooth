@@ -2700,3 +2700,54 @@ stopped being the reason: such observations can be evidence now. The
 note fires when nothing earlier names its code, and says what that means
 today — lines from before sooth read a dirty tree's content, or a tree
 edited during its run.
+
+## Collision logs are named against the history, never guessed
+
+The console-log import read `PHPUnit`'s own format only. Laravel's own
+command, `php artisan test`, prints through Collision when it does not run
+in parallel, and so does Pest — the beachhead's default output. Mining a
+production suite's CI history met it at once: every log of the job that
+ran without `--parallel` was refused with "no PHPUnit summary line found".
+
+**Why Collision cannot simply be parsed into names.** It prints a
+*description*: `FAILED  Tests\Feature\ShopTest > it adds a line`, made
+from the test's name by Collision's `makeDescription` (underscores and
+capitals become spaces, a leading `test` goes, all lower case) — with no
+way back from "it adds a line" to `test_it_adds_a_line` or
+`testItAddsALine`. Pest prints its own names, and its datasets in a form
+its JUnit report does not use (`with (2)` for `with data set "(2)"`). And
+Termwind cuts the line to the terminal's width and closes up runs of
+spaces: on CI that left `Modules\Shop\Test…` — part of a class, nothing of
+the test.
+
+**So a failure is named against what the history knows.** Each id the
+history holds is printed the ways Collision could print it — as it is
+(Pest's own names), through `makeDescription` on the whole name (a
+`PHPUnit` method, data set included: `PHPUnit` 10 and later put the data
+set in the test's name, which a first version of this missed, and review
+caught on a real Laravel 13 log), and in Pest's dataset form — with runs of
+spaces closed up on both sides; a failure is the one known test of its
+class that one of them matches. Cut and unmatched, a failure before the
+class's first test (`Class >`, from `setUpBeforeClass`), unknown, or two
+names printed alike: not named. As with a `PHPUnit` log that names fewer
+failures than its summary counts, a log with any failure sooth cannot name
+is refused whole, with each reason and what would fix it. A green log
+records nothing, as before: a log has no denominator. The history decides
+the name, so a history that knows only some of a class's tests — one built
+from `--log phpunit` imports, which record failures only — can name a
+failure after the one test it knows that prints alike; that takes two
+methods Collision describes alike, and is left as it is.
+
+**What to tell CI.** `php artisan test -v`, the obvious fix for cut lines,
+stops a Laravel app on PHPUnit 12 with `Unknown option "-v"`: Laravel
+passes it on, and PHPUnit removed it. The advice is a wide terminal
+(`COLUMNS=250`), or a JUnit report.
+
+**An error is a failure Collision names an exception for** — except
+`AssertionFailedError` (`$this->fail()`, and the Laravel helpers that end
+in it), which Collision prints and `PHPUnit` counts as a failure.
+
+**Explicit, not detected.** `--log collision` is its own format, like
+`--log phpunit`: a file is read the way the user says it was made. When
+`--log phpunit` meets a Collision summary, the refusal says which flag the
+file wants instead of "is this a PHPUnit console log?".

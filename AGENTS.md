@@ -24,6 +24,7 @@ src/
 ├── interrupt.rs   # EXISTS — SIGINT/SIGTERM as a request to stop: the flag the runner and the run loop ask (signal-hook)
 ├── junit.rs       # EXISTS — tolerant JUnit-XML union schema (parse_str/parse_file)
 ├── phpunit_log.rs # EXISTS — failures from a PHPUnit console log, for `import --log phpunit`
+├── collision_log.rs # EXISTS — failures from a Collision console log (`php artisan test`, Pest), named against the history, for `import --log collision`
 ├── preset.rs      # EXISTS — presets inject reporter flags/env, manage the temp report, and own per-runner selection knowledge (is_test_file, selected_paths)
 ├── composer.rs    # EXISTS — which commands of a Composer script get the arguments after `--`, read from composer.json with Composer's own rules (serde_json)
 ├── gate.rs        # EXISTS — pre-push gate selection: which test files changed against a base (--changed)

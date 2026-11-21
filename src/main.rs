@@ -7,6 +7,7 @@
 
 mod analyzers;
 mod cli;
+mod collision_log;
 mod commands;
 mod composer;
 mod gate;

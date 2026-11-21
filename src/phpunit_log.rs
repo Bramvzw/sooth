@@ -141,7 +141,7 @@ fn settle(
 
 /// The message half of a log line: past the `gh` columns, ANSI, and the
 /// timestamp — which is kept as the log's own `at` the first time one shows.
-fn clean(raw: &str, at: &mut Option<String>) -> String {
+pub(crate) fn clean(raw: &str, at: &mut Option<String>) -> String {
     let message = raw.rsplit('\t').next().unwrap_or(raw);
     let message = strip_ansi(message);
     let message = message.trim_end_matches('\r');

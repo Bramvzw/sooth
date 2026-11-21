@@ -388,9 +388,9 @@ No JUnit artifacts in your pipeline (yet)? The console logs your CI already
 keeps name every failure with full test identity, and GitHub retains them
 for 90 days by default (organisations can shorten that — check yours). `sooth import --log phpunit` reads them — failures only: a log
 reduces passes to anonymous dots, and sooth records witnessed facts, never
-deductions. It reads PHPUnit's own output (`vendor/bin/phpunit`, paratest);
-a log from `php artisan test` is Collision's format and is refused. Backfill months of CI failures without changing a line of your
-project:
+deductions. It reads PHPUnit's own output (`vendor/bin/phpunit`, paratest,
+and `php artisan test --parallel` in a PHPUnit project). Backfill months of
+CI failures without changing a line of your project:
 
 ```bash
 gh run list --branch main --status failure --limit 1000 \
@@ -400,6 +400,19 @@ while read id sha; do
   sooth import --log phpunit --env ci --commit "$sha" "ci-logs/$id.log"
 done
 ```
+
+`php artisan test` without `--parallel`, and Pest (with `--parallel` too),
+print through Collision instead: import those logs with `--log collision`.
+Collision names a test by description, not by name — `ShopTest > it adds a
+line` for `ShopTest::test_it_adds_a_line` — so sooth names a failure only
+when the history already knows exactly one test of that class it describes:
+run the suite through sooth once, or import one JUnit report, first. And
+Collision cuts each line to the terminal's width, which on CI can leave
+half a class name and no test at all; sooth then says which lines it cannot
+name and imports nothing. Give the test step a wide terminal
+(`COLUMNS=250 php artisan test`), or better, have it write a JUnit report.
+`-v` widens Pest's lines, but `php artisan test -v` on PHPUnit 12 stops with
+`Unknown option "-v"`.
 
 Stick to your integration branch — red PR runs are usually honestly broken
 work-in-progress, not flake signal. A log-mined test reads as `failing

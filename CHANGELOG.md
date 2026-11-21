@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`import --log collision` reads what `php artisan test` and Pest
+  print.** Collision names a failing test by its description (`ShopTest >
+  it adds a line`), not its name; sooth names such a failure only when the
+  history knows exactly one test of that class it describes, data sets and
+  Pest's datasets included, and otherwise says why and imports nothing. A
+  line Collision cut to the terminal's width — on CI, often half a class
+  and no test — is said to be cut, with what to change (a wide terminal,
+  `COLUMNS=250`, or a JUnit report). A run stopped at its first failure
+  reads too. `--log phpunit` on a Collision log says which flag it wants.
+
 ### Changed
 
 - **A test is proven flaky on uncommitted work too.** Most runs are made
