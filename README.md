@@ -10,10 +10,12 @@ instant, single binary. No server, no dashboard, no AI, no accounts.
 sooth run -- pytest
 ```
 
-> **v0.3.2 is out** — a prebuilt binary, no Rust needed (see [Install](#install)). For Laravel,
-> `sooth run -- php artisan test` needs no flags, Pest and Composer scripts work, and the
-> pre-push gate repeats only the tests you changed. Slow-test and order-dependence analysis
-> are next. See `ROADMAP.md` for the full plan and `DECISIONS.md` for why it's built this way.
+> **v0.4.0 is out** — a prebuilt binary, no Rust needed (see [Install](#install)). New in v0.4:
+> `sooth order` finds the tests whose result depends on the order they run in, and the history
+> says which tests take longer since a commit and which are slow in one environment and not in
+> another. For Laravel, `sooth run -- php artisan test` needs no flags, Pest and Composer scripts
+> work, and the pre-push gate repeats only the tests you changed. See `ROADMAP.md` for the full
+> plan and `DECISIONS.md` for why it's built this way.
 
 ## Usage
 
@@ -647,7 +649,8 @@ known (see above), but it pardons nothing and steers no exit code.
       run history that accumulates observations from runs you make anyway (zero extra wall-time). Released.
 - [x] **v0.3** — Laravel: `php artisan test` and Pest under the phpunit preset; prebuilt binaries
       and `install.sh`, no Rust needed. Released.
-- [ ] **v0.4** — refined slow-test analysis + order-dependence *detection* (no culprit bisection).
+- [x] **v0.4** — slow-test analysis over time (`slower since <commit>`, `slow in ci`) +
+      order-dependence *detection* (`sooth order`, no culprit bisection). Released.
 - [ ] **v1.0** — polish, distribution, launch.
 - [ ] **spike** (post-v1, timeboxed) — network-egress detection: flag tests that hit the real
       network instead of a mock.
