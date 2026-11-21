@@ -8,6 +8,7 @@ mod capture;
 pub mod explain;
 pub mod history;
 pub mod import;
+mod import_github;
 pub mod order;
 pub mod run;
 

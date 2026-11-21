@@ -108,24 +108,24 @@ enum Invocation<'a> {
 /// The invocations that saw a test pass and fail on one clean commit.
 #[derive(Default)]
 struct Outcomes<'a> {
-    passed_in: BTreeSet<Invocation<'a>>,
-    failed_in: BTreeSet<Invocation<'a>>,
+    passes: BTreeSet<Invocation<'a>>,
+    failures: BTreeSet<Invocation<'a>>,
     /// Passes read from a green CI rerun's counts (see `Observation::inferred`).
-    inferred_in: BTreeSet<Invocation<'a>>,
+    inferred_passes: BTreeSet<Invocation<'a>>,
 }
 
 impl Outcomes<'_> {
     /// A pass in one invocation and a failure in another.
     fn prove_flaky(&self) -> bool {
-        !self.passed_in.is_empty()
-            && !self.failed_in.is_empty()
-            && self.passed_in.union(&self.failed_in).nth(1).is_some()
+        !self.passes.is_empty()
+            && !self.failures.is_empty()
+            && self.passes.union(&self.failures).nth(1).is_some()
     }
 
     /// A failure, and a rerun of the same CI job on the same code that
     /// passed: a proof whose pass nobody saw by name.
     fn prove_flaky_by_rerun(&self) -> bool {
-        !self.inferred_in.is_empty() && !self.failed_in.is_empty()
+        !self.inferred_passes.is_empty() && !self.failures.is_empty()
     }
 }
 
@@ -201,10 +201,15 @@ pub fn analyze(observations: &[Observation]) -> Analysis {
     analysis.slower_withheld = slower.withheld;
     analysis.slow_in = slower.slow_in;
 
+    // A flake proven only by a CI rerun has no rate: it follows the rated ones.
     analysis.flaky.sort_by(|a, b| {
-        b.outcomes
-            .failure_rate_percent()
-            .cmp(&a.outcomes.failure_rate_percent())
+        a.per_rerun
+            .cmp(&b.per_rerun)
+            .then(
+                b.outcomes
+                    .failure_rate_percent()
+                    .cmp(&a.outcomes.failure_rate_percent()),
+            )
             .then(a.outcomes.id.cmp(&b.outcomes.id))
     });
     analysis
@@ -281,11 +286,11 @@ fn classify(id: &str, signal: &[&Observation], analysis: &mut Analysis) {
             .map_or(Invocation::Line(line), Invocation::Run);
         let outcomes = per_identity.entry(identity).or_default();
         if failed(observation) {
-            outcomes.failed_in.insert(invocation);
+            outcomes.failures.insert(invocation);
         } else if observation.inferred {
-            outcomes.inferred_in.insert(invocation);
+            outcomes.inferred_passes.insert(invocation);
         } else {
-            outcomes.passed_in.insert(invocation);
+            outcomes.passes.insert(invocation);
         }
     }
     let witnessed = per_identity.values().any(Outcomes::prove_flaky);
@@ -297,9 +302,7 @@ fn classify(id: &str, signal: &[&Observation], analysis: &mut Analysis) {
     // seen passing on: there a failure is the flake being a flake.
     let passed_on: BTreeSet<Identity> = per_identity
         .iter()
-        .filter(|(_, outcomes)| {
-            !outcomes.passed_in.is_empty() || !outcomes.inferred_in.is_empty()
-        })
+        .filter(|(_, outcomes)| !outcomes.passes.is_empty() || !outcomes.inferred_passes.is_empty())
         .map(|(identity, _)| *identity)
         .collect();
     let streak: Vec<&Observation> = signal
@@ -503,6 +506,76 @@ mod tests {
             !analysis.is_empty(),
             "a test slow in one place is a finding"
         );
+    }
+
+    /// A pass read from a green rerun's counts (see `Observation::inferred`).
+    fn inferred(id: &str, commit: &str, run: &str) -> Observation {
+        Observation {
+            inferred: true,
+            ..in_run(id, TestStatus::Passed, commit, run)
+        }
+    }
+
+    #[test]
+    fn a_failure_and_a_passing_rerun_of_its_job_prove_a_flake_with_no_rate() {
+        let analysis = analyze(&[
+            in_run("c::t", TestStatus::Failed, "abc", "job-1"),
+            inferred("c::t", "abc", "job-2"),
+        ]);
+        assert_eq!(analysis.flaky.len(), 1);
+        let flake = &analysis.flaky[0];
+        assert!(flake.per_rerun);
+        // Counted is what was seen: one failure, no pass.
+        assert_eq!((flake.outcomes.failed, flake.outcomes.passed), (1, 0));
+        // On another commit the rerun proves nothing about this failure.
+        let elsewhere = analyze(&[
+            in_run("c::t", TestStatus::Failed, "abc", "job-1"),
+            inferred("c::t", "def", "job-2"),
+        ]);
+        assert!(elsewhere.flaky.is_empty());
+    }
+
+    #[test]
+    fn a_flake_proven_only_by_a_rerun_follows_the_rated_ones() {
+        let analysis = analyze(&[
+            in_run("a::rerun", TestStatus::Failed, "abc", "job-1"),
+            inferred("a::rerun", "abc", "job-2"),
+            in_run("z::seen", TestStatus::Failed, "abc", "r1"),
+            in_run("z::seen", TestStatus::Passed, "abc", "r2"),
+            in_run("z::seen", TestStatus::Passed, "abc", "r3"),
+        ]);
+        let order: Vec<&str> = analysis
+            .flaky
+            .iter()
+            .map(|flake| flake.outcomes.id.as_str())
+            .collect();
+        assert_eq!(order, ["z::seen", "a::rerun"]);
+    }
+
+    #[test]
+    fn a_flake_also_seen_passing_is_counted_by_what_was_seen() {
+        let analysis = analyze(&[
+            in_run("c::t", TestStatus::Failed, "abc", "job-1"),
+            inferred("c::t", "abc", "job-2"),
+            in_run("c::t", TestStatus::Passed, "abc", "local-1"),
+        ]);
+        let flake = &analysis.flaky[0];
+        assert!(!flake.per_rerun, "a witnessed pass proves it on its own");
+        assert_eq!((flake.outcomes.failed, flake.outcomes.passed), (1, 1));
+    }
+
+    #[test]
+    fn a_passing_rerun_ends_a_red_streak_like_a_pass() {
+        // Red since `b` on its own runs, then the job passed on its rerun:
+        // not failing since `b`, a flake that failed there.
+        let analysis = analyze(&[
+            in_run("c::t", TestStatus::Passed, "a", "r1"),
+            in_run("c::t", TestStatus::Failed, "b", "r2"),
+            in_run("c::t", TestStatus::Failed, "b", "r3"),
+            inferred("c::t", "b", "r4"),
+        ]);
+        assert!(analysis.failing_since.is_empty(), "{analysis:?}");
+        assert_eq!(analysis.flaky.len(), 1);
     }
 
     #[test]

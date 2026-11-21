@@ -19,6 +19,9 @@ pub enum Verdict {
         /// The flake has failed every run since a commit: known as a flake,
         /// but not safe to wave through as one.
         red_since: Option<RedStreak>,
+        /// Proven only by a CI job that failed and passed on its rerun: no
+        /// rate, because that pass was not seen by name.
+        per_rerun: bool,
     },
     /// Green before, red since `commit`: a regression pointer.
     FailingSince {
@@ -251,6 +254,7 @@ fn verdict_for(id: &str, history: &HistoryAnalysis) -> Verdict {
             observed_runs: test.outcomes.observed(),
             failures_confined_to: test.failures_confined_to.clone(),
             red_since: test.red_since.clone(),
+            per_rerun: test.per_rerun,
         };
     }
     if let Some(test) = history.failing_since.iter().find(|test| test.id == id) {
@@ -320,6 +324,7 @@ mod tests {
                 observed_runs: 50,
                 failures_confined_to: None,
                 red_since: None,
+                per_rerun: false,
             }
         );
         assert!(Counts::of(&explained).only_known_flakes());

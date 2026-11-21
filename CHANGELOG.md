@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`import --github` reads the flakes your CI already proved.** A job
+  that failed and passed when it was re-run, on the same commit, is read
+  through your own `gh` — sooth opens no connection — and recorded once
+  both attempts provably ran the same tests on the same code: the failure,
+  and a pass marked as read from the rerun's counts. Such a test shows as
+  flaky per CI rerun, without a rate. A failure the log cannot name is
+  listed by its exception and file instead. Push runs only; `--repo`,
+  `--since` (default 90 days) and `--dry-run`.
 - **`import --log collision` reads what `php artisan test` and Pest
   print.** Collision names a failing test by its description (`ShopTest >
   it adds a line`), not its name; sooth names such a failure only when the

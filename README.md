@@ -384,6 +384,19 @@ no more than "every run was local".
 
 ### Mine your CI's past
 
+A job that failed and passed when someone re-ran it is a flake your CI
+already proved. Read those straight from GitHub Actions:
+
+```bash
+sooth import --github --dry-run   # what it would record
+sooth import --github             # last 90 days; --since YYYY-MM-DD, --repo OWNER/NAME
+```
+
+sooth runs your own `gh` (logged in) and opens no connection itself. A pair
+is recorded only when both attempts ran the same test command on the run's
+commit and counted the same tests; the pass is marked as inferred, so such a
+test shows as flaky per CI rerun, without a rate. Push runs only, for now.
+
 No JUnit artifacts in your pipeline (yet)? The console logs your CI already
 keeps name every failure with full test identity, and GitHub retains them
 for 90 days by default (organisations can shorten that — check yours). `sooth import --log phpunit` reads them — failures only: a log

@@ -9,8 +9,8 @@ use std::borrow::Cow;
 use std::time::Duration;
 
 use super::{
-    count, Analyses, ImportFate, ImportedFile, Interrupted, JunitSummary, OrderReport, Replay,
-    RunReport, Style,
+    count, Analyses, GithubImport, ImportFate, ImportedFile, Interrupted, JunitSummary,
+    OrderReport, Replay, RunReport, Style,
 };
 use crate::analyzers::history::PriorEvidence;
 use crate::analyzers::{explain, flaky, history, order, slow};
@@ -506,16 +506,27 @@ pub fn print_history(analyses: &Analyses<'_>, style: Style) {
                 .map_or_else(String::new, |environment| {
                     format!("; every failure in {}", printable(environment))
                 });
+            // A rerun's pass was read from counts, not seen: no rate.
+            let evidence = if test.per_rerun {
+                format!(
+                    "failed in CI and passed on a rerun of the job, the pass read from its \
+                     counts{confined}"
+                )
+            } else {
+                format!(
+                    "failed {} of {} observed runs ({}%{confined})",
+                    test.outcomes.failed,
+                    test.outcomes.observed(),
+                    test.outcomes.failure_rate_percent(),
+                )
+            };
             println!(
                 "  {}. {} {} {}",
                 index + 1,
                 flaky_mark(style),
                 identity(&test.outcomes.id, style),
                 style.red(&format!(
-                    "failed {} of {} observed runs ({}%{confined}){}",
-                    test.outcomes.failed,
-                    test.outcomes.observed(),
-                    test.outcomes.failure_rate_percent(),
+                    "{evidence}{}",
                     red_streak_phrase(test.red_since.as_ref())
                 ))
             );
@@ -974,6 +985,7 @@ fn known_phrase(explanation: &explain::Explanation, style: Style) -> String {
             observed_runs,
             failures_confined_to,
             red_since,
+            per_rerun,
         } => {
             // Where it breaks is the first thing to check, so it rides along
             // with the rate rather than waiting in a section below.
@@ -982,9 +994,16 @@ fn known_phrase(explanation: &explain::Explanation, style: Style) -> String {
                 .map_or_else(String::new, |environment| {
                     format!("; every failure in {}", printable(environment))
                 });
+            let evidence = if *per_rerun {
+                format!("failed in CI and passed on a rerun of the job{confined}")
+            } else {
+                format!(
+                    "{failed_runs} of {observed_runs} in history, {}%{confined}",
+                    flaky::failure_rate_percent(*failed_runs, *observed_runs)
+                )
+            };
             let phrase = format!(
-                "known flake ({failed_runs} of {observed_runs} in history, {}%{confined}){}{listed}",
-                flaky::failure_rate_percent(*failed_runs, *observed_runs),
+                "known flake ({evidence}){}{listed}",
                 red_streak_phrase(red_since.as_ref())
             );
             // A flake that stopped passing is attention, not calm.
@@ -1079,6 +1098,162 @@ pub fn print_nothing_stands_out() {
         "nothing stands out: no proven flakes, and no failing-since, slower-since or slow-in \
          pointers"
     );
+}
+
+/// What `import --github` read, recorded, and could not vouch for.
+pub fn print_github_import(found: &GithubImport, style: Style) {
+    println!(
+        "{}: GitHub Actions runs since {}, read through gh",
+        printable(&found.repo),
+        found.since
+    );
+    let on_push = found.reruns - found.other_events - found.unfinished;
+    let mut aside = Vec::new();
+    if found.other_events > 0 {
+        aside.push(format!(
+            "{} started by something other than a push, not read yet",
+            found.other_events
+        ));
+    }
+    if found.unfinished > 0 {
+        aside.push(format!("{} still running", found.unfinished));
+    }
+    println!(
+        "{} with more than one attempt{}",
+        count(found.reruns, "run"),
+        if aside.is_empty() {
+            String::new()
+        } else {
+            format!(" — {on_push} read; {}", aside.join(", "))
+        }
+    );
+    let recorded = if found.dry_run {
+        "would record"
+    } else {
+        "recorded"
+    };
+    if !found.recorded.is_empty() {
+        println!(
+            "{}",
+            style.bold_red(&format!(
+                "{recorded} {} — failed, then passed on a rerun of the same job on the same \
+                 commit:",
+                count(found.recorded.len(), "rerun pair")
+            ))
+        );
+        for pair in &found.recorded {
+            for test in &pair.tests {
+                println!(
+                    "  {} {} {}",
+                    flaky_mark(style),
+                    identity(test, style),
+                    style.dim(&format!(
+                        "— {} @ {}",
+                        printable(&pair.job),
+                        short_commit(&pair.commit)
+                    ))
+                );
+            }
+        }
+    }
+    if found.already > 0 {
+        println!(
+            "{} recorded by an earlier import",
+            count(found.already, "rerun pair")
+        );
+    }
+    if !found.unnamed.is_empty() {
+        print_unnamed_pairs(found, style);
+    }
+    if !found.not_pairs.is_empty() {
+        let reasons: Vec<String> = found
+            .not_pairs
+            .iter()
+            .map(|(why, times)| format!("{times} × {why}"))
+            .collect();
+        println!(
+            "not rerun pairs sooth can vouch for: {}",
+            reasons.join("; ")
+        );
+    }
+    if found.gone > 0 {
+        println!(
+            "{} whose log GitHub keeps no longer",
+            count(found.gone, "attempt")
+        );
+    }
+    if found.recorded.is_empty() && found.unnamed.is_empty() && found.already == 0 {
+        println!("no job failed and passed on its rerun in this window");
+    }
+}
+
+/// Rerun pairs the log names no test for, grouped by what it does say:
+/// the exception and the file of the first frame in the project's code.
+fn print_unnamed_pairs(found: &GithubImport, style: Style) {
+    type Key = (Option<String>, Option<String>);
+    let mut by_cause: std::collections::BTreeMap<Key, Vec<String>> =
+        std::collections::BTreeMap::new();
+    let mut test_files: std::collections::BTreeMap<Key, std::collections::BTreeSet<String>> =
+        std::collections::BTreeMap::new();
+    for pair in &found.unnamed {
+        let place = format!("{} @ {}", printable(&pair.job), short_commit(&pair.commit));
+        if pair.causes.is_empty() {
+            by_cause
+                .entry((None, None))
+                .or_default()
+                .push(place.clone());
+        }
+        for cause in &pair.causes {
+            let key = (cause.exception.clone(), cause.file.clone());
+            by_cause.entry(key.clone()).or_default().push(place.clone());
+            if let Some(file) = &cause.test_file {
+                test_files.entry(key).or_default().insert(file.clone());
+            }
+        }
+    }
+    println!(
+        "{}",
+        style.bold_red(&format!(
+            "{} the log names no test for — failed, then passed on a rerun; by cause:",
+            count(found.unnamed.len(), "rerun pair")
+        ))
+    );
+    for (key, places) in &by_cause {
+        let cause = match key {
+            (Some(exception), Some(file)) => format!("{exception} in {}", printable(file)),
+            (Some(exception), None) => exception.clone(),
+            (None, Some(file)) => format!("a failed assertion in {}", printable(file)),
+            (None, None) => "nothing the log says".to_owned(),
+        };
+        let tests = test_files
+            .get(key)
+            .map(|files| {
+                let files: Vec<String> = files
+                    .iter()
+                    .map(|file| printable(file).into_owned())
+                    .collect();
+                format!(", from {}", files.join(", "))
+            })
+            .unwrap_or_default();
+        println!(
+            "  {} {cause} {}",
+            flaky_mark(style),
+            style.dim(&format!(
+                "— {}{tests}: {}",
+                count(places.len(), "job"),
+                places.join(", ")
+            ))
+        );
+    }
+    let mut reasons: Vec<&str> = found.unnamed.iter().map(|pair| pair.why.as_str()).collect();
+    reasons.sort_unstable();
+    reasons.dedup();
+    for why in reasons {
+        println!(
+            "  {}",
+            style.dim(&format!("why unnamed: {}", printable(why)))
+        );
+    }
 }
 
 /// What became of one imported file, in one line.
@@ -1474,6 +1649,7 @@ mod tests {
                 observed_runs: 6,
                 failures_confined_to: None,
                 red_since: None,
+                per_rerun: false,
             },
             quarantined: true,
         };

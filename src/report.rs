@@ -10,11 +10,11 @@ mod human;
 mod json;
 
 pub use human::{
-    print_empty_gate, print_empty_history, print_explanation, print_gate, print_history,
-    print_history_beyond_one_load, print_history_gap, print_history_size, print_imported,
-    print_nothing_stands_out, print_nothing_to_explain, print_order, print_order_alone,
-    print_order_run, print_pardon_gap, print_pruned, print_replay, print_run, print_runs,
-    print_summary, print_verdict,
+    print_empty_gate, print_empty_history, print_explanation, print_gate, print_github_import,
+    print_history, print_history_beyond_one_load, print_history_gap, print_history_size,
+    print_imported, print_nothing_stands_out, print_nothing_to_explain, print_order,
+    print_order_alone, print_order_run, print_pardon_gap, print_pruned, print_replay, print_run,
+    print_runs, print_summary, print_verdict,
 };
 pub use json::{explanation_json, order_json, to_json};
 
@@ -262,6 +262,49 @@ pub struct OrderRun {
     /// The seed it was shuffled under; `None` for the suite's own order.
     pub seed: Option<u32>,
     pub outcome: RunOutcome,
+}
+
+/// What `sooth import --github` read and made of it.
+#[derive(Debug, Default)]
+pub struct GithubImport {
+    pub repo: String,
+    pub since: String,
+    pub dry_run: bool,
+    /// Runs with more than one attempt in the window.
+    pub reruns: usize,
+    /// Of those, started by something other than a push: left for later.
+    pub other_events: usize,
+    /// Of those, not finished yet.
+    pub unfinished: usize,
+    /// Red attempts with a green rerun, recorded now.
+    pub recorded: Vec<RerunPair>,
+    /// Rerun pairs recorded by an earlier import.
+    pub already: usize,
+    /// Rerun pairs whose failure the log does not name.
+    pub unnamed: Vec<UnnamedPair>,
+    /// Red and green attempts that are no pair sooth vouches for: why, and
+    /// how many.
+    pub not_pairs: std::collections::BTreeMap<String, usize>,
+    /// Attempts whose log GitHub keeps no longer.
+    pub gone: usize,
+}
+
+/// A job that failed and passed on its rerun, with the tests it names.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RerunPair {
+    pub job: String,
+    pub commit: String,
+    pub tests: Vec<String>,
+}
+
+/// A rerun pair whose failure the red log does not name.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnnamedPair {
+    pub job: String,
+    pub commit: String,
+    pub causes: Vec<crate::ci_log::Cause>,
+    /// Why the log could not name it, as the reader said.
+    pub why: String,
 }
 
 /// One file handed to `sooth import`, and what became of it.

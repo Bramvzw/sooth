@@ -257,8 +257,9 @@ fn explanation_object(explanations: &[explain::Explanation]) -> String {
                     // carries it under `history`, where the pass owns it.
                     failures_confined_to: _,
                     red_since,
+                    per_rerun,
                 } => format!(
-                    r#"{{"name":"{name}","verdict":"{verdict}","quarantined":{quarantined},"failed_runs":{failed_runs},"observed_runs":{observed_runs},"red_since":{}}}"#,
+                    r#"{{"name":"{name}","verdict":"{verdict}","quarantined":{quarantined},"failed_runs":{failed_runs},"observed_runs":{observed_runs},"per_rerun":{per_rerun},"red_since":{}}}"#,
                     red_streak_json(red_since.as_ref())
                 ),
                 explain::Verdict::FailingSince {
@@ -331,10 +332,11 @@ fn history_object(pass: &history::Analysis) -> String {
                 |environment| format!(r#""{}""#, escape(environment)),
             );
             format!(
-                r#"{{"name":"{}","failed_runs":{},"observed_runs":{},"failures_confined_to":{confined},"red_since":{}}}"#,
+                r#"{{"name":"{}","failed_runs":{},"observed_runs":{},"per_rerun":{},"failures_confined_to":{confined},"red_since":{}}}"#,
                 escape(&test.outcomes.id),
                 test.outcomes.failed,
                 test.outcomes.observed(),
+                test.per_rerun,
                 red_streak_json(test.red_since.as_ref())
             )
         })
@@ -616,6 +618,7 @@ mod tests {
                     observed_runs: 50,
                     failures_confined_to: None,
                     red_since: None,
+                    per_rerun: false,
                 },
                 quarantined: true,
             },
@@ -631,7 +634,7 @@ mod tests {
         assert!(json.starts_with(r#"{"schema_version":1,"#));
         assert!(json.contains(r#""report":"out/report.xml""#));
         assert!(json.contains(
-            r#"{"name":"c::wobbly","verdict":"known_flake","quarantined":true,"failed_runs":4,"observed_runs":50,"red_since":null}"#
+            r#"{"name":"c::wobbly","verdict":"known_flake","quarantined":true,"failed_runs":4,"observed_runs":50,"per_rerun":false,"red_since":null}"#
         ));
         assert!(json.contains(r#"{"name":"c::fresh","verdict":"new","quarantined":false}"#));
         assert!(json
@@ -824,7 +827,7 @@ mod tests {
         );
         assert!(
             json.contains(
-                r#""history":{"flaky":[{"name":"c::wob","failed_runs":1,"observed_runs":4,"failures_confined_to":"ci","red_since":null}],"failing_since":[{"name":"c::reg","commit":"abc1234def","failed_runs":3}],"never_passed":[],"slower_since":[{"name":"c::\"slow\"","commit":"abc1234def","environment":"ci","before_ms":15,"since_ms":284,"runs_before":5,"runs_since":8,"tests_slower":1,"tests_timed":41}],"slower_withheld":[{"commit":"fff9999abc","environment":null,"tests":17,"times_as_long":2.68,"tests_read":18}],"slow_in":[{"name":"c::mail","environment":"ci","against":"local","ms":302,"against_ms":0,"runs":6,"runs_against":6,"others_times_as_long":1.00,"tests_slower":1,"tests_timed":20}]}"#
+                r#""history":{"flaky":[{"name":"c::wob","failed_runs":1,"observed_runs":4,"per_rerun":false,"failures_confined_to":"ci","red_since":null}],"failing_since":[{"name":"c::reg","commit":"abc1234def","failed_runs":3}],"never_passed":[],"slower_since":[{"name":"c::\"slow\"","commit":"abc1234def","environment":"ci","before_ms":15,"since_ms":284,"runs_before":5,"runs_since":8,"tests_slower":1,"tests_timed":41}],"slower_withheld":[{"commit":"fff9999abc","environment":null,"tests":17,"times_as_long":2.68,"tests_read":18}],"slow_in":[{"name":"c::mail","environment":"ci","against":"local","ms":302,"against_ms":0,"runs":6,"runs_against":6,"others_times_as_long":1.00,"tests_slower":1,"tests_timed":20}]}"#
             ),
             "got: {json}"
         );

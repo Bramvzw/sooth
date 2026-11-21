@@ -721,7 +721,9 @@ a prerequisite and becomes the gold standard for those who also want rates.
   to dots in the class half only) so log evidence and report evidence meet
   on the same ids.
 - **Acquisition stays outside.** `gh run list` + `gh run view --log-failed`
-  fetch; sooth reads local files (`SECURITY.md` unchanged). The log's own
+  fetch; sooth reads local files (`SECURITY.md` unchanged). `import --github`
+  is the one exception, for reruns the loop cannot see (see "A CI rerun
+  proves a flake"). The log's own
   per-line timestamps date the observations; mtime and now remain the
   fallbacks.
 
@@ -915,7 +917,7 @@ to #111 (v0.4), not to verification.
 ## Layering invariants are clippy lints, not a tidy test
 
 The invariants in `AGENTS.md` are phrased as absences — only `report.rs`
-prints, only three modules spawn processes — because an absence cannot be
+prints, only four modules spawn processes — because an absence cannot be
 read off the code. The two that break most easily are enforced by clippy
 the way cargo enforces its own (`print_stdout`, `print_stderr`,
 `disallowed_methods` with a `clippy.toml`), not by a hand-written test that
@@ -2751,3 +2753,54 @@ in it), which Collision prints and `PHPUnit` counts as a failure.
 `--log phpunit`: a file is read the way the user says it was made. When
 `--log phpunit` meets a Collision summary, the refusal says which flag the
 file wants instead of "is this a PHPUnit console log?".
+
+## A CI rerun proves a flake, read through the user's own `gh` (#309)
+
+A team's CI has often proved its flakes already: a job failed, someone
+re-ran it, and the same job on the same commit passed. The README's `gh`
+loop never sees that — it reads a run's latest attempt, and a rerun that
+went green reports the run as `success`. A green log names no tests, so a
+log alone could never record the pass.
+
+**sooth runs `gh`, it does not talk to GitHub.** `import --github` reads
+runs, jobs per attempt and job logs through the user's installed `gh` and
+its login. sooth opens no connection, holds no token, and does nothing
+unless asked; `SECURITY.md` says so. It is the one place acquisition moves
+inside, because reading attempts means the jobs API per run — a loop no
+README snippet keeps right. `github.rs` joins the modules that may spawn a
+process.
+
+**A pass is inferred, and only behind guards.** The green attempt says
+"N passed" without names. That those N include the red attempt's failures
+holds only when both attempts ran the same tests on the same code, so every
+guard must hold or nothing is recorded: a `push` run (its rerun keeps the
+sha), one checkout in each log landing on the run's `head_sha`, exactly one
+test step with one summary in each attempt and the same command, the red
+summary showing failures and the green one none — the tests decide, not the
+job's conclusion, which `continue-on-error` or `| tee` can turn green — and
+equal counts for everything that does not depend on the outcome.
+
+**An inferred pass is marked.** It is written with `"inferred":true`, counts
+toward proving a flake on its commit and ends a red streak, but never toward
+a rate: the history shows such a test as flaky *per CI rerun*, without a
+percentage. The mark keeps the rule reversible. An older sooth reads the line
+as an ordinary pass, which is what it is claimed to be.
+
+**A failure that cannot be named is listed, not recorded.** Collision cuts
+names on CI, and names against the history (see "Collision logs are named
+against the history"). Such a pair is shown by the exception and the first
+project file in its trace — line numbers move between commits — grouped by
+cause, and is all or nothing: one unnamed failure keeps the pair out of the
+history and out of the ledger, so a later import with a history that knows
+more can still record it.
+
+**The ledger is keyed by the red attempt's job id alone.** GitHub's job ids
+are unique across repositories, so `--repo bramvzw/sooth` and the
+`Bramvzw/sooth` that `gh` resolves cannot record one pair twice.
+
+**Left out of the first version.** Pull-request runs: their checkout is a
+merge commit, not `head_sha`; they are counted and left for a follow-up.
+`--workflow`, which the issue proposed: the guards already refuse a pair
+that is not one test step run twice, so a filter only saves reading time,
+and no repository has needed it yet.
+

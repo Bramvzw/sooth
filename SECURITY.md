@@ -23,6 +23,12 @@ no crash reporting, no API keys, no accounts. It runs the test command you
 give it, reads the JUnit XML that command produced on disk, and prints a
 report — nothing leaves your machine.
 
+`sooth import --github` is the one command that reads anything remote, and it
+does so by running the GitHub CLI (`gh`) you installed, with your own login:
+`sooth` holds no token and opens no connection itself. It reads your
+repository's Actions runs, jobs and job logs, and only when you run that
+command.
+
 (This is a statement about `sooth` itself. The network-egress *detection*
 feature on the roadmap observes whether *your tests* make real network calls
 — it does not change this promise about `sooth`.)

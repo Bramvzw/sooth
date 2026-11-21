@@ -80,6 +80,7 @@ pub struct Summary {
     pub errors: usize,
     pub skipped: usize,
     pub incomplete: usize,
+    pub risky: usize,
     /// Collision's `todo`: tests written down, not run.
     pub todo: usize,
 }
@@ -98,6 +99,7 @@ impl Summary {
             && self.total == other.total
             && self.skipped == other.skipped
             && self.incomplete == other.incomplete
+            && self.risky == other.risky
             && self.todo == other.todo
     }
 }
@@ -125,6 +127,7 @@ fn phpunit_summary(line: &str) -> Option<Summary> {
         errors: 0,
         skipped: 0,
         incomplete: 0,
+        risky: 0,
         todo: 0,
     };
     if let Some(rest) = line.strip_prefix("OK (") {
@@ -148,6 +151,7 @@ fn phpunit_summary(line: &str) -> Option<Summary> {
         errors: count("Errors: ").unwrap_or(0),
         skipped: count("Skipped: ").unwrap_or(0),
         incomplete: count("Incomplete: ").unwrap_or(0),
+        risky: count("Risky: ").unwrap_or(0),
         ..empty
     })
 }
@@ -164,6 +168,7 @@ fn collision_summary(line: &str) -> Option<Summary> {
         errors: 0,
         skipped: 0,
         incomplete: 0,
+        risky: 0,
         todo: 0,
     };
     for field in counts.split(", ") {
@@ -174,8 +179,9 @@ fn collision_summary(line: &str) -> Option<Summary> {
             "skipped" => summary.skipped = count,
             "incomplete" => summary.incomplete = count,
             "todo" | "todos" => summary.todo = count,
-            "passed" | "risky" | "warnings" | "warning" | "deprecated" | "notices" | "notice"
-            | "pending" => {}
+            "risky" => summary.risky = count,
+            "passed" | "warnings" | "warning" | "deprecated" | "notices" | "notice" | "pending" => {
+            }
             _ => return None,
         }
         summary.total += count;
@@ -287,7 +293,10 @@ mod tests {
         ]);
         let found = steps(&log);
         let commands: Vec<&str> = found.iter().map(|step| step.command.as_str()).collect();
-        assert_eq!(commands, ["actions/checkout@v4", "php artisan test --compact"]);
+        assert_eq!(
+            commands,
+            ["actions/checkout@v4", "php artisan test --compact"]
+        );
         assert_eq!(summaries(&found[0].text), []);
         assert_eq!(summaries(&found[1].text).len(), 1);
         assert_eq!(
@@ -327,6 +336,7 @@ mod tests {
                 errors: 0,
                 skipped: 9,
                 incomplete: 0,
+                risky: 0,
                 todo: 0,
             }]
         );
@@ -384,6 +394,9 @@ mod tests {
         );
         assert_eq!(causes[1].exception, None);
         assert_eq!(causes[1].file.as_deref(), Some("tests/Unit/CartTest.php"));
-        assert_eq!(causes[1].test_file.as_deref(), Some("tests/Unit/CartTest.php"));
+        assert_eq!(
+            causes[1].test_file.as_deref(),
+            Some("tests/Unit/CartTest.php")
+        );
     }
 }

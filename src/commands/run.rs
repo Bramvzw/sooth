@@ -1147,6 +1147,7 @@ mod tests {
                 observed_runs: 4,
                 failures_confined_to: None,
                 red_since: None,
+                per_rerun: false,
             },
             quarantined,
         }

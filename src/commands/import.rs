@@ -119,6 +119,9 @@ fn imported_commit(given: &str) -> Result<String, SoothError> {
 /// none of them. Exit 0, or 2 when a file is unreadable or the history
 /// cannot be written — writing is the job here, not a side effect.
 pub fn run(args: &cli::ImportArgs) -> Outcome {
+    if args.github {
+        return super::import_github::run(args);
+    }
     let style = report::Style::resolved(args.color);
     let commit = args.commit.as_deref().map(imported_commit).transpose()?;
     let ledger_path = std::path::Path::new(history::IMPORTED_PATH);
@@ -216,7 +219,7 @@ fn read_imports<'args>(
                 // it the code state is unknowable, not clean.
                 dirty: commit.map(|_| false),
                 tree: None,
-                environment: Some(args.env.clone()),
+                environment: args.env.clone(),
                 invocation: Some(history::import_invocation(hash)),
                 at_epoch_secs,
                 inferred: false,

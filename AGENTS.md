@@ -17,7 +17,7 @@ Everything below exists; one module per concern:
 src/
 ├── main.rs        # EXISTS — parse the command line, dispatch to a command, turn its outcome into the exit code
 ├── commands.rs    # EXISTS — what the commands share: how one fails (`SoothError`), reading and extending sooth's local files
-├── commands/      # EXISTS — run.rs, explain.rs, import.rs, history.rs, order.rs: one command each, wiring modules together and handing what it found to report.rs; capture.rs is the output of quiet runs, shared by run and order
+├── commands/      # EXISTS — run.rs, explain.rs, import.rs (+ import_github.rs for `--github`), history.rs, order.rs: one command each, wiring modules together and handing what it found to report.rs; capture.rs is the output of quiet runs, shared by run and order
 ├── cli.rs        # EXISTS — clap definitions: `run`, `explain`, `import`, `history`, `order` and their flags
 ├── runner.rs      # EXISTS — spawns the test subprocess (with env injection), captures exit status + wall time
 ├── reported.rs    # EXISTS — one run and the report it leaves: the report source (user file or managed temp file), freshness, reading it
@@ -25,6 +25,9 @@ src/
 ├── junit.rs       # EXISTS — tolerant JUnit-XML union schema (parse_str/parse_file)
 ├── phpunit_log.rs # EXISTS — failures from a PHPUnit console log, for `import --log phpunit`
 ├── collision_log.rs # EXISTS — failures from a Collision console log (`php artisan test`, Pest), named against the history, for `import --log collision`
+├── ci_log.rs      # EXISTS — what a GitHub Actions job log holds: its steps, the checked-out commit, each step's test summary, a failure's cause
+├── github.rs      # EXISTS — runs, jobs per attempt and job logs, read through the user's own `gh`, for `import --github`
+├── reruns.rs      # EXISTS — whether a red job attempt and its green rerun prove a flake: every guard, checked on the two logs
 ├── preset.rs      # EXISTS — presets inject reporter flags/env, manage the temp report, and own per-runner selection knowledge (is_test_file, selected_paths)
 ├── composer.rs    # EXISTS — which commands of a Composer script get the arguments after `--`, read from composer.json with Composer's own rules (serde_json)
 ├── gate.rs        # EXISTS — pre-push gate selection: which test files changed against a base (--changed)
@@ -60,8 +63,8 @@ an issue that removes it.
 
 - **Only `report.rs` and `report/human.rs` print.** No other module writes to stdout or stderr,
   `report/json.rs` included. *Enforced.*
-- **Only `runner.rs`, `preset.rs` and `history.rs` spawn processes** — the test command, the
-  PHPUnit version probe, and git. *Enforced.*
+- **Only `runner.rs`, `preset.rs`, `history.rs` and `github.rs` spawn processes** — the test
+  command, the PHPUnit version probe, git, and `gh`. *Enforced.*
 - **`analyzers/` does no I/O:** no files, no processes, no git, no printing. It classifies values
   it is handed. *By review* for files; the rest is enforced.
 - **Domain modules do not depend on `report.rs`, `commands/` or `main.rs`.** *By review.*

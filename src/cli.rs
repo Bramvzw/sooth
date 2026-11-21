@@ -95,9 +95,34 @@ pub struct ImportArgs {
     ///
     /// Nothing in a JUnit-XML file says where it ran, so sooth records your
     /// label rather than a guess. It is what tells "fails only in ci" from
-    /// "fails everywhere".
-    #[arg(long, value_name = "LABEL")]
-    pub env: String,
+    /// "fails everywhere". With `--github` it defaults to `ci`.
+    #[arg(long, value_name = "LABEL", required_unless_present = "github")]
+    pub env: Option<String>,
+
+    /// Read the repository's GitHub Actions reruns instead of files.
+    ///
+    /// A job that failed and passed when it was run again, on the same
+    /// commit, is the strongest flake evidence a CI holds. sooth reads the
+    /// runs that had more than one attempt through your own `gh` and its
+    /// login, checks that both attempts ran the same tests on the same code,
+    /// and records the failures and — marked as read from counts, not seen
+    /// by name — the passes. Push runs only, for now.
+    #[arg(long, conflicts_with_all = ["commit", "replace", "log"])]
+    pub github: bool,
+
+    /// The repository `--github` reads, as `OWNER/NAME`; by default the one
+    /// `gh` finds for this directory.
+    #[arg(long, value_name = "OWNER/NAME", requires = "github")]
+    pub repo: Option<String>,
+
+    /// How far back `--github` reads, as `YYYY-MM-DD`; by default 90 days,
+    /// GitHub's own default for keeping logs.
+    #[arg(long, value_name = "DATE", requires = "github")]
+    pub since: Option<String>,
+
+    /// With `--github`: say what would be recorded, and record nothing.
+    #[arg(long, requires = "github")]
+    pub dry_run: bool,
 
     /// The commit the reports were produced on, from a clean checkout.
     ///
@@ -130,7 +155,11 @@ pub struct ImportArgs {
     pub color: ColorChoice,
 
     /// The JUnit-XML report files (or, with `--log`, console logs) to import.
-    #[arg(required = true, value_name = "REPORT")]
+    #[arg(
+        value_name = "REPORT",
+        required_unless_present = "github",
+        conflicts_with = "github"
+    )]
     pub reports: Vec<PathBuf>,
 }
 
@@ -675,7 +704,7 @@ mod tests {
         let Command::Import(args) = parsed.command else {
             panic!("expected `import`");
         };
-        assert_eq!(args.env, "ci");
+        assert_eq!(args.env.as_deref(), Some("ci"));
         assert_eq!(args.commit.as_deref(), Some("abc123"));
         assert_eq!(args.reports.len(), 2);
     }

@@ -12,6 +12,7 @@ mod collision_log;
 mod commands;
 mod composer;
 mod gate;
+mod github;
 mod history;
 mod interrupt;
 mod json;
@@ -21,6 +22,7 @@ mod preset;
 mod quarantine;
 mod report;
 mod reported;
+mod reruns;
 mod runner;
 mod verify;
 
