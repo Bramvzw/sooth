@@ -36,6 +36,13 @@ pub const MAX_LOAD_BYTES: u64 = 64 * 1024 * 1024;
 pub struct CodeIdentity {
     pub commit: Option<String>,
     pub dirty: Option<bool>,
+    /// What a dirty tree holds, as one hash (see [`code_identity`]): two
+    /// runs with the same one ran the same code. `None` for a clean tree,
+    /// and when it could not be read.
+    pub tree: Option<String>,
+    /// The run's own report, when it is written inside the repository: no
+    /// change to the code it ran, before the run or after it.
+    pub excluded: Option<PathBuf>,
 }
 
 /// One test's collapsed outcome in one observed run.
@@ -46,6 +53,10 @@ pub struct Observation {
     pub status: TestStatus,
     pub commit: Option<String>,
     pub dirty: Option<bool>,
+    /// What the dirty tree held, as one hash (see [`CodeIdentity::tree`]).
+    /// `None` on a clean tree, and on lines written before sooth recorded
+    /// it.
+    pub tree: Option<String>,
     /// Where the run happened. `None` for observations written before sooth
     /// recorded this, which stay usable — they just cannot support a claim
     /// about one environment.
@@ -63,16 +74,47 @@ pub struct Observation {
     pub at_epoch_secs: u64,
 }
 
+/// The code an observation was made on, when sooth can name it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Identity<'a> {
+    /// A clean checkout of this commit.
+    Commit(&'a str),
+    /// A dirty tree that held exactly this content.
+    Content(&'a str),
+}
+
 impl Observation {
-    /// Whether this observation can ever be evidence: it was made on a tree
-    /// known to be clean. A dirty tree, or one whose state is unknown (no
-    /// git, a HEAD that moved during the run, an import without
-    /// `--commit`), is code sooth cannot name — such an observation counts
-    /// in the totals and proves nothing. The one definition: every
-    /// analysis and the "all N earlier observations were made on a dirty
-    /// tree" note must mean the same thing.
+    /// The code this observation was made on: a clean commit, or the
+    /// content of a dirty tree. `None` when sooth cannot name it — no git,
+    /// a HEAD that moved during the run, a dirty tree whose content could
+    /// not be read or changed during the run, a line from before sooth
+    /// recorded it, an import without `--commit`.
+    pub fn identity(&self) -> Option<Identity<'_>> {
+        match (self.dirty, self.commit.as_deref(), self.tree.as_deref()) {
+            (Some(false), Some(commit), _) => Some(Identity::Commit(commit)),
+            (Some(true), Some(_), Some(tree)) => Some(Identity::Content(tree)),
+            _ => None,
+        }
+    }
+
+    /// Whether this observation can be evidence that a test is flaky: it
+    /// names the code it was made on. Such an observation without a name
+    /// counts in the totals and proves nothing. The one definition: the
+    /// flaky analysis and the "all N earlier observations" note must mean
+    /// the same thing.
     pub fn is_evidence(&self) -> bool {
-        self.dirty == Some(false)
+        self.identity().is_some()
+    }
+
+    /// The commit a clean checkout of which this observation was made on:
+    /// what a pointer into history (`failing since`, `slower since`) can
+    /// name. A dirty tree is no commit, whatever its content.
+    pub fn clean_commit(&self) -> Option<&str> {
+        if self.dirty == Some(false) {
+            self.commit.as_deref()
+        } else {
+            None
+        }
     }
 }
 
@@ -660,42 +702,229 @@ pub fn code_identity(dir: &Path, report: Option<&Path>) -> CodeIdentity {
     let Some(commit) = git(dir, &["rev-parse", "HEAD"]) else {
         return CodeIdentity::default();
     };
+    // Run from a directory the repository ignores, the code under test is
+    // in no commit and no tree of it.
+    if git_code(dir, &["check-ignore", "-q", "."]) == Some(0) {
+        return CodeIdentity::default();
+    }
+    let changes = changes_from_head(dir, report);
+    let dirty = changes.as_ref().map(|changes| !changes.is_empty());
     CodeIdentity {
         commit: Some(commit),
-        dirty: tree_differs_from_head(dir, report),
+        tree: changes
+            .filter(|changes| !changes.is_empty())
+            .and_then(|changes| content_of(dir, report, &changes)),
+        dirty,
+        excluded: report.map(Path::to_path_buf),
     }
 }
 
+/// Past this many changed and untracked files, or this many bytes in them,
+/// a dirty tree's content is not read, and its runs prove nothing: a run
+/// should not pay seconds for an unignored dump or coverage directory.
+const CONTENT_FILES: usize = 5_000;
+const CONTENT_BYTES: u64 = 64 * 1024 * 1024;
+
+/// What the working tree holds, as one hash: the tree git would write for
+/// `HEAD` with every change and every untracked file that is not ignored
+/// added — `.sooth/` and `report` left out, as for [`changes_from_head`].
+/// Two trees with the same hash hold the same code, committed or not.
+///
+/// Read through a copy of the index and an object store of sooth's own,
+/// which reads the repository's objects but writes none to it, with the
+/// repository's hooks out of reach: the user's index, objects and status
+/// are left exactly as they were. `None` when any step fails; when the
+/// changes are past [`CONTENT_FILES`] or [`CONTENT_BYTES`]; and when a
+/// submodule, or a repository inside this one, holds uncommitted work —
+/// the tree records such a repository as its `HEAD` alone.
+fn content_of(dir: &Path, report: Option<&Path>, changes: &[String]) -> Option<String> {
+    let base = std::fs::canonicalize(dir).ok()?;
+    let top = PathBuf::from(git(dir, &["rev-parse", "--show-toplevel"])?);
+    // Relative to `dir`, or absolute; one line, or git did not understand.
+    let git_path = |name: &str| -> Option<PathBuf> {
+        let printed = git(dir, &["rev-parse", "--git-path", name])?;
+        (!printed.contains('\n')).then(|| base.join(printed))
+    };
+    let (index, objects) = (git_path("index")?, git_path("objects")?);
+    if !objects.is_dir() {
+        return None;
+    }
+    within_budget(&top, changes, (CONTENT_FILES, CONTENT_BYTES))?;
+    let pathspec = own_files_left_out(dir, report)?;
+    let scratch = Scratch::new()?;
+    let own_index = scratch.0.join("index");
+    let own_objects = scratch.0.join("objects");
+    let no_hooks = scratch.0.join("hooks");
+    std::fs::create_dir(&own_objects).ok()?;
+    std::fs::create_dir(&no_hooks).ok()?;
+    // A copy keeps the index's record of what is unchanged, so only what
+    // changed is read; a repository without one yet starts from nothing.
+    // The copy keeps the index's time as well: git trusts an entry as
+    // unchanged only when it is older than the index, and a copy made now
+    // would vouch for a file written in the index's last second.
+    if index.exists() {
+        // The time first: an index replaced in between leaves a copy newer
+        // than its time, which only has git read more.
+        let written = std::fs::metadata(&index).ok()?.modified().ok()?;
+        std::fs::copy(&index, &own_index).ok()?;
+        std::fs::File::options()
+            .write(true)
+            .open(&own_index)
+            .ok()?
+            .set_modified(written)
+            .ok()?;
+    }
+    let env = [
+        ("GIT_INDEX_FILE", own_index.as_os_str()),
+        ("GIT_OBJECT_DIRECTORY", own_objects.as_os_str()),
+        ("GIT_ALTERNATE_OBJECT_DIRECTORIES", objects.as_os_str()),
+    ];
+    let hooks = format!("core.hooksPath={}", no_hooks.display());
+    let mut add = vec!["-c", &hooks, "add", "-A", "--"];
+    add.extend(pathspec.iter().map(String::as_str));
+    git_with(dir, &add, &env)?;
+    // A submodule or a repository inside this one is in the tree as its
+    // HEAD: work uncommitted inside it would not change the hash. All of
+    // them, from the top, whatever directory sooth runs from.
+    let listed = git_with(
+        dir,
+        &[
+            "-c",
+            &hooks,
+            "ls-files",
+            "-s",
+            "-z",
+            "--full-name",
+            "--",
+            ":/",
+        ],
+        &env,
+    )?;
+    for entry in listed.split('\0') {
+        let Some((_, path)) = entry
+            .strip_prefix("160000 ")
+            .and_then(|rest| rest.split_once('\t'))
+        else {
+            continue;
+        };
+        // A path git printed in bytes that are no UTF-8 cannot be found
+        // again: no content, rather than a repository passed over.
+        if path.contains('\u{fffd}') {
+            return None;
+        }
+        let inner = top.join(path);
+        // Not checked out (a submodule cloned without it): no work in it.
+        // Asked on its own, git would walk up and answer for this one.
+        if !inner.join(".git").exists() {
+            continue;
+        }
+        if git_alone(&inner, &["--no-optional-locks", "status", "--porcelain"]).as_deref()
+            != Some("")
+        {
+            return None;
+        }
+    }
+    git_with(dir, &["-c", &hooks, "write-tree"], &env)
+}
+
+/// The pathspec of the whole tree with what sooth and the run write left
+/// out, literally: `.sooth/` and the user's report — each only when git
+/// does not ignore it already, since `git add` refuses to be told about an
+/// ignored path, and only when it lies inside the repository.
+fn own_files_left_out(dir: &Path, report: Option<&Path>) -> Option<Vec<String>> {
+    let history_dir = Path::new(HISTORY_PATH).parent()?.to_str()?;
+    let mut pathspec = vec![":/".to_owned()];
+    for own in std::iter::once(history_dir).chain(report.and_then(Path::to_str)) {
+        // 1: inside the repository and not ignored; 0 ignored; 128 outside.
+        if git_code(dir, &["check-ignore", "-q", "--", own]) == Some(1) {
+            pathspec.push(format!(":(exclude,literal){own}"));
+        }
+    }
+    Some(pathspec)
+}
+
+/// `Some` when `changes`, paths from the top of the repository, are within
+/// `budget`: so many files, so many bytes.
+fn within_budget(top: &Path, changes: &[String], budget: (usize, u64)) -> Option<()> {
+    if changes.len() > budget.0 {
+        return None;
+    }
+    let mut bytes = 0_u64;
+    for path in changes {
+        bytes += std::fs::symlink_metadata(top.join(path)).map_or(0, |meta| meta.len());
+        if bytes > budget.1 {
+            return None;
+        }
+    }
+    Some(())
+}
+
+/// A private directory of sooth's own (see [`crate::preset::private_dir`]),
+/// removed when dropped, whatever happened in between.
+struct Scratch(PathBuf);
+
+impl Scratch {
+    fn new() -> Option<Self> {
+        crate::preset::private_dir().ok().map(Self)
+    }
+}
+
+impl Drop for Scratch {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+/// What differs from `HEAD`: every changed and every untracked file that is
+/// not ignored, one by one, as paths from the top of the repository.
 /// Untracked files count: a new test file is code the commit does not
 /// describe. What sooth and the run write themselves does not — `.sooth/`,
-/// and `report`, the user's `--junit` file (see `DECISIONS.md`).
-fn tree_differs_from_head(dir: &Path, report: Option<&Path>) -> Option<bool> {
+/// and `report`, the user's `--junit` file (see `DECISIONS.md`). One
+/// listing answers both whether the tree is dirty and what reading its
+/// content would cost. `None` when git cannot say.
+fn changes_from_head(dir: &Path, report: Option<&Path>) -> Option<Vec<String>> {
     let history_dir = Path::new(HISTORY_PATH).parent()?.to_str()?;
     let own_history = format!(":(exclude,literal){history_dir}");
-    let differs = |also_excluded: Option<&str>| {
+    let listed = |also_excluded: Option<&str>| {
         // `--no-optional-locks`: a plain `status` refreshes the index under
         // `index.lock`, which can collide with an IDE or a commit elsewhere.
         let mut args = vec![
             "--no-optional-locks",
             "status",
             "--porcelain",
+            "-z",
+            "--untracked-files=all",
             "--",
             ":/",
             &own_history,
         ];
         args.extend(also_excluded);
-        git(dir, &args).map(|changes| !changes.is_empty())
+        // A path git prints as bytes that are no UTF-8 still counts.
+        let output = git_run(dir, &args)?;
+        output
+            .status
+            .success()
+            .then(|| String::from_utf8_lossy(&output.stdout).into_owned())
     };
-    if !differs(None)? {
-        return Some(false);
+    let raw = match report.and_then(Path::to_str) {
+        // Git refuses a path outside the repository, which is in no
+        // listing anyway.
+        Some(report) => {
+            listed(Some(&format!(":(exclude,literal){report}"))).or_else(|| listed(None))?
+        }
+        None => listed(None)?,
+    };
+    let mut paths = Vec::new();
+    let mut entries = raw.split('\0').filter(|entry| !entry.is_empty());
+    while let Some(entry) = entries.next() {
+        let (state, path) = entry.split_at_checked(3)?;
+        if state.starts_with(['R', 'C']) {
+            // A rename names where it came from next.
+            entries.next();
+        }
+        paths.push(path.to_owned());
     }
-    // Something differs; it may be only the report. Git refuses a path
-    // outside the repository, and then the first answer stands.
-    let Some(report) = report.and_then(Path::to_str) else {
-        return Some(true);
-    };
-    let own_report = format!(":(exclude,literal){report}");
-    Some(differs(Some(&own_report)).unwrap_or(true))
+    Some(paths)
 }
 
 /// The identity to record once the runs are over: the one read before them,
@@ -704,6 +933,18 @@ fn tree_differs_from_head(dir: &Path, report: Option<&Path>) -> Option<bool> {
 pub fn identity_after_run(before: CodeIdentity, dir: &Path) -> CodeIdentity {
     if before.commit.is_some() && git(dir, &["rev-parse", "HEAD"]) != before.commit {
         return CodeIdentity::default();
+    }
+    // A dirty tree's content is read again: an edit during the run — a
+    // suite of minutes is long enough to keep working — means the hash
+    // read before it names code that did not run start to finish.
+    let excluded = before.excluded.as_deref();
+    let read_again =
+        || changes_from_head(dir, excluded).and_then(|changes| content_of(dir, excluded, &changes));
+    if before.tree.is_some() && read_again() != before.tree {
+        return CodeIdentity {
+            tree: None,
+            ..before
+        };
     }
     before
 }
@@ -737,6 +978,43 @@ pub(crate) fn git(dir: &Path, args: &[&str]) -> Option<String> {
     git_raw(dir, args).map(|text| text.trim().to_owned())
 }
 
+/// The exit code of a git call, for the questions git answers that way.
+fn git_code(dir: &Path, args: &[&str]) -> Option<i32> {
+    git_run(dir, args)?.status.code()
+}
+
+/// [`git`] for another repository than the one sooth runs in: git variables
+/// that point at a repository are left out, so `dir` is asked about itself.
+fn git_alone(dir: &Path, args: &[&str]) -> Option<String> {
+    let output = git_command(dir, args, &[], REPOSITORY_VARIABLES)?;
+    if !output.status.success() {
+        return None;
+    }
+    String::from_utf8(output.stdout)
+        .ok()
+        .map(|text| text.trim().to_owned())
+}
+
+/// Git's variables that name a repository, an index or an object store.
+const REPOSITORY_VARIABLES: &[&str] = &[
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_INDEX_FILE",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_COMMON_DIR",
+];
+
+/// [`git`] with `env` added to git's environment.
+fn git_with(dir: &Path, args: &[&str], env: &[(&str, &std::ffi::OsStr)]) -> Option<String> {
+    let output = git_command(dir, args, env, &[])?;
+    if !output.status.success() {
+        return None;
+    }
+    // A listing of every path in the index may hold one that is no UTF-8.
+    Some(String::from_utf8_lossy(&output.stdout).trim().to_owned())
+}
+
 /// A successful git call's stdout exactly as written — for `-z` listings,
 /// where a path may begin or end with the whitespace [`git`] trims.
 pub(crate) fn git_raw(dir: &Path, args: &[&str]) -> Option<String> {
@@ -751,13 +1029,22 @@ pub(crate) fn git_raw(dir: &Path, args: &[&str]) -> Option<String> {
     clippy::disallowed_methods,
     reason = "Every git call goes through this one helper."
 )]
+fn git_command(
+    dir: &Path,
+    args: &[&str],
+    env: &[(&str, &std::ffi::OsStr)],
+    unset: &[&str],
+) -> Option<std::process::Output> {
+    let mut git = Command::new("git");
+    git.arg("-C").arg(dir).args(args).envs(env.iter().copied());
+    for variable in unset {
+        git.env_remove(variable);
+    }
+    git.output().ok()
+}
+
 fn git_run(dir: &Path, args: &[&str]) -> Option<std::process::Output> {
-    Command::new("git")
-        .arg("-C")
-        .arg(dir)
-        .args(args)
-        .output()
-        .ok()
+    git_command(dir, args, &[], &[])
 }
 
 /// Keep sooth's own directory out of `git status` and `git add -A` in this
@@ -853,8 +1140,15 @@ fn to_line(observation: &Observation) -> String {
     let duration = observation
         .duration_ms
         .map_or_else(String::new, |millis| format!(r#""ms":{millis},"#));
+    // Left out on a clean tree, where the commit says it all.
+    let tree = observation
+        .tree
+        .as_deref()
+        .map_or_else(String::new, |tree| {
+            format!(r#""tree":"{}","#, json::escape(tree))
+        });
     format!(
-        r#"{{"at":{},"commit":{commit},"dirty":{dirty},"env":{environment},"run":{invocation},{duration}"status":"{}","id":"{}"}}"#,
+        r#"{{"at":{},"commit":{commit},"dirty":{dirty},"env":{environment},"run":{invocation},{duration}{tree}"status":"{}","id":"{}"}}"#,
         observation.at_epoch_secs,
         status_str(observation.status),
         json::escape(&observation.id)
@@ -980,11 +1274,14 @@ fn parse_line(line: &str) -> Option<Observation> {
     let invocation = extract_string_or_null(line, "run").flatten();
     // Absent when the report had no duration, or the line predates them.
     let duration_ms = extract_u64(line, "ms");
+    // Absent on a clean tree, and on lines from before sooth recorded it.
+    let tree = extract_string_or_null(line, "tree").flatten();
     Some(Observation {
         id,
         status,
         commit,
         dirty,
+        tree,
         environment,
         invocation,
         duration_ms,
@@ -1084,6 +1381,7 @@ mod tests {
             status,
             commit: Some("abc123".to_owned()),
             dirty: Some(false),
+            tree: None,
             environment: Some("local".to_owned()),
             invocation: Some("run-1700000000-1".to_owned()),
             duration_ms: None,
@@ -1315,6 +1613,52 @@ mod tests {
 
         let loaded = load(&path);
         assert_eq!(loaded.observations, written);
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn a_line_cut_off_after_its_id_is_no_observation() {
+        let whole =
+            r#"{"at":4,"commit":"bbb","dirty":false,"env":null,"status":"failed","id":"c::t"}"#;
+        assert!(super::parse_line(whole).is_some());
+        assert_eq!(
+            super::parse_line(whole.strip_suffix('}').expect("a brace")),
+            None
+        );
+        assert_eq!(
+            super::parse_line(whole.strip_prefix('{').expect("a brace")),
+            None
+        );
+    }
+
+    #[test]
+    fn a_scratch_directory_is_gone_once_dropped() {
+        let scratch = super::Scratch::new().expect("a scratch directory");
+        let dir = scratch.0.clone();
+        std::fs::write(dir.join("index"), "x").expect("write");
+        assert!(dir.is_dir());
+        drop(scratch);
+        assert!(!dir.exists(), "{}", dir.display());
+    }
+
+    #[test]
+    fn a_dirty_trees_content_survives_a_roundtrip() {
+        let path = temp_path("tree");
+        let written = [
+            observation("c::a", TestStatus::Passed),
+            Observation {
+                dirty: Some(true),
+                tree: Some("4b825dc642cb6eb9a060e54bf8d69288fbee4904".to_owned()),
+                ..observation("c::b", TestStatus::Failed)
+            },
+        ];
+        append(&path, &written).expect("append");
+        let text = std::fs::read_to_string(&path).expect("read");
+        assert!(
+            !text.lines().next().expect("a line").contains("tree"),
+            "{text}"
+        );
+        assert_eq!(load(&path).observations, written);
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 
@@ -1720,6 +2064,9 @@ mod tests {
                     .clone(),
                     dirty: [None, Some(false), Some(false), Some(true)]
                         [usize::try_from(next(4)).unwrap()],
+                    tree: [None, Some("t1".to_owned()), Some("t2".to_owned())]
+                        [usize::try_from(next(3)).unwrap()]
+                    .clone(),
                     environment: Some("local".to_owned()),
                     invocation: match next(8) {
                         0 => None,
@@ -1927,5 +2274,297 @@ mod tests {
         let nowhere = code_identity(&std::env::temp_dir().join("sooth-no-such-dir"), None);
         assert_eq!(nowhere.commit, None);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_dirty_tree_is_named_by_its_content_and_reading_it_leaves_the_repository_alone() {
+        if Command::new("git").arg("--version").output().is_err() {
+            return; // no git on this machine: identity degrades to unknown
+        }
+        let dir =
+            std::env::temp_dir().join(format!("sooth-history-content-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let git = |args: &[&str]| -> String {
+            let output = Command::new("git")
+                .arg("-C")
+                .arg(&dir)
+                .args(args)
+                .env("GIT_AUTHOR_NAME", "t")
+                .env("GIT_AUTHOR_EMAIL", "t@t")
+                .env("GIT_COMMITTER_NAME", "t")
+                .env("GIT_COMMITTER_EMAIL", "t@t")
+                .output()
+                .expect("git");
+            assert!(output.status.success(), "git {args:?} failed");
+            String::from_utf8(output.stdout).expect("utf-8")
+        };
+        git(&["init", "-q"]);
+        std::fs::write(dir.join("a.txt"), "a").unwrap();
+        git(&["add", "."]);
+        git(&["commit", "-q", "-m", "init"]);
+        assert_eq!(code_identity(&dir, None).tree, None, "a commit says it all");
+
+        let report = Path::new("report.xml");
+        std::fs::write(dir.join("a.txt"), "changed").unwrap();
+        let objects = || walk_count(&dir.join(".git/objects"));
+        let (index, status, stored) = (
+            std::fs::read(dir.join(".git/index")).unwrap(),
+            git(&["status", "--porcelain"]),
+            objects(),
+        );
+        let first = code_identity(&dir, Some(report));
+        let tree = first.tree.clone().expect("a dirty tree's content");
+        assert_eq!(first.dirty, Some(true));
+        // Read, and nothing of it left behind.
+        assert_eq!(std::fs::read(dir.join(".git/index")).unwrap(), index);
+        assert_eq!(git(&["status", "--porcelain"]), status);
+        assert_eq!(objects(), stored);
+
+        // The same content, the same name — whatever sooth and the run
+        // write beside it.
+        std::fs::create_dir_all(dir.join(".sooth")).unwrap();
+        std::fs::write(dir.join(".sooth/history.jsonl"), "x").unwrap();
+        std::fs::write(dir.join("report.xml"), "<testsuite/>").unwrap();
+        assert_eq!(code_identity(&dir, Some(report)).tree.as_ref(), Some(&tree));
+        // A new file is new code; so is an edit.
+        std::fs::write(dir.join("b.txt"), "new").unwrap();
+        let with_new = code_identity(&dir, Some(report)).tree;
+        assert!(with_new.is_some() && with_new.as_ref() != Some(&tree));
+        std::fs::remove_file(dir.join("b.txt")).unwrap();
+        assert_eq!(code_identity(&dir, Some(report)).tree.as_ref(), Some(&tree));
+
+        // After the run: the same unless the code changed while it ran.
+        let before = code_identity(&dir, Some(report));
+        std::fs::write(dir.join("report.xml"), "<testsuite><testcase/></testsuite>").unwrap();
+        assert_eq!(identity_after_run(before.clone(), &dir), before);
+        std::fs::write(dir.join("a.txt"), "edited during the run").unwrap();
+        let after = identity_after_run(before.clone(), &dir);
+        assert_eq!(
+            (after.commit.as_ref(), after.dirty, after.tree),
+            (before.commit.as_ref(), Some(true), None)
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A fresh repository with one commit, and a git that commits there.
+    fn repository(tag: &str) -> (PathBuf, impl Fn(&Path, &[&str]) -> String) {
+        let dir = std::env::temp_dir().join(format!("sooth-history-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let git = |dir: &Path, args: &[&str]| -> String {
+            let output = Command::new("git")
+                .arg("-C")
+                .arg(dir)
+                .args(args)
+                .env("GIT_AUTHOR_NAME", "t")
+                .env("GIT_AUTHOR_EMAIL", "t@t")
+                .env("GIT_COMMITTER_NAME", "t")
+                .env("GIT_COMMITTER_EMAIL", "t@t")
+                .output()
+                .expect("git");
+            assert!(output.status.success(), "git {args:?} failed");
+            String::from_utf8(output.stdout).expect("utf-8")
+        };
+        git(&dir, &["init", "-q"]);
+        std::fs::write(dir.join("a.txt"), "a").unwrap();
+        git(&dir, &["add", "."]);
+        git(&dir, &["commit", "-q", "-m", "init"]);
+        (dir, git)
+    }
+
+    #[test]
+    fn work_inside_a_repository_within_names_no_content() {
+        if Command::new("git").arg("--version").output().is_err() {
+            return;
+        }
+        let (dir, git) = repository("nested");
+        // A package developed in place, a repository of its own.
+        let package = dir.join("packages/local");
+        std::fs::create_dir_all(&package).unwrap();
+        git(&package, &["init", "-q"]);
+        std::fs::write(package.join("Code.php"), "v1").unwrap();
+        git(&package, &["add", "."]);
+        git(&package, &["commit", "-q", "-m", "v1"]);
+        std::fs::write(dir.join("wip.txt"), "work").unwrap();
+        assert!(
+            code_identity(&dir, None).tree.is_some(),
+            "the package is clean"
+        );
+        let app = dir.join("app");
+        std::fs::create_dir_all(&app).unwrap();
+        assert!(
+            code_identity(&app, None).tree.is_some(),
+            "from a subdirectory too"
+        );
+        // Uncommitted work inside it is code the tree would not show — seen
+        // from the top and from any directory sooth runs in.
+        std::fs::write(package.join("Code.php"), "v2").unwrap();
+        let identity = code_identity(&dir, None);
+        assert_eq!((identity.dirty, identity.tree), (Some(true), None));
+        assert_eq!(code_identity(&app, None).tree, None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `path` with its modification time set to `time`.
+    fn touch_to(path: &Path, time: std::time::SystemTime) {
+        std::fs::File::options()
+            .write(true)
+            .open(path)
+            .unwrap()
+            .set_modified(time)
+            .unwrap();
+    }
+
+    #[test]
+    fn a_file_changed_in_the_index_s_own_instant_is_read_for_its_content() {
+        if Command::new("git").arg("--version").output().is_err() {
+            return;
+        }
+        let (dir, git) = repository("racy");
+        // Without the inode's change time to go by, as on a filesystem that
+        // keeps whole seconds within one second, only the modification time
+        // and size stand between git and reading the file.
+        git(&dir, &["config", "core.trustctime", "false"]);
+        // The index written in the same instant as the file it records: git
+        // cannot tell from the time alone whether the file changed since,
+        // and reads it.
+        let file = dir.join("a.txt");
+        let written = std::fs::metadata(&file).unwrap().modified().unwrap();
+        touch_to(&dir.join(".git/index"), written);
+        std::fs::write(dir.join("wip.txt"), "work").unwrap();
+        let before = code_identity(&dir, None).tree;
+        assert!(before.is_some());
+        // Same size, same time: only the content says it changed.
+        std::fs::write(&file, "b").unwrap();
+        touch_to(&file, written);
+        assert_ne!(code_identity(&dir, None).tree, before);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_submodule_never_checked_out_holds_no_work() {
+        if Command::new("git").arg("--version").output().is_err() {
+            return;
+        }
+        let (dir, git) = repository("gitlink");
+        let package = dir.join("lib");
+        std::fs::create_dir_all(&package).unwrap();
+        git(&package, &["init", "-q"]);
+        std::fs::write(package.join("a.txt"), "v1").unwrap();
+        git(&package, &["add", "."]);
+        git(&package, &["commit", "-q", "-m", "v1"]);
+        git(&dir, &["add", "lib"]);
+        git(&dir, &["commit", "-q", "-m", "a gitlink"]);
+        // As a clone without `--recurse-submodules` leaves it: an empty
+        // directory, which git asked on its own would answer for the outer
+        // repository from.
+        std::fs::remove_dir_all(&package).unwrap();
+        std::fs::create_dir_all(&package).unwrap();
+        std::fs::write(dir.join("wip.txt"), "work").unwrap();
+        assert!(code_identity(&dir, None).tree.is_some());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn content_is_read_only_within_a_budget() {
+        if Command::new("git").arg("--version").output().is_err() {
+            return;
+        }
+        let (dir, git) = repository("budget");
+        std::fs::write(dir.join("one.txt"), "12345").unwrap();
+        std::fs::write(dir.join("two.txt"), "12345").unwrap();
+        let top = PathBuf::from(git(&dir, &["rev-parse", "--show-toplevel"]).trim());
+        let whole = super::changes_from_head(&dir, None).expect("a listing");
+        assert_eq!(whole, ["one.txt", "two.txt"]);
+        assert!(super::within_budget(&top, &whole, (2, 10)).is_some());
+        assert!(
+            super::within_budget(&top, &whole, (1, 10)).is_none(),
+            "files"
+        );
+        assert!(
+            super::within_budget(&top, &whole, (2, 9)).is_none(),
+            "bytes"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn reading_content_runs_none_of_the_repositorys_hooks() {
+        if Command::new("git").arg("--version").output().is_err() {
+            return;
+        }
+        let (dir, _git) = repository("hooks");
+        let hook = dir.join(".git/hooks/post-index-change");
+        let marker = dir.join("hook-ran");
+        std::fs::write(&hook, format!("#!/bin/sh\ntouch '{}'\n", marker.display())).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        std::fs::write(dir.join("a.txt"), "changed").unwrap();
+        assert!(code_identity(&dir, None).tree.is_some());
+        assert!(!marker.exists(), "a hook ran");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_directory_the_repository_ignores_has_no_identity() {
+        if Command::new("git").arg("--version").output().is_err() {
+            return;
+        }
+        let (dir, git) = repository("ignored");
+        std::fs::write(dir.join(".gitignore"), "sandbox/\n").unwrap();
+        git(&dir, &["add", "."]);
+        git(&dir, &["commit", "-q", "-m", "ignore"]);
+        let sandbox = dir.join("sandbox/app");
+        std::fs::create_dir_all(&sandbox).unwrap();
+        assert_eq!(code_identity(&sandbox, None), CodeIdentity::default());
+        // A subdirectory that is not ignored reads the same content as the
+        // top of the repository.
+        let sub = dir.join("src");
+        std::fs::create_dir_all(&sub).unwrap();
+        std::fs::write(sub.join("x.txt"), "x").unwrap();
+        assert_eq!(
+            code_identity(&sub, None).tree,
+            code_identity(&dir, None).tree
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_report_is_left_out_by_its_literal_name() {
+        if Command::new("git").arg("--version").output().is_err() {
+            return;
+        }
+        let (dir, git) = repository("literal");
+        std::fs::write(dir.join("out1.xml"), "tracked").unwrap();
+        git(&dir, &["add", "."]);
+        git(&dir, &["commit", "-q", "-m", "out1"]);
+        std::fs::write(dir.join("wip.txt"), "work").unwrap();
+        let report = Path::new("out[1].xml");
+        let before = code_identity(&dir, Some(report)).tree;
+        // A glob would take `out1.xml` for the report and leave it out.
+        std::fs::write(dir.join("out1.xml"), "changed").unwrap();
+        assert_ne!(code_identity(&dir, Some(report)).tree, before);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// How many files lie under `dir`, however deep.
+    fn walk_count(dir: &Path) -> usize {
+        std::fs::read_dir(dir).map_or(0, |entries| {
+            entries
+                .flatten()
+                .map(|entry| {
+                    let path = entry.path();
+                    if path.is_dir() {
+                        walk_count(&path)
+                    } else {
+                        1
+                    }
+                })
+                .sum()
+        })
     }
 }

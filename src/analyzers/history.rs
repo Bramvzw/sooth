@@ -9,7 +9,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::analyzers::flaky::TestOutcomes;
 use crate::analyzers::slow::{self, SlowIn, SlowerSince, Withheld};
-use crate::history::{Observation, WINDOW_PER_TEST};
+use crate::history::{Identity, Observation, WINDOW_PER_TEST};
 use crate::junit::TestStatus;
 
 /// A test that passed, then stopped passing at a commit boundary and never
@@ -253,44 +253,45 @@ fn classify(id: &str, signal: &[&Observation], analysis: &mut Analysis) {
         return;
     }
 
-    // Flaky evidence: one clean commit with both outcomes, from at least
-    // two invocations — a pass in one, a failure in another. Mixed
-    // outcomes inside one invocation are the active pass's to judge.
-    let mut per_clean_commit: BTreeMap<&str, Outcomes> = BTreeMap::new();
+    // Flaky evidence: one code identity with both outcomes, from at least
+    // two invocations — a pass in one, a failure in another. An identity
+    // is a clean commit, or the exact content of a dirty tree: the same
+    // code either way. Mixed outcomes inside one invocation are the active
+    // pass's to judge.
+    let mut per_identity: BTreeMap<Identity, Outcomes> = BTreeMap::new();
     for (line, observation) in signal.iter().enumerate() {
-        if !observation.is_evidence() {
+        let Some(identity) = observation.identity() else {
             continue;
-        }
-        if let Some(commit) = &observation.commit {
-            let invocation = observation
-                .invocation
-                .as_deref()
-                .map_or(Invocation::Line(line), Invocation::Run);
-            let outcomes = per_clean_commit.entry(commit).or_default();
-            if failed(observation) {
-                outcomes.failed_in.insert(invocation);
-            } else {
-                outcomes.passed_in.insert(invocation);
-            }
+        };
+        let invocation = observation
+            .invocation
+            .as_deref()
+            .map_or(Invocation::Line(line), Invocation::Run);
+        let outcomes = per_identity.entry(identity).or_default();
+        if failed(observation) {
+            outcomes.failed_in.insert(invocation);
+        } else {
+            outcomes.passed_in.insert(invocation);
         }
     }
-    let proven_flaky = per_clean_commit.values().any(Outcomes::prove_flaky);
+    let proven_flaky = per_identity.values().any(Outcomes::prove_flaky);
 
-    // The failures that close the window, newest first. Dirty reds count
-    // in the streak; they just cannot carry its address. For a proven
-    // flake the streak stops at a commit it was also seen passing on:
-    // there a failure is the flake being a flake.
-    let passed_on: BTreeSet<&str> = per_clean_commit
+    // The failures that close the window, newest first. Reds on code sooth
+    // cannot name as a commit count in the streak; they just cannot carry
+    // its address. For a proven flake the streak stops at code it was also
+    // seen passing on: there a failure is the flake being a flake.
+    let passed_on: BTreeSet<Identity> = per_identity
         .iter()
         .filter(|(_, outcomes)| !outcomes.passed_in.is_empty())
-        .map(|(commit, _)| *commit)
+        .map(|(identity, _)| *identity)
         .collect();
     let streak: Vec<&Observation> = signal
         .iter()
         .rev()
         .copied()
         .take_while(|o| {
-            failed(o) && !(proven_flaky && clean_commit(o).is_some_and(|c| passed_on.contains(c)))
+            failed(o)
+                && !(proven_flaky && o.identity().is_some_and(|code| passed_on.contains(&code)))
         })
         .collect();
     let streak_invocations: BTreeSet<Invocation> = streak
@@ -302,8 +303,9 @@ fn classify(id: &str, signal: &[&Observation], analysis: &mut Analysis) {
                 .map_or(Invocation::Line(line), Invocation::Run)
         })
         .collect();
-    // Anchored on the streak's earliest *clean* red.
-    let anchor = streak.iter().rev().find_map(|o| clean_commit(o));
+    // Anchored on the streak's earliest *clean* red: a pointer into
+    // history names a commit, never the content of a dirty tree.
+    let anchor = streak.iter().rev().find_map(|o| o.clean_commit());
 
     if proven_flaky {
         let red_since = anchor
@@ -348,14 +350,6 @@ fn classify(id: &str, signal: &[&Observation], analysis: &mut Analysis) {
     }
 }
 
-/// The commit an observation can testify about: known, and clean.
-fn clean_commit(observation: &Observation) -> Option<&str> {
-    if !observation.is_evidence() {
-        return None;
-    }
-    observation.commit.as_deref()
-}
-
 /// What earlier runs left behind: how many observations, and how many of
 /// them can never be evidence.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -389,6 +383,7 @@ mod tests {
             status,
             commit: commit.map(str::to_owned),
             dirty,
+            tree: None,
             environment: None,
             invocation: None,
             duration_ms: None,
@@ -748,6 +743,78 @@ mod tests {
                 unusable: 2
             }
         );
+    }
+
+    /// `observation` made on a dirty tree that held `tree`.
+    fn on_content(observation: Observation, tree: Option<&str>) -> Observation {
+        Observation {
+            dirty: Some(true),
+            tree: tree.map(str::to_owned),
+            ..observation
+        }
+    }
+
+    #[test]
+    fn the_code_an_observation_names_is_a_clean_commit_or_a_dirty_trees_content() {
+        use super::PriorEvidence;
+        use crate::history::Identity;
+        let clean_one = clean("c::t", TestStatus::Passed, "aaa");
+        let content = on_content(clean_one.clone(), Some("t1"));
+        let no_content = on_content(clean_one.clone(), None);
+        let no_commit = Observation {
+            commit: None,
+            ..content.clone()
+        };
+        assert_eq!(clean_one.identity(), Some(Identity::Commit("aaa")));
+        assert_eq!(content.identity(), Some(Identity::Content("t1")));
+        assert_eq!(no_content.identity(), None);
+        assert_eq!(no_commit.identity(), None);
+        // A pointer into history names a commit only.
+        assert_eq!(clean_one.clean_commit(), Some("aaa"));
+        assert_eq!(content.clean_commit(), None);
+        assert_eq!(
+            PriorEvidence::of(&[clean_one, content, no_content, no_commit]),
+            PriorEvidence {
+                observations: 4,
+                unusable: 2
+            }
+        );
+    }
+
+    #[test]
+    fn a_pass_and_a_failure_on_one_dirty_trees_content_prove_flaky() {
+        let on = |status, run, tree| on_content(in_run("c::t", status, "aaa", run), tree);
+        let proven = [
+            on(TestStatus::Passed, "r1", Some("t1")),
+            on(TestStatus::Failed, "r2", Some("t1")),
+        ];
+        assert_eq!(analyze(&proven).flaky.len(), 1);
+        // Two contents are two pieces of code.
+        let apart = [
+            on(TestStatus::Passed, "r1", Some("t1")),
+            on(TestStatus::Failed, "r2", Some("t2")),
+        ];
+        assert!(analyze(&apart).flaky.is_empty());
+        // And a dirty tree sooth could not read proves nothing.
+        let unread = [
+            on(TestStatus::Passed, "r1", None),
+            on(TestStatus::Failed, "r2", None),
+        ];
+        assert!(analyze(&unread).flaky.is_empty());
+    }
+
+    #[test]
+    fn a_red_streak_on_a_dirty_trees_content_still_has_no_address() {
+        // Failing on the same uncommitted content after a green commit is no
+        // regression pointer: the content is no commit to point at.
+        let history = [
+            clean("c::t", TestStatus::Passed, "aaa"),
+            on_content(in_run("c::t", TestStatus::Failed, "aaa", "r2"), Some("t1")),
+            on_content(in_run("c::t", TestStatus::Failed, "aaa", "r3"), Some("t1")),
+        ];
+        let analysis = analyze(&history);
+        assert!(analysis.failing_since.is_empty(), "got: {analysis:?}");
+        assert!(analysis.flaky.is_empty(), "got: {analysis:?}");
     }
 
     #[test]

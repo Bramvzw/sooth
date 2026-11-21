@@ -3366,7 +3366,7 @@ fn history_accumulates_across_invocations_and_reports_proven_flakes() {
     let stdout = String::from_utf8(third.stdout).expect("stdout should be UTF-8");
     assert_eq!(third.status.code(), Some(0));
     assert!(
-        stdout.contains("flaky per history (mixed outcomes on one commit):"),
+        stdout.contains("flaky per history (mixed outcomes on the same code):"),
         "got: {stdout:?}"
     );
     assert!(
@@ -3933,48 +3933,117 @@ fn a_flake_that_only_breaks_in_ci_says_so() {
     );
 }
 
+/// A run in `dir` whose "runner" writes `cases` as its report, outside the
+/// repository, and then runs `after` (a shell command, `true` for none).
+fn run_reporting(dir: &std::path::Path, cases: &str, after: &str) -> std::process::Output {
+    let report = dir.parent().expect("a parent").join("report.xml");
+    let script = format!(
+        "printf '<testsuite>{cases}</testsuite>' > '{}'; {after}",
+        report.display()
+    );
+    Command::new(env!("CARGO_BIN_EXE_sooth"))
+        .current_dir(dir)
+        .args([
+            "run",
+            "--junit",
+            &report.display().to_string(),
+            "--color",
+            "never",
+            "--",
+            "sh",
+            "-c",
+            &script,
+        ])
+        .output()
+        .expect("sooth should run")
+}
+
+const WOB_PASSES: &str = r#"<testcase classname="c" name="wob"/>"#;
+const WOB_FAILS: &str = r#"<testcase classname="c" name="wob"><failure/></testcase>"#;
+
 #[test]
-fn a_history_made_entirely_on_a_dirty_tree_says_why_it_proves_nothing() {
+fn a_pass_and_a_failure_on_one_unchanged_dirty_tree_prove_a_flake() {
+    let Some(dir) = scratch_repo("dirty-same-content") else {
+        return;
+    };
+    // Uncommitted work — the ordinary state of a machine someone is working
+    // on — that does not change between the two runs: the same code ran.
+    std::fs::write(dir.join("scratch.txt"), "work in progress").expect("write");
+    run_reporting(&dir, WOB_PASSES, "true");
+    let output = run_reporting(&dir, WOB_FAILS, "true");
+    let stdout = String::from_utf8(output.stdout).expect("stdout should be UTF-8");
+    assert!(
+        stdout.contains("c::wob — known flake (1 of 2 in history, 50%)"),
+        "got: {stdout:?}"
+    );
+    assert!(!stdout.contains("cannot be evidence"), "got: {stdout:?}");
+}
+
+#[test]
+fn a_dirty_tree_edited_between_two_runs_proves_nothing() {
+    let Some(dir) = scratch_repo("dirty-edited") else {
+        return;
+    };
+    std::fs::write(dir.join("scratch.txt"), "work in progress").expect("write");
+    run_reporting(&dir, WOB_PASSES, "true");
+    std::fs::write(dir.join("scratch.txt"), "more work").expect("write");
+    let output = run_reporting(&dir, WOB_FAILS, "true");
+    let stdout = String::from_utf8(output.stdout).expect("stdout should be UTF-8");
+    assert!(
+        stdout.contains("✗ c::wob — new (nothing in history)"),
+        "two pieces of code, one outcome each: {stdout:?}"
+    );
+}
+
+#[test]
+fn a_dirty_tree_edited_during_a_run_names_no_code_for_it() {
+    let Some(dir) = scratch_repo("dirty-during") else {
+        return;
+    };
+    std::fs::write(dir.join("scratch.txt"), "work in progress").expect("write");
+    run_reporting(&dir, WOB_PASSES, "true");
+    // The failing run's code changed while it ran: what was read before it
+    // describes no run from start to finish.
+    let output = run_reporting(&dir, WOB_FAILS, "echo more >> scratch.txt");
+    let stdout = String::from_utf8(output.stdout).expect("stdout should be UTF-8");
+    assert!(
+        stdout.contains("✗ c::wob — new (nothing in history)"),
+        "got: {stdout:?}"
+    );
+    let history = std::fs::read_to_string(dir.join(".sooth/history.jsonl")).expect("the history");
+    let lines: Vec<&str> = history.lines().collect();
+    assert!(lines[0].contains(r#""tree":""#), "{history}");
+    assert!(!lines[1].contains(r#""tree":""#), "{history}");
+}
+
+#[test]
+fn a_history_of_code_sooth_cannot_name_says_why_it_proves_nothing() {
     let Some(dir) = scratch_repo("dirty-history") else {
         return;
     };
-    // An untracked file makes every run dirty — the ordinary state of a
-    // machine someone is working on.
     std::fs::write(dir.join("scratch.txt"), "work in progress").expect("write");
-    let report = dir.outside("report.xml");
-    let run = |cases: &str| {
-        let script = format!(
-            "printf '<testsuite>{cases}</testsuite>' > '{}'",
-            report.display()
-        );
-        Command::new(env!("CARGO_BIN_EXE_sooth"))
-            .current_dir(&dir)
-            .args([
-                "run",
-                "--junit",
-                &report.display().to_string(),
-                "--color",
-                "never",
-                "--",
-                "sh",
-                "-c",
-                &script,
-            ])
-            .output()
-            .expect("sooth should run")
-    };
-
-    run(r#"<testcase classname="c" name="wob"/>"#);
-    let output = run(r#"<testcase classname="c" name="wob"><failure/></testcase>"#);
+    // Dirty lines from before sooth read a dirty tree's content.
+    std::fs::create_dir_all(dir.join(".sooth")).expect("mkdir");
+    std::fs::write(
+        dir.join(".sooth/history.jsonl"),
+        concat!(
+            r#"{"at":1,"commit":"aaa","dirty":true,"env":"local","run":"run-1-1","status":"passed","id":"c::wob"}"#,
+            "\n",
+            r#"{"at":2,"commit":"aaa","dirty":true,"env":"local","run":"run-2-1","status":"passed","id":"c::wob"}"#,
+            "\n",
+        ),
+    )
+    .expect("write the history");
+    let output = run_reporting(&dir, WOB_FAILS, "true");
     let stdout = String::from_utf8(output.stdout).expect("stdout should be UTF-8");
-
     assert!(
         stdout.contains("✗ c::wob — new (nothing in history)"),
         "got: {stdout:?}"
     );
     assert!(
-        stdout.contains("were made on a dirty tree and cannot be evidence"),
-        "a dirty history reads exactly like an empty one unless sooth says so: {stdout:?}"
+        stdout.contains("all 2 earlier observations were made on code sooth cannot name"),
+        "a history of nothing usable reads exactly like an empty one unless sooth says so: \
+         {stdout:?}"
     );
 }
 

@@ -494,7 +494,7 @@ pub fn print_history(analyses: &Analyses<'_>, style: Style) {
 
     if !flaky.is_empty() {
         let heading = if explained.is_empty() {
-            "flaky per history (mixed outcomes on one commit):"
+            "flaky per history (mixed outcomes on the same code):"
         } else {
             "also flaky per history (these did not fail this run):"
         };
@@ -1203,8 +1203,11 @@ fn history_gap_note(evidence: Option<PriorEvidence>) -> Option<String> {
     // output and is why this says so explicitly.
     (prior.unusable == prior.observations).then(|| {
         format!(
-            "all {} earlier observations were made on a dirty tree and cannot be \
-             evidence — commit or stash to let sooth prove flakiness",
+            "all {} earlier observations were made on code sooth cannot name — no \
+             git, an import without `--commit`, or a dirty tree it did not read: \
+             recorded before it did, edited during its run, too large, or with work \
+             inside a repository within — and cannot be evidence: a pass and a failure \
+             on unchanged code, committed or not, prove a flake",
             prior.observations
         )
     })
@@ -1491,8 +1494,11 @@ mod tests {
         assert_eq!(
             super::history_gap_note(Some(all_dirty)).as_deref(),
             Some(
-                "all 9423 earlier observations were made on a dirty tree and cannot be \
-                 evidence — commit or stash to let sooth prove flakiness"
+                "all 9423 earlier observations were made on code sooth cannot name — no \
+                 git, an import without `--commit`, or a dirty tree it did not read: \
+                 recorded before it did, edited during its run, too large, or with work \
+                 inside a repository within — and cannot be evidence: a pass and a failure \
+                 on unchanged code, committed or not, prove a flake"
             )
         );
     }

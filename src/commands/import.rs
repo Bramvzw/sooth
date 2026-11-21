@@ -177,6 +177,7 @@ fn read_imports<'args>(
                 // --commit asserts a clean checkout of that commit; without
                 // it the code state is unknowable, not clean.
                 dirty: commit.map(|_| false),
+                tree: None,
                 environment: Some(args.env.clone()),
                 invocation: Some(history::import_invocation(hash)),
                 at_epoch_secs,

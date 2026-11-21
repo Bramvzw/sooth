@@ -108,8 +108,9 @@ clone, never committed) and says so once. Sooth itself never counts it, or
 the `--junit` report a run writes, as a change to your code. Flaky evidence
 then accumulates from runs you make anyway:
 
-- **flaky per history** — the same test both passed and failed on one clean
-  commit: proven nondeterminism, ranked by failure rate.
+- **flaky per history** — the same test both passed and failed on the same
+  code: one clean commit, or one unchanged tree of uncommitted work. Proven
+  nondeterminism, ranked by failure rate.
 - **failing since `<commit>`** — green until a commit, red ever since: a
   regression pointer, deliberately *not* called flaky. Start at `git show
   <commit>`.
@@ -125,14 +126,43 @@ invocations or more, says so on its line (`…, and every run since <commit>
 (3 runs)`) and no longer counts as "nothing new": a flake can break for
 real too.
 
-Runs on a dirty working tree count in the totals but are never used as
-evidence — sooth does not draw conclusions from code it can no longer
-identify. If that leaves nothing to go on, the report says so rather than
+You test before you commit, so most runs are on a dirty working tree.
+sooth names such a tree by its content: the tree git would write with every
+change and every untracked file that is not ignored (`.sooth/` and the
+run's own report left out), read through a copy of the index — no hooks,
+nothing written to your repository — so your index, objects and status are
+left as they were. Two runs on unchanged content ran the same code, so a
+pass in one and a failure in the other prove a flake, committed or not —
+rerun a red suite without touching anything and sooth knows. Edit anything
+in between, or while a run is going, and they are two pieces of code. A
+dirty tree is never an address, though: "failing since" and "slower since"
+name commits, so they read clean runs (and CI) alone.
+
+What the content does not cover, and what makes sooth leave it unread:
+
+- **What git ignores** — `.env`, `vendor/`, `node_modules/`, a database —
+  can change an outcome without changing the content, exactly as on a
+  clean commit.
+- **Work inside a submodule or a repository within this one** (a package
+  developed in place): the tree holds such a repository as its commit
+  only, so a dirty one leaves the content unread. Files put by hand into a
+  submodule's directory that was never checked out are seen by neither git
+  nor sooth.
+- **More than 5,000 changed and untracked files, or 64 MB in them** — an
+  unignored dump or coverage directory: reading them would cost each run
+  seconds, so the content is left unread.
+- **A directory the repository ignores**: run from there, the code under
+  test is in no commit and no tree, so the run has no identity at all.
+
+If nothing earlier names the code it ran, the report says so rather than
 letting every failure read as new:
 
 ```
-note: all 9423 earlier observations were made on a dirty tree and cannot be
-evidence — commit or stash to let sooth prove flakiness
+note: all 9423 earlier observations were made on code sooth cannot name — no
+git, an import without `--commit`, or a dirty tree it did not read:
+recorded before it did, edited during its run, too large, or with work
+inside a repository within — and cannot be evidence: a pass and a failure
+on unchanged code, committed or not, prove a flake
 ```
 
 Opt out per run with `--no-history`; delete or trim the file whenever you
@@ -326,9 +356,10 @@ Verify it at download time, where the network lives: GitHub's
 `gh attestation verify` checks an artifact's signed provenance before you
 import it. `--commit` asserts the reports came
 from a clean checkout of that commit; without it the observations count in
-totals but can never be proof, because flaky proof needs a known clean
-commit. The abbreviated sha your CI shows is fine — sooth resolves it against
-your clone, and refuses one your clone does not know. Importing the same
+totals but can never be proof, because flaky proof needs to know which code
+ran, and for a report that is its commit. The abbreviated sha your CI
+shows is fine — sooth resolves it against your clone, and refuses one your
+clone does not know. Importing the same
 file twice is harmless: sooth keeps a ledger and skips it. Imported it with
 the wrong `--env` or `--commit`? `sooth import --replace …` imports the file
 again in the place of its earlier observations.

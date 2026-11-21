@@ -2584,3 +2584,119 @@ itself, fixed and flat. `composer.json` is someone else's free-form JSON —
 nesting, escapes, `\u` sequences — and parsing that by hand is where bugs
 hide. Bram chose `serde_json` over a reader of our own (2026-11-21). It
 reads into `serde_json::Value`, with no derive.
+
+## An unchanged dirty tree is code sooth can name (#119)
+
+"Flaky evidence requires one clean commit" made the history passive in
+name only. People test before they commit: on a branch every local run is
+dirty, and the dogfood on a production Laravel suite said it plainly — the
+tree is never clean, because the next piece of work is open before the
+last one is committed. Every one of those runs counted in the totals and
+proved nothing, and the only way to get evidence was to make runs nobody
+would make otherwise, which is what the history promised not to ask.
+
+**The rule.** Evidence is one *code identity* with a pass and a failure,
+from two invocations. A clean checkout is identified by its commit, as
+before. A dirty tree is identified by its content: the tree git would
+write for `HEAD` with every change and every untracked file that is not
+ignored added — `.sooth/` and the run's own report left out, the same two
+the dirty check leaves out. Two runs with the same content ran the same
+code, committed or not; the moment anything is edited the hash changes and
+the chain breaks by itself. No content read — older lines, no git 2.31,
+any step failing — is no identity, as before.
+
+**Read without a trace.** The content is written through a copy of the
+index (`GIT_INDEX_FILE`) into an object store of sooth's own
+(`GIT_OBJECT_DIRECTORY`, with the repository's as an alternate for what it
+already has), with the repository's hooks out of reach (`core.hooksPath`
+pointed at an empty directory: `post-index-change` fired five times a run
+before review caught it), then `git write-tree`. The scratch directory is
+private (0700, as for the run's report: it holds a copy of uncommitted
+work) and removed on every path; sooth listens for an interrupt before
+the read starts, so a Ctrl-C during it removes it too. The repository's
+index, objects and status stay exactly as they were — a test checks all
+three, another that no hook runs. Copying the index keeps git's record of
+unchanged files, so only what changed is read. Paths come from `--git-path`
+joined onto the working directory, which every git since 2.5 answers;
+`--path-format=absolute` (2.31) is echoed back by an older one, which
+review found made it re-read every file of the repository. Keeping hooks
+out takes `core.hooksPath`, git 2.9: on an older git a hook can still run
+while the content is read.
+
+**One listing, not four.** Whether the tree is dirty and what reading its
+content would cost come from one `status -z --untracked-files=all`. Review
+measured six full passes over a 50,000-file repository per run when every
+file's stat information was stale — a container writing to a host's bind
+mount — against `main`'s two; one listing per read makes it four.
+
+**The copy keeps the index's time.** Git trusts an entry as unchanged
+when its size and times match and it is older than the index; one written
+in the index's own instant it reads again ("racily clean"). A copy of the
+index made now is newer than every entry, so a file changed in the index's
+last second, at the same size, passed as unchanged — CI's Linux git, which
+keeps whole seconds, found it in a test before any user did. The copy is
+given the index's modification time.
+
+**What it leaves out, it leaves out by name.** `.sooth/` and the run's
+report are excluded by a literal pathspec — a report called `out[1].xml`
+is not the glob that takes `out1.xml` along — and only when git does not
+already ignore them, since `git add` refuses a pathspec that names an
+ignored path.
+
+**Where it says nothing.** Three places where the hash would not name the
+code, found by review, give no content and so no proof:
+
+- *A repository within this one* — a submodule, or a package developed in
+  place with its own `.git`. The tree records it as its `HEAD`; work
+  uncommitted inside it would not change the hash, and a pass before an
+  edit there and a failure after it read as a flake. Every gitlink in the
+  written index — listed from the top, whatever directory sooth runs in;
+  the second review round found a run from a subdirectory saw only its
+  own — is asked for its own status, with git's repository variables left
+  out; any change, no content. One never checked out has no `.git` and no
+  work in it, and is passed over: asked on its own, git would walk up and
+  answer for the repository around it. Files put by hand into such an
+  empty directory are seen by neither git nor sooth — on a clean commit
+  either.
+- *More than 5,000 changed and untracked files, or 64 MB in them.* Each is
+  hashed, compressed and written, twice a run: an unignored 1 GB dump cost
+  37 seconds a run, an unignored coverage directory of 20,000 files 2.5.
+  Past the budget a run proves nothing rather than taking long.
+- *A directory the repository ignores.* Run from there, the code under
+  test is in no tree and no commit, yet the run was recorded on the
+  repository around it — clean ones included, a flaw older than this
+  change. Such a run now has no identity at all.
+
+**Read twice.** A suite of minutes is long enough to keep working while it
+runs. The content is read again after the last run; if it changed, the
+content read before names code that did not run from start to finish, and
+the observations carry none — they count in the totals, as an unknown tree
+does. The same holds for the report the run writes: it is left out of both
+reads, so it cannot pass for a change. A clean tree edited during its run
+is not caught this way; that was so before and is not changed here.
+
+**Not an address.** "Failing since" and "slower since" point into history,
+and a dirty tree's content is no commit anyone can check out. They keep
+reading clean commits only (`Observation::clean_commit`); a red on a dirty
+tree still counts in a streak and still cannot carry its address. The slow
+passes read clean timings only, as before: a laptop's uncommitted work is
+no point on the timeline. #276 (a green seen only on a dirty tree anchoring
+a regression) is a separate question and stays open.
+
+**The honesty limit is the old one.** The content says the code was the
+same, not that everything around it was: an ignored `.env`, a database, a
+cache can flip an outcome without changing the hash — and could on a clean
+commit too. Dirty trees are now as strong as clean ones, not stronger.
+
+**One code, two names.** Work that ran dirty under content `T` and is then
+committed exactly as it was is `Commit(B)` from then on, even though
+`B`'s tree is `T`: a pass before the commit and a failure after it are not
+put together. Keying clean runs on their tree as well would join them, but
+it would also part a clean run recorded before that key existed from one
+recorded after; left as it is, erring towards proving less.
+
+**The note.** "All N earlier observations were made on a dirty tree"
+stopped being the reason: such observations can be evidence now. The
+note fires when nothing earlier names its code, and says what that means
+today — lines from before sooth read a dirty tree's content, or a tree
+edited during its run.

@@ -224,12 +224,13 @@ pub fn run(args: &cli::OrderArgs) -> Outcome {
     {
         return Err(SoothError::new(reason));
     }
+    // Listening first, as for `sooth run`, so an interrupt while the
+    // identity is read leaves nothing behind.
+    let interrupt = interrupt::Interrupt::listen();
     // Read before the first run, as for `sooth run`: what a run writes is
     // not a change to the code it ran.
     let identity =
         (!args.no_history).then(|| history::code_identity(std::path::Path::new("."), None));
-
-    let interrupt = interrupt::Interrupt::listen();
     let mut pass = Pass {
         plan: &plan,
         interrupt: &interrupt,
